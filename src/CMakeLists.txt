@@ -1001,27 +1001,32 @@ if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
       break()
     endif()
   endforeach()
+  # easyBTX fork: absent libomp is a warning, not a hard stop. Upstream's own
+  # comment four lines above still reads "The pragmas are guarded by _OPENMP,
+  # so a build without OpenMP falls back to the serial loops", and v0.33.4.2
+  # built and ran here with BTX_APPLE_LIBOMP_LIBRARY-NOTFOUND. A Mac with no
+  # Homebrew has no way to satisfy the hard requirement.
   if(NOT BTX_APPLE_LIBOMP_INCLUDE_DIR OR NOT BTX_APPLE_LIBOMP_LIBRARY)
-    message(FATAL_ERROR
-      "macOS release builds require static libomp.a plus omp.h "
-      "(Homebrew: brew install libomp). Linking libomp.dylib puts an "
-      "/opt/homebrew load command in btxd and the tarball will not launch "
-      "on a clean Mac.")
+    message(WARNING
+      "No static libomp.a found; building WITHOUT OpenMP. The _OPENMP-guarded "
+      "pragmas fall back to serial loops. This is slower for the Fp3 recursive "
+      "prover but is not a correctness change.")
+  else()
+    add_library(btx_apple_openmp INTERFACE)
+    target_compile_options(btx_apple_openmp INTERFACE
+      $<$<COMPILE_LANGUAGE:CXX>:-Xpreprocessor>
+      $<$<COMPILE_LANGUAGE:CXX>:-fopenmp>
+    )
+    target_include_directories(btx_apple_openmp SYSTEM INTERFACE
+      ${BTX_APPLE_LIBOMP_INCLUDE_DIR}
+    )
+    target_link_libraries(btx_apple_openmp INTERFACE
+      ${BTX_APPLE_LIBOMP_LIBRARY}
+    )
+    target_link_libraries(bitcoin_common PUBLIC btx_apple_openmp)
+    message(STATUS
+      "Using AppleClang OpenMP runtime (static): ${BTX_APPLE_LIBOMP_LIBRARY}")
   endif()
-  add_library(btx_apple_openmp INTERFACE)
-  target_compile_options(btx_apple_openmp INTERFACE
-    $<$<COMPILE_LANGUAGE:CXX>:-Xpreprocessor>
-    $<$<COMPILE_LANGUAGE:CXX>:-fopenmp>
-  )
-  target_include_directories(btx_apple_openmp SYSTEM INTERFACE
-    ${BTX_APPLE_LIBOMP_INCLUDE_DIR}
-  )
-  target_link_libraries(btx_apple_openmp INTERFACE
-    ${BTX_APPLE_LIBOMP_LIBRARY}
-  )
-  target_link_libraries(bitcoin_common PUBLIC btx_apple_openmp)
-  message(STATUS
-    "Using AppleClang OpenMP runtime (static): ${BTX_APPLE_LIBOMP_LIBRARY}")
 elseif(OpenMP_CXX_FOUND)
   target_link_libraries(bitcoin_common PUBLIC OpenMP::OpenMP_CXX)
 endif()

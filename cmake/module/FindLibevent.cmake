@@ -71,13 +71,20 @@ endif()
 set(LIBEVENT_LINKAGE "" CACHE INTERNAL "How Libevent was resolved (shared vs static path)")
 
 if(APPLE)
+  # easyBTX fork: also search the depends prefix. The upstream goal is "no
+  # /opt/homebrew load commands in the tarball", which is about STATIC linkage,
+  # not about Homebrew being the source. depends/ ships the same static
+  # archives, and on a Mac without Homebrew it is the only source there is.
   set(_event_search_dirs
+    ${CMAKE_PREFIX_PATH}
+    ${CMAKE_FIND_ROOT_PATH}/lib
     /opt/homebrew/opt/libevent/lib
     /opt/homebrew/lib
     /usr/local/opt/libevent/lib
     /usr/local/lib
   )
   set(_event_include_search
+    ${CMAKE_FIND_ROOT_PATH}/include
     /opt/homebrew/opt/libevent/include
     /opt/homebrew/include
     /usr/local/opt/libevent/include
