@@ -542,6 +542,12 @@ target_include_directories(test_btx PRIVATE
 target_compile_definitions(test_btx PRIVATE
   BTX_REFERENCE_TEST_VECTORS_PATH=\"${PROJECT_SOURCE_DIR}/test/reference/shielded_test_vectors.json\"
 )
+if(WITH_MODELNET)
+  target_sources(test_btx PRIVATE modelnet_tests.cpp)
+  target_compile_definitions(test_btx PRIVATE
+    MODELNET_V11_VECTORS_PATH=\"${PROJECT_SOURCE_DIR}/src/test/data/modelnet_v11_vectors.json\"
+  )
+endif()
 
 target_link_libraries(test_btx
   core_interface
@@ -549,6 +555,9 @@ target_link_libraries(test_btx
   Boost::headers
   libevent::extra
 )
+if(WITH_MODELNET)
+  target_link_libraries(test_btx OpenSSL::SSL OpenSSL::Crypto)
+endif()
 if(UNIX AND NOT APPLE)
   if(TARGET bitcoin_wallet)
     target_link_btx_linux_archive_group(test_btx

@@ -1814,6 +1814,18 @@ set(BTX_NODE_ARCHIVES
   ${BTX_BASE_ARCHIVES}
 )
 
+if(WITH_MODELNET)
+  find_package(OpenSSL REQUIRED)
+  if(TARGET OpenSSL::SSL)
+    set_property(TARGET OpenSSL::SSL PROPERTY IMPORTED_GLOBAL TRUE)
+  endif()
+  if(TARGET OpenSSL::Crypto)
+    set_property(TARGET OpenSSL::Crypto PROPERTY IMPORTED_GLOBAL TRUE)
+  endif()
+  add_subdirectory(modelnet)
+  list(APPEND BTX_NODE_ARCHIVES bitcoin_modelnet)
+endif()
+
 set(BTX_WALLET_ARCHIVES
   bitcoin_wallet
   ${BTX_BASE_ARCHIVES}
@@ -1973,6 +1985,11 @@ target_link_libraries(bitcoin_node
     $<TARGET_NAME_IF_EXISTS:MiniUPnPc::MiniUPnPc>
     $<TARGET_NAME_IF_EXISTS:USDT::headers>
 )
+
+if(WITH_MODELNET)
+  target_sources(bitcoin_node PRIVATE rpc/modelnet.cpp)
+  target_link_libraries(bitcoin_node PRIVATE bitcoin_modelnet)
+endif()
 
 
 # BTX daemon executable.

@@ -607,6 +607,11 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
 #endif
     argsman.AddArg("-assumevalid=<hex>", strprintf("If this block is in the chain assume that it and its ancestors are valid and potentially skip script verification for their transactions while still checking other consensus rules (0 to verify all, default: %s, testnet3: %s, testnet4: %s, signet: %s, shieldedv2dev: %s)", defaultChainParams->GetConsensus().defaultAssumeValid.GetHex(), testnetChainParams->GetConsensus().defaultAssumeValid.GetHex(), testnet4ChainParams->GetConsensus().defaultAssumeValid.GetHex(), signetChainParams->GetConsensus().defaultAssumeValid.GetHex(), shieldedv2devChainParams->GetConsensus().defaultAssumeValid.GetHex()), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-matmulvalidation=<mode>", "Select MatMul transcript verification mode: consensus (default), trusted, relay, economic, or spv. trusted performs ordinary block/body/script validation but replaces local Profile-1 ExactReplay with an explicitly configured M-of-N signed archive-validator quorum; it is an operator-trusted mirror, not an independently validating full node. relay is the 0.34 public discovery node: ADDR only, not MatMul authority, not a chain-tip oracle, and it never requests or serves GETMMATTEST. Mainnet allows consensus, trusted, and relay. Economic/SPV still skip MatMul authority and remain forbidden on mainnet.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+#ifdef ENABLE_MODELNET
+    argsman.AddArg("-modelnet", "Enable the Native Model Network introduction bridge in btxd (default: 0). The helper is not required for monetary consensus. If btx-modeld is missing, PQ1 is unavailable, or the store is corrupt, model RPCs fail closed and the chain continues.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-modelrelay", "CPU-only model discovery relay (default: 0). Requires -modelnet. Advertises NODE_MODEL_RELAY as an unauthenticated hint only; never MatMul authority, never a chain source, and never a wallet. Artifact endpoints are not inserted into monetary AddrMan.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-modelhost", "Advertise NODE_MODEL_HOST as a public model-serving hint (default: 0). Requires an explicit public model endpoint and a running helper. Does not publish a hidden monetary endpoint.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+#endif
     argsman.AddArg("-discoveryrelayhideaddr=<ip>", "Do not learn, GETADDR, or getnodeaddresses this IP. Repeatable. Use on discovery relays and trusted archives to hide GPU attestor addresses that advertise CONSENSUS without ARCHIVE (serve=0). Relays InitError if -addnode/-connect/-seednode targets a hidden address.", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-matmulrcexecution=<mode>", "Select local MatMul RC ExactReplay execution: strict-device requires a production-qualified device and forbids CPU fallback; auto-fallback permits device-to-CPU fallback for pre-activation/testing; cpu-diagnostic explicitly runs the portable oracle (default: strict-device on a chain with a finite RC activation height, auto-fallback while RC activation is disabled). Only strict-device with a currently qualified production provider advertises NODE_MATMUL_CONSENSUS.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-allowunverifiablematmulconsensus", "Allow consensus-mode catch-up ExactReplay when the local device did not self-qualify (startup canary / production goldens miss). Startup still warns and withholds NODE_MATMUL_CONSENSUS. Mining stays fail-closed. Catch-up still fully ExactReplays every body before ConnectTip, on the available CUDA/Metal GEMM if present, otherwise on CPU. Without this flag a canary miss zeros the GEMM and digest_requests stays 0 (a live consensus-archive node: buffer_pool_uninitialized). Do not treat this as skipping ExactReplay.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -2632,7 +2637,9 @@ static bool InitializeMatMulRCReadinessPostDaemon(
         static_cast<uint64_t>(NODE_MATMUL_TRUSTED_MIRROR) |
         static_cast<uint64_t>(NODE_MATMUL_ECONOMIC) |
         static_cast<uint64_t>(NODE_MATMUL_ATTESTATION_ARCHIVE) |
-        static_cast<uint64_t>(NODE_MATMUL_DISCOVERY);
+        static_cast<uint64_t>(NODE_MATMUL_DISCOVERY) |
+        static_cast<uint64_t>(NODE_MODEL_RELAY) |
+        static_cast<uint64_t>(NODE_MODEL_HOST);
     uint64_t services{static_cast<uint64_t>(g_local_services) & ~clear_mask};
     if (matmul_validation_mode == "consensus") {
         if (rc_strict_device_ready) {
@@ -2672,6 +2679,16 @@ static bool InitializeMatMulRCReadinessPostDaemon(
             services |= static_cast<uint64_t>(NODE_MATMUL_ATTESTATION_ARCHIVE);
         }
     }
+#ifdef ENABLE_MODELNET
+    // Unauthenticated introduction hints only. Never seed-mask, AddrMan
+    // artifact metadata, MatMul authority, or a chain source.
+    if (args.GetBoolArg("-modelnet", false) && args.GetBoolArg("-modelrelay", false)) {
+        services |= static_cast<uint64_t>(NODE_MODEL_RELAY);
+    }
+    if (args.GetBoolArg("-modelnet", false) && args.GetBoolArg("-modelhost", false)) {
+        services |= static_cast<uint64_t>(NODE_MODEL_HOST);
+    }
+#endif
     g_local_services = static_cast<ServiceFlags>(services);
     return true;
 }

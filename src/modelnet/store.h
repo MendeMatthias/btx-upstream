@@ -1,0 +1,67 @@
+// Copyright (c) 2026 The BTX developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://opensource.org/license/mit/.
+
+#ifndef BITCOIN_MODELNET_STORE_H
+#define BITCOIN_MODELNET_STORE_H
+
+#include <modelnet/types.h>
+#include <span.h>
+#include <util/fs.h>
+
+#include <optional>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace modelnet {
+
+constexpr uint64_t MAX_FILE_BYTES = uint64_t{4} << 40;
+
+bool IsPortableRelPath(const std::string& path, std::string& err);
+
+Digest48 ChunkLeaf(uint64_t index, Span<const unsigned char> piece);
+Digest48 ChunkPad(uint64_t index);
+Digest48 ChunkNode(const Digest48& left, const Digest48& right);
+Digest48 EmptyFileRoot();
+
+std::vector<std::vector<Digest48>> BuildChunkTree(Span<const unsigned char> file);
+bool VerifyPiece(const Digest48& root, uint64_t file_size, uint64_t index,
+                  Span<const unsigned char> piece,
+                  const std::vector<Digest48>& siblings);
+std::vector<Digest48> PieceProof(const std::vector<std::vector<Digest48>>& rows, uint64_t index);
+
+struct FileEntry {
+    std::string path;
+    FileRole role{FileRole::WEIGHTS};
+    uint64_t size{0};
+    Digest48 sha384;
+    Digest48 pieces_root;
+};
+
+struct StoreQuota {
+    uint64_t max_bytes{0};
+    uint64_t used_bytes{0};
+};
+
+/** Filesystem model store. Never under wallet/chainstate/blocks. */
+class ModelStore {
+    fs::path m_root;
+    StoreQuota m_quota;
+    std::set<std::string> m_pinned;
+
+public:
+    explicit ModelStore(fs::path root, uint64_t quota_bytes);
+    bool PutVerifiedPiece(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
+                           Span<const unsigned char> bytes, const Digest48& expected_leaf, std::string& err);
+    bool GetPiece(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
+                  std::vector<unsigned char>& out, std::string& err) const;
+    bool Pin(const Digest48& model_id, std::string& err);
+    bool Unpin(const Digest48& model_id);
+    uint64_t UsedBytes() const { return m_quota.used_bytes; }
+    void EvictUnpinned();
+};
+
+} // namespace modelnet
+
+#endif // BITCOIN_MODELNET_STORE_H
