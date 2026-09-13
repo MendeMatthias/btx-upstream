@@ -98,6 +98,13 @@ static std::shared_ptr<CWallet> MakeWallet(const std::string& name, const fs::pa
             tfm::format(std::cerr, "Error reading %s! Some transaction data might be missing or"
                            " incorrect. Wallet requires a rescan.",
                 name);
+        } else if (load_wallet_ret == DBErrors::UNKNOWN_DESCRIPTOR) {
+            if (wallet_instance->GetLastLoadError().find("BIP68") != std::string::npos) {
+                tfm::format(std::cerr, "Error loading %s: csv_multi_pq sequence is not BIP68-valid. Recreate the descriptor with a BIP68 sequence (TYPE_FLAG | MASK only). This is not wallet corruption.", name);
+            } else {
+                tfm::format(std::cerr, "Error loading %s: Unrecognized descriptor", name);
+            }
+            return nullptr;
         } else {
             tfm::format(std::cerr, "Error loading %s", name);
             return nullptr;

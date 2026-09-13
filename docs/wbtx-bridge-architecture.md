@@ -30,12 +30,12 @@ What already exists on the BTX side:
 - **Federation/attestor settlement** — verifier sets, batch receipts, proof receipts, settlement
   witnesses, with **FIPS-205 SLH-DSA** (or ML-DSA) attestor signatures (hardened in v0.31; height-
   gated at C-002/123000). RPCs: `bridge_buildverifierset`, `bridge_buildrefund`, `bridge_build*`.
-- **Trustless-swap primitives** — `BuildP2MRHTLCTxLeaf` (hashlock + transaction-bound claimant signature), `BuildP2MRRefundLeaf`
+- **Trustless-swap primitives** — `BuildP2MRHTLCSha256Leaf` (SHA-256 hashlock + transaction-bound claimant signature), `BuildP2MRRefundLeaf`
   (CLTV timeout + PQ-sig), `BuildP2MRAtomicSwapLeaf` (CTV covenant + PQ-sig), `OP_CHECKSIGFROMSTACK`
   (`CSFS/btx` tagged hash), CTV. Safe swaps use exactly two leaves:
-  `mr(htlc_tx(H160,CLAIM_PK),refund(T,REFUND_PK))`.
+  `mr(htlc_sha256(SHA256,CLAIM_PK),refund(T,REFUND_PK))`. HASH160 `htlc_tx()` remains parseable for recovery.
 - **PSBT** carries everything needed to *spend* these end-to-end: hash preimage fields
-  (`hash160_preimages`/`sha256_preimages`), and P2MR fields (`m_p2mr_leaf_script`,
+  (`sha256_preimages`, and `hash160_preimages` only for recovery of withdrawn HASH160 locks), and P2MR fields (`m_p2mr_leaf_script`,
   `m_p2mr_control_block`, `m_p2mr_merkle_root`, `m_p2mr_csfs_msgs/sigs`, `m_p2mr_pq_sigs`). The
   descriptor-wallet `FillPSBT` path populates the script tree; `walletprocesspsbt`/`finalizepsbt`
   sign and assemble the witness.
@@ -43,7 +43,7 @@ What already exists on the BTX side:
 What is **missing** (the build):
 - **EVM contracts**: wBTX ERC-20, the bridge mint/burn contract, and an atomic-swap HTLC contract —
   none live in this repo (it is the node).
-- **Hash-domain compatibility plumbing** between BTX HTLCs (`HASH160 = RIPEMD160(SHA256(x))`) and EVM.
+- **Hash-domain compatibility plumbing** between BTX HTLCs (`SHA-256(preimage)`) and EVM.
 - **Developer surface**: an SDK + a few node RPCs so integrators don't hand-assemble descriptors,
   control blocks, and PSBT preimage fields (a funds-loss footgun class).
 - **Indexer/relayer reference**: watch BTX deposits → mint on EVM; watch EVM burns → release on BTX.
@@ -72,8 +72,8 @@ swaps and does not require the federation. **Model C** is a future hardening of 
 - **Attestor security (Model A):** M-of-N PQ (FIPS-205/ML-DSA) signatures over a *replay-bound*
   statement (chain id, bridge id, nonce, destination, amount). Already the shape of BridgeBatch.
 - **Refund safety:** every lock has a timeout refund leaf (present); a stuck mint never traps funds.
-- **Hash/domain agreement (Model B):** EVM HTLC MUST hash with `ripemd160(sha256(preimage))` (both are
-  EVM precompiles) to match BTX `HASH160`; mismatched domains silently break atomicity.
+- **Hash/domain agreement (Model B):** EVM HTLC MUST hash with `sha256(preimage)`
+  (EVM `sha256` precompile) to match BTX `OP_SHA256`; mismatched domains silently break atomicity.
 - **Scalability:** batch settlement (BridgeBatch already batches); deposits/withdrawals indexed, not
   rescanned; PQ signatures are large (ML-DSA ~2.4 KB, SLH-DSA ~7.8 KB) so prefer ML-DSA for hot-path
   attestors and batch to amortize.
@@ -95,7 +95,7 @@ swaps and does not require the federation. **Model C** is a future hardening of 
 
 **Phase 2 — EVM side (reference, audited separately):**
 - `WBTX.sol` (ERC-20, 18 dec); `WBTXBridge.sol` (mint on M-of-N PQ attestation, burn→release request);
-  `WBTXAtomicSwapHTLC.sol` (`ripemd160(sha256)` hashlock + timeout) for Model B.
+  `WBTXAtomicSwapHTLC.sol` (`sha256` hashlock + timeout) for Model B.
 
 **Phase 3 — robustness & scale:** indexer/relayer reference, monitoring of the backing invariant,
 adversarial test campaign (double-mint, reorg, refund-race, hash-domain confusion), and an external

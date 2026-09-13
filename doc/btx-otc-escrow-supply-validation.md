@@ -82,9 +82,10 @@ The chain is unusually well equipped for this. Verified against current
   - `mr(multi_pq(m,k1,...))`, `sortedmulti_pq`
   - `mr(cltv_multi_pq(locktime,m,k1,...))`, `csv_multi_pq(seq,...)`
   - `mr(ctv_multi_pq(ctv_hash,m,k1,...))`, `ctv(hash)`, CTV+CHECKSIG
-  - `htlc_tx(<hash160>,<claimer_key>)` and `refund(<locktime>,<sender_key>)`
-    leaves, plus separate CSFS delegation leaves. Legacy `htlc()` is
-    recovery-only because its CSFS witness is transaction-replayable.
+  - `htlc_sha256(<sha256>,<claimer_key>)` and `refund(<locktime>,<sender_key>)`
+    leaves, plus separate CSFS delegation leaves. HASH160 `htlc_tx()` remains
+    recovery-only. Legacy `htlc()` is also recovery-only because its CSFS
+    witness is transaction-replayable.
   - Trees: `mr(<primary_leaf>, {<leaf>, <leaf>})` — **the primary slot
     accepts any leaf type** (same `parse_leaf_expr`), so a vault can be
     built with *no* unconditional key path.
@@ -102,7 +103,7 @@ The chain is unusually well equipped for this. Verified against current
   `signmessage` for proof of key control.
 - **Cross-chain leg:** wBTX Model B trustless atomic swap
   (`contrib/wbtx/evm/WBTXAtomicSwapHTLC.sol`) shares the exact
-  `RIPEMD160(SHA256(preimage))` hashlock with the BTX `htlc_tx()` leaf.
+  `SHA-256(preimage)` hashlock with the BTX `htlc_sha256()` leaf.
 
 What does **not** exist (and this design routes around): DLC/adaptor
 signatures/PTLC (PQ adaptor signatures for ML-DSA are research-grade), any
@@ -232,7 +233,7 @@ orderbook offer), replace the venue co-sign with CTV and get a fully
 trustless hard bond:
 
 ```
-BOND = mr( ctv_multi_pq(<H_tmpl>, 1, S_settle),   # seller can ONLY spend into the
+BOND = mr( ctv_pk(<H_tmpl>, S_settle),            # seller can ONLY spend into the
            { refund(H_expiry, S_refund),            # pre-committed settlement tx
              commit(offer_terms_hash) } )           # unspendable terms binding
 ```
@@ -267,11 +268,11 @@ For BTX vs wBTX / stablecoin / any HTLC-capable asset. Already shipped
 end to end:
 
 ```
-SWAP = mr( htlc_tx(<H160>, K_buyer),          # buyer claims with preimage + tx signature
+SWAP = mr( htlc_sha256(<SHA256>, K_buyer),     # buyer claims with preimage + tx signature
            refund(H_timeout_btx, S) )         # seller refunds after timeout
 ```
 
-- `H160 = RIPEMD160(SHA256(preimage))`, byte-identical to the hashlock in
+- `SHA256 = SHA256(preimage)`, byte-identical to the hashlock in
   `WBTXAtomicSwapHTLC.sol`, so BTX↔EVM swaps work today
   (`contrib/wbtx/btx_wbtx.py`, `buildhtlcclaim` / `buildhtlcrefund`).
 - Standard timeout asymmetry: the party that reveals the preimage
@@ -293,8 +294,8 @@ arbiter — can send funds anywhere):
 
 ```
 ESCROW = mr( multi_pq(2, K_buyer, S),                      # happy path: both co-sign
-             { { ctv_multi_pq(<H_pay_buyer>,   1, K_arb),  # arbiter: release to buyer
-                 ctv_multi_pq(<H_refund_seller>,1, K_arb) },# arbiter: return to seller
+             { { ctv_pk(<H_pay_buyer>, K_arb),      # arbiter: release to buyer
+                 ctv_pk(<H_refund_seller>, K_arb) },# arbiter: return to seller
                refund(H_deadlock, S) } )                    # nuclear fallback
 ```
 
@@ -311,7 +312,7 @@ ESCROW = mr( multi_pq(2, K_buyer, S),                      # happy path: both co
   `H_deadlock`; an arbiter verdict tx confirmed before `H_deadlock`
   settles the matter since the refund leaf is still time-locked.)
 - Split verdicts (e.g. 70/30) can be added as additional
-  `ctv_multi_pq` leaves for pre-agreed partial-fill templates.
+  `ctv_pk` leaves for pre-agreed partial-fill templates.
 
 ### 5.3 Payment-oracle variant: CSFS "DLC-lite"
 
@@ -449,7 +450,7 @@ the proof) and bond it. This converts T6 from "unfalsifiable claim" into
 4. **Leaf size / standardness.** Relay policy caps leaf scripts at 1,650
    bytes except multisig leaf types (consensus 11,000). One ML-DSA key ≈
    1,315 bytes in-leaf: keep non-multisig leaves to one ML-DSA key (+
-   32-byte SLH-DSA or oracle keys), exactly as the shipped `htlc_tx()` /
+   32-byte SLH-DSA or oracle keys), exactly as the shipped `htlc_sha256()` /
    `refund()` grammars do; k-of-n ML-DSA committees cap at n ≤ 8.
 5. **Oracle/arbiter key hygiene.** Arbiter and oracle keys must be
    per-role, ideally per-offer (the CSFS message binds the terms hash,
@@ -529,9 +530,9 @@ btx-cli gettxout <txid> <vout>          # unspent, ≥20 conf, pays $ADDR, amoun
 # no spendable path before 812000 except 2-of-2 with venue ✔
 
 # --- Stage 2: buyer engages; bond is spent into the swap vault ---
-SWAP="mr(htlc_tx($H160,$BUYER_PK),refund(811500,$S_REFUND_PK))"
+SWAP="mr(htlc_sha256($H256,$BUYER_PK),refund(811500,$S_REFUND_PK))"
 # (seller+venue co-sign the bond spend whose sole non-change output is $SWAP_ADDR;
-#  buyer locks the wBTX/stable leg under the same H160 with a shorter timeout)
+#  buyer locks the wBTX/stable leg under the same SHA-256 with a shorter timeout)
 
 # --- Settlement ---
 btx-cli -rpcwallet=buyer buildhtlcclaim "$SWAP#..." '{"txid":"...","vout":0}' \
@@ -550,6 +551,6 @@ btx-cli -rpcwallet=desk buildhtlcrefund "$SWAP#..." '{"txid":"...","vout":0}' \
 | Can it vanish mid-quote? | No (tier A/A+) | No unilateral pre-expiry path in the MAST tree |
 | Is it borrowed for show? | Not while bonded | Timelocked refund leaf ≥ offer expiry |
 | Will settlement actually happen? | Atomic for crypto legs | HTLC leaves + `buildhtlcclaim`/`buildhtlcrefund` |
-| Fiat-leg disputes? | Bounded arbiter, cannot steal | CTV verdict templates (`ctv_multi_pq`) / CSFS oracles |
+| Fiat-leg disputes? | Bounded arbiter, cannot steal | CTV verdict templates (`ctv_pk`) / CSFS oracles |
 | Shielded "trust me" claims? | Counted as zero | No per-account proof exists; pool is sunsetting; exit-then-bond |
 | Consensus changes needed? | **None** | All leaves/opcodes/RPCs are live on `main` today |

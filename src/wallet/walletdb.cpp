@@ -682,6 +682,7 @@ static LoadResult LoadRecords(CWallet* pwallet, DatabaseBatch& batch, const std:
         DBErrors record_res = load_func(pwallet, ssKey, ssValue, error);
         if (record_res != DBErrors::LOAD_OK) {
             pwallet->WalletLogPrintf("%s\n", error);
+            if (!error.empty()) pwallet->SetLastLoadError(error);
         }
         result.m_result = std::max(result.m_result, record_res);
         ++result.m_records;
@@ -994,12 +995,21 @@ static DBErrors LoadDescriptorWalletRecords(CWallet* pwallet, DatabaseBatch& bat
         try {
             value >> desc;
         } catch (const std::ios_base::failure& e) {
+            const std::string details{e.what()};
+            if (details.find("BIP68") != std::string::npos) {
+                strErr = strprintf(
+                    "Error: csv_multi_pq/csv_sortedmulti_pq descriptor in wallet %s uses a non-BIP68 sequence. "
+                    "This is not wallet corruption. Recreate the descriptor with a BIP68 sequence "
+                    "(TYPE_FLAG | MASK only, e.g. 144 or 144|SEQUENCE_LOCKTIME_TYPE_FLAG). Details: %s",
+                    pwallet->GetName(), details);
+                return DBErrors::UNKNOWN_DESCRIPTOR;
+            }
             strErr = strprintf("Error: Unrecognized descriptor found in wallet %s. ", pwallet->GetName());
             strErr += (last_client > CLIENT_VERSION) ? "The wallet might had been created on a newer version. " :
                     "The database might be corrupted or the software version is not compatible with one of your wallet descriptors. ";
             strErr += "Please try running the latest software version";
             // Also include error details
-            strErr = strprintf("%s\nDetails: %s", strErr, e.what());
+            strErr = strprintf("%s\nDetails: %s", strErr, details);
             return DBErrors::UNKNOWN_DESCRIPTOR;
         }
         DescriptorScriptPubKeyMan& spkm = pwallet->LoadDescriptorScriptPubKeyMan(id, desc);

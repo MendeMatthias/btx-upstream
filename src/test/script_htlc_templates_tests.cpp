@@ -4,6 +4,7 @@
 
 #include <hash.h>
 #include <pqkey.h>
+#include <primitives/transaction.h>
 #include <script/interpreter.h>
 #include <script/pqm.h>
 #include <script/script_error.h>
@@ -11,6 +12,7 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <limits>
 #include <vector>
 
 namespace {
@@ -34,9 +36,10 @@ private:
     bool m_locktime_ok;
 };
 
-std::vector<unsigned char> Hash160Bytes(Span<const unsigned char> data)
+std::vector<unsigned char> Sha256Bytes(Span<const unsigned char> data)
 {
-    const uint160 hash = Hash160(data);
+    uint256 hash;
+    CSHA256().Write(data.data(), data.size()).Finalize(hash.begin());
     return {hash.begin(), hash.end()};
 }
 
@@ -77,11 +80,26 @@ BOOST_AUTO_TEST_CASE(htlc_tx_leaf_valid_build)
     BOOST_CHECK_EQUAL_COLLECTIONS(script.begin(), script.end(), expected.begin(), expected.end());
 }
 
+BOOST_AUTO_TEST_CASE(htlc_sha256_leaf_valid_build)
+{
+    const std::vector<unsigned char> preimage_hash(32, 0x41);
+    const std::vector<unsigned char> claimant_pubkey(MLDSA44_PUBKEY_SIZE, 0x42);
+    const std::vector<unsigned char> script =
+        BuildP2MRHTLCSha256Leaf(preimage_hash, PQAlgorithm::ML_DSA_44, claimant_pubkey);
+    BOOST_REQUIRE(!script.empty());
+
+    CScript expected;
+    expected << OP_SHA256 << preimage_hash << OP_EQUALVERIFY
+             << claimant_pubkey << OP_CHECKSIG_MLDSA;
+    BOOST_CHECK_EQUAL_COLLECTIONS(script.begin(), script.end(), expected.begin(), expected.end());
+}
+
 BOOST_AUTO_TEST_CASE(htlc_leaf_invalid_preimage_size)
 {
     const std::vector<unsigned char> wrong_hash(19, 0x01);
     const std::vector<unsigned char> oracle_pubkey(MLDSA44_PUBKEY_SIZE, 0x02);
     BOOST_CHECK(BuildP2MRHTLCLeaf(wrong_hash, PQAlgorithm::ML_DSA_44, oracle_pubkey).empty());
+    BOOST_CHECK(BuildP2MRHTLCSha256Leaf(wrong_hash, PQAlgorithm::ML_DSA_44, oracle_pubkey).empty());
 }
 
 BOOST_AUTO_TEST_CASE(refund_leaf_valid_build)
@@ -97,9 +115,9 @@ BOOST_AUTO_TEST_CASE(refund_leaf_valid_build)
 
 BOOST_AUTO_TEST_CASE(htlc_leaf_size_within_policy)
 {
-    const std::vector<unsigned char> preimage_hash(20, 0x44);
+    const std::vector<unsigned char> preimage_hash(32, 0x44);
     const std::vector<unsigned char> oracle_pubkey(MLDSA44_PUBKEY_SIZE, 0x55);
-    const std::vector<unsigned char> script = BuildP2MRHTLCTxLeaf(
+    const std::vector<unsigned char> script = BuildP2MRHTLCSha256Leaf(
         preimage_hash, PQAlgorithm::ML_DSA_44, oracle_pubkey);
     BOOST_REQUIRE(!script.empty());
     BOOST_CHECK_LT(script.size(), 1650U);
@@ -112,8 +130,8 @@ BOOST_AUTO_TEST_CASE(htlc_correct_preimage_succeeds)
     BOOST_REQUIRE(oracle_key.IsValid());
 
     const std::vector<unsigned char> preimage(32, 0x66);
-    const std::vector<unsigned char> preimage_hash = Hash160Bytes(preimage);
-    const std::vector<unsigned char> script_bytes = BuildP2MRHTLCTxLeaf(
+    const std::vector<unsigned char> preimage_hash = Sha256Bytes(preimage);
+    const std::vector<unsigned char> script_bytes = BuildP2MRHTLCSha256Leaf(
         preimage_hash, PQAlgorithm::ML_DSA_44, oracle_key.GetPubKey());
     BOOST_REQUIRE(!script_bytes.empty());
     const CScript script{script_bytes.begin(), script_bytes.end()};
@@ -144,8 +162,8 @@ BOOST_AUTO_TEST_CASE(htlc_wrong_preimage_fails)
 
     const std::vector<unsigned char> correct_preimage(32, 0x77);
     const std::vector<unsigned char> wrong_preimage(32, 0x88);
-    const std::vector<unsigned char> preimage_hash = Hash160Bytes(correct_preimage);
-    const std::vector<unsigned char> script_bytes = BuildP2MRHTLCTxLeaf(
+    const std::vector<unsigned char> preimage_hash = Sha256Bytes(correct_preimage);
+    const std::vector<unsigned char> script_bytes = BuildP2MRHTLCSha256Leaf(
         preimage_hash, PQAlgorithm::ML_DSA_44, oracle_key.GetPubKey());
     BOOST_REQUIRE(!script_bytes.empty());
     const CScript script{script_bytes.begin(), script_bytes.end()};
@@ -203,15 +221,38 @@ BOOST_AUTO_TEST_CASE(refund_before_timeout_fails)
     BOOST_CHECK_EQUAL(serror, SCRIPT_ERR_UNSATISFIED_LOCKTIME);
 }
 
+BOOST_AUTO_TEST_CASE(csv_multisig_rejects_non_bip68_sequence_bits)
+{
+    // csv_multi_pq requires >=2 pubkeys; threshold-1 of a 2-key set is the
+    // smallest valid BuildP2MRCSVMultisigScript input.
+    const std::vector<unsigned char> pk1(MLDSA44_PUBKEY_SIZE, 0x12);
+    const std::vector<unsigned char> pk2(MLDSA44_PUBKEY_SIZE, 0x13);
+    const std::vector<std::pair<PQAlgorithm, std::vector<unsigned char>>> keys{
+        {PQAlgorithm::ML_DSA_44, pk1},
+        {PQAlgorithm::ML_DSA_44, pk2},
+    };
+    const auto build = [&](int64_t sequence) {
+        return BuildP2MRCSVMultisigScript(sequence, /*threshold=*/1, keys);
+    };
+
+    BOOST_CHECK(!build(144).empty());
+    BOOST_CHECK(!build(144 | CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG).empty());
+    BOOST_CHECK(build(100000).empty());
+    BOOST_CHECK(build(int64_t{1} << 16).empty());
+    BOOST_CHECK(build(static_cast<int64_t>(CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG)).empty());
+    BOOST_CHECK(build(0).empty());
+    BOOST_CHECK(build(static_cast<int64_t>(std::numeric_limits<int32_t>::max()) + 1).empty());
+}
+
 BOOST_AUTO_TEST_CASE(two_leaf_merkle_htlc)
 {
     CPQKey oracle_key;
     oracle_key.MakeNewKey(PQAlgorithm::ML_DSA_44);
     BOOST_REQUIRE(oracle_key.IsValid());
 
-    const std::vector<unsigned char> preimage_hash(20, 0xbb);
+    const std::vector<unsigned char> preimage_hash(32, 0xbb);
     const std::vector<unsigned char> sender_pubkey(MLDSA44_PUBKEY_SIZE, 0xcc);
-    const std::vector<unsigned char> htlc_leaf = BuildP2MRHTLCTxLeaf(
+    const std::vector<unsigned char> htlc_leaf = BuildP2MRHTLCSha256Leaf(
         preimage_hash, PQAlgorithm::ML_DSA_44, oracle_key.GetPubKey());
     const std::vector<unsigned char> refund_leaf = BuildP2MRRefundLeaf(/*timeout=*/1024, PQAlgorithm::ML_DSA_44, sender_pubkey);
     BOOST_REQUIRE(!htlc_leaf.empty());

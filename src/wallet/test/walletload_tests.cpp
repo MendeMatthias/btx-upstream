@@ -3,6 +3,7 @@
 // file COPYING or https://www.opensource.org/licenses/mit-license.php.
 
 #include <key.h>
+#include <pqkey.h>
 #include <script/descriptor.h>
 #include <wallet/test/util.h>
 #include <wallet/wallet.h>
@@ -282,6 +283,26 @@ BOOST_FIXTURE_TEST_CASE(wallet_load_ckey, TestingSetup)
         std::shared_ptr<CWallet> wallet(new CWallet(m_node.chain.get(), "", CreateMockableWalletDatabase(records)));
         BOOST_CHECK_EQUAL(wallet->LoadWallet(), DBErrors::CORRUPT);
     }
+}
+
+BOOST_FIXTURE_TEST_CASE(wallet_load_non_bip68_csv_descriptor, TestingSetup)
+{
+    std::vector<unsigned char> pk1(MLDSA44_PUBKEY_SIZE, 0x11);
+    std::vector<unsigned char> pk2(SLHDSA128S_PUBKEY_SIZE, 0x22);
+    const std::string desc = AddChecksum(
+        "mr(csv_multi_pq(100000,1," + HexStr(pk1) + ",pk_slh(" + HexStr(pk2) + ")))");
+
+    std::unique_ptr<WalletDatabase> database = CreateMockableWalletDatabase();
+    {
+        WalletBatch batch(*database, false);
+        WalletDescriptor wallet_descriptor(std::make_shared<DummyDescriptor>(desc), 0, 0, 0, 0);
+        BOOST_CHECK(batch.WriteDescriptor(uint256(), wallet_descriptor));
+    }
+
+    const std::shared_ptr<CWallet> wallet(new CWallet(m_node.chain.get(), "", std::move(database)));
+    BOOST_CHECK_EQUAL(wallet->LoadWallet(), DBErrors::UNKNOWN_DESCRIPTOR);
+    BOOST_CHECK(wallet->GetLastLoadError().find("BIP68") != std::string::npos);
+    BOOST_CHECK(wallet->GetLastLoadError().find("not wallet corruption") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

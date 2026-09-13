@@ -36,12 +36,12 @@ BOOST_AUTO_TEST_CASE(mainnet_dump_floor_is_191714)
     BOOST_CHECK(MatMulAsertPowLimitForNextHeight(c, 191715) == UintToArith256(c.powLimitUpgrade));
 }
 
-BOOST_AUTO_TEST_CASE(mainnet_stall_recovery_is_inherit_not_dump)
+BOOST_AUTO_TEST_CASE(mainnet_stall_recovery_is_withdrawn)
 {
     const auto params = CreateChainParams(ArgsManager{}, ChainType::MAIN);
     const auto& c = params->GetConsensus();
 
-    BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryHeight, 199299);
+    BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryHeight, std::numeric_limits<int32_t>::max());
     BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryAsertNum, 1U);
     BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryAsertDen, 1U);
     BOOST_CHECK_EQUAL(c.nMatMulMaxBlockTimeAdvance, 1080);
@@ -49,18 +49,17 @@ BOOST_AUTO_TEST_CASE(mainnet_stall_recovery_is_inherit_not_dump)
     BOOST_CHECK_EQUAL(c.nMatMulMaxFutureMtpDrift, 3600);
     BOOST_CHECK_EQUAL(c.nReorgProtectionStartHeight, 61000);
     BOOST_CHECK(!c.IsMatMulStallRecoveryActive(199298));
-    BOOST_CHECK(c.IsMatMulStallRecoveryActive(199299));
+    BOOST_CHECK(!c.IsMatMulStallRecoveryActive(199299));
 }
 
 BOOST_AUTO_TEST_CASE(mixed_034_does_not_create_new_encdr_flag_day)
 {
-    // 0.34 reuses the 0.33.4 EncDr stall-recovery flag day. Mixed
-    // 0.33.4.2 / 0.34 peers must not silently disagree on nBits at 199299.
-    // Pre-recovery luckypool nBits is rejected before AddToBlockIndex and
-    // warned (DivergentPowForkShouldWarn), not stored. Do not reseal.
+    // The 199299 EncDr stall-recovery flag day was withdrawn. Mainnet height is
+    // inert (INT32_MAX). DivergentPowForkShouldWarn still fires when a node is
+    // configured with a reachable flag day; that is the helper, not chainparams.
     const auto params = CreateChainParams(ArgsManager{}, ChainType::MAIN);
     const auto& c = params->GetConsensus();
-    BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryHeight, 199299);
+    BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryHeight, std::numeric_limits<int32_t>::max());
     BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryAsertNum, 1U);
     BOOST_CHECK_EQUAL(c.nMatMulStallRecoveryAsertDen, 1U);
     using node::matmul_trusted::DivergentPowForkShouldWarn;

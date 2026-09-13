@@ -144,6 +144,9 @@ static MiningChainGuardStatus ApplyDeferredReorgWarning(
     if (stats.last_deferred_unix <= latest_resolution) return status;
 
     const int64_t deferred_age = now - stats.last_deferred_unix;
+    // last_deferred_unix is refreshed on every ActivateBestChain poll
+    // while the same episode stays deferred. Age only grows if validation
+    // stops seeing the deferral (resolved or no longer evaluated).
     if (deferred_age < 0 || deferred_age > options.deferred_reorg_watch_seconds) {
         return status;
     }

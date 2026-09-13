@@ -150,6 +150,42 @@ class WalletOtcOfferTest(BitcoinTestFramework):
         assert_equal(report.tier, "B")
         assert_greater_than(report.verified_sats + 1, amount_sats)
 
+        # === 2b. VERIFY tier-A venue-key pinning ===============================
+        self.log.info("tier-A venue-key pinning")
+        venue_pk = self.pq_pubkey(desk)
+        wrong_venue_pk = self.pq_pubkey(desk)
+        amount_a_sats = 1 * COIN_SAT
+        expiry_a = node.getblockcount() + 40
+        terms_a = self.make_terms(seller_address, amount_a_sats, expiry_a,
+                                 nonce="aa" * 16)
+        desc_a = btx_otc.venue_bond_descriptor(settle_pk, venue_pk,
+                                              expiry_a, refund_pk)
+        bundle_a = btx_otc.create_offer(rpc, rpc_desk, terms_a, desc_a)
+        mine_block(self, node, mine_addr)
+        assert_equal(bundle_a["bond"]["tier"], "A")
+
+        self.log.info("reject: tier-A verify without expected_venue_pubkey")
+        self.assert_failed_checks(btx_otc.verify_offer(rpc, bundle_a, min_conf=1),
+                                  {"venue-key"})
+
+        self.log.info("verify: tier-A with matching expected_venue_pubkey")
+        report_a = btx_otc.verify_offer(rpc, bundle_a, min_conf=1,
+                                        expected_venue_pubkey=venue_pk)
+        for c in report_a.checks:
+            self.log.info(f"  [{'ok' if c.ok else 'FAIL'}] {c.name}: {c.detail}")
+        assert_equal(report_a.ok, True)
+        assert_equal(report_a.tier, "A")
+        assert_greater_than(report_a.verified_sats + 1, amount_a_sats)
+        venue_checks = [c for c in report_a.checks if c.name == "venue-key"]
+        assert_equal(len(venue_checks), 1)
+        assert_equal(venue_checks[0].ok, True)
+
+        self.log.info("reject: tier-A with mismatched expected_venue_pubkey")
+        self.assert_failed_checks(
+            btx_otc.verify_offer(rpc, bundle_a, min_conf=1,
+                                 expected_venue_pubkey=wrong_venue_pk),
+            {"venue-key"})
+
         self.log.info("reject: immature coinbase cannot back executable offered supply")
         coinbase_hash = self.generatetoaddress(
             node, 1, report.address, sync_fun=self.no_op,
@@ -296,10 +332,10 @@ class WalletOtcOfferTest(BitcoinTestFramework):
         self.log.info("stage-2 settlement: HTLC vault claim by buyer")
         buyer_pk = self.pq_pubkey(buyer)
         preimage = btx_otc.new_preimage()
-        h160 = btx_otc.swap_hash160_hex(preimage)
+        h256 = btx_otc.swap_sha256_hex(preimage)
         swap_locktime = node.getblockcount() + 100
         swap_desc = btx_otc.swap_vault_descriptor(
-            h160, buyer_pk, swap_locktime, refund_pk)
+            h256, buyer_pk, swap_locktime, refund_pk)
         swap_desc_ck = btx_otc.add_checksum(rpc, swap_desc)
         swap_addr = btx_otc.bond_address(rpc, swap_desc_ck)
         for w in (desk, buyer):
@@ -323,7 +359,7 @@ class WalletOtcOfferTest(BitcoinTestFramework):
         # The preimage is revealed on-chain (what makes cross-chain legs atomic).
         claim_tx = node.getrawtransaction(claim_txid, True, node.getbestblockhash())
         revealed = any(
-            btx_otc.swap_hash160_hex(bytes.fromhex(item)) == h160
+            btx_otc.swap_sha256_hex(bytes.fromhex(item)) == h256
             for vin in claim_tx["vin"] for item in vin.get("txinwitness", []) or []
             if len(item) % 2 == 0
         )

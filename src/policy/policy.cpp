@@ -380,13 +380,17 @@ P2MRLeafType ParsePolicyP2MRLeafScript(Span<const unsigned char> leaf_script)
         }
     }
 
-    // Transaction-bound HTLC claim leaf. Legacy htlc() leaves ending in
-    // OP_CHECKSIGFROMSTACK are intentionally not standard: their revealed
-    // witness can be replayed into a conflicting transaction.
-    std::vector<unsigned char> htlc_hash160;
+    // Transaction-bound HTLC claim leaves. SHA-256 is the 0.34.6+ swap path
+    // (~128-bit Grover preimage margin). HASH160 htlc_tx() remains standard so
+    // any pre-existing lock can still be claimed; new contracts must not use it.
+    // Legacy htlc() leaves ending in OP_CHECKSIGFROMSTACK are intentionally not
+    // standard: their revealed witness can be replayed into a conflicting
+    // transaction.
+    std::vector<unsigned char> htlc_hash;
     std::vector<unsigned char> htlc_pubkey;
     PQAlgorithm htlc_algo{PQAlgorithm::ML_DSA_44};
-    if (ParseP2MRHTLCTxLeaf(leaf_script, htlc_hash160, htlc_algo, htlc_pubkey)) {
+    if (ParseP2MRHTLCSha256Leaf(leaf_script, htlc_hash, htlc_algo, htlc_pubkey) ||
+        ParseP2MRHTLCTxLeaf(leaf_script, htlc_hash, htlc_algo, htlc_pubkey)) {
         return HtlcLeafTypeForAlgo(htlc_algo);
     }
 

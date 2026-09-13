@@ -4663,9 +4663,13 @@ std::shared_ptr<CWallet> CWallet::Create(WalletContext& context, const std::stri
                                            " Rescanning wallet."), walletFile));
             rescan_required = true;
         } else if (nLoadWalletRet == DBErrors::UNKNOWN_DESCRIPTOR) {
-            error = strprintf(_("Unrecognized descriptor found. Loading wallet %s\n\n"
-                                "The wallet might had been created on a newer version.\n"
-                                "Please try running the latest software version.\n"), walletFile);
+            if (walletInstance->m_last_load_error.find("BIP68") != std::string::npos) {
+                error = strprintf(_("Error loading %s: csv_multi_pq sequence is not BIP68-valid. Recreate the descriptor with a BIP68 sequence (TYPE_FLAG | MASK only). This is not wallet corruption."), walletFile);
+            } else {
+                error = strprintf(_("Unrecognized descriptor found. Loading wallet %s\n\n"
+                                    "The wallet might had been created on a newer version.\n"
+                                    "Please try running the latest software version.\n"), walletFile);
+            }
             return nullptr;
         } else if (nLoadWalletRet == DBErrors::UNEXPECTED_LEGACY_ENTRY) {
             error = strprintf(_("Unexpected legacy entry in descriptor wallet found. Loading wallet %s\n\n"

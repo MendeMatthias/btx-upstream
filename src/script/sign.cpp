@@ -527,6 +527,7 @@ enum class P2MRLeafType {
     CSFS_VERIFY_CHECKSIG,
     HTLC,
     HTLC_TX,
+    HTLC_SHA256,
 };
 
 struct P2MRLeafInfo {
@@ -538,7 +539,8 @@ struct P2MRLeafInfo {
     PQAlgorithm csfs_algo{PQAlgorithm::ML_DSA_44};
     Span<const unsigned char> csfs_pubkey{};
     uint256 ctv_hash{};
-    std::vector<unsigned char> htlc_hash160{}; // HTLC leaf: the 20-byte preimage hashlock
+    std::vector<unsigned char> htlc_hash160{}; // HASH160 HTLC leaf: 20-byte preimage hashlock
+    std::vector<unsigned char> htlc_sha256{};  // SHA-256 HTLC leaf: 32-byte preimage hashlock
     PQAlgorithm htlc_algo{PQAlgorithm::ML_DSA_44};
     std::vector<unsigned char> htlc_pubkey{};
 };
@@ -711,8 +713,24 @@ static bool ParseP2MRHTLCTxLeafForSigning(Span<const unsigned char> script, P2MR
     return true;
 }
 
+static bool ParseP2MRHTLCSha256LeafForSigning(Span<const unsigned char> script, P2MRLeafInfo& info)
+{
+    std::vector<unsigned char> sha256;
+    PQAlgorithm algo{PQAlgorithm::ML_DSA_44};
+    std::vector<unsigned char> pubkey;
+    if (!ParseP2MRHTLCSha256Leaf(script, sha256, algo, pubkey)) return false;
+    info.type = P2MRLeafType::HTLC_SHA256;
+    info.htlc_sha256 = std::move(sha256);
+    info.htlc_algo = algo;
+    info.htlc_pubkey = std::move(pubkey);
+    return true;
+}
+
 static bool ExtractP2MRLeafInfo(Span<const unsigned char> script, P2MRLeafInfo& info)
 {
+    if (ParseP2MRHTLCSha256LeafForSigning(script, info)) {
+        return true;
+    }
     if (ParseP2MRHTLCTxLeafForSigning(script, info)) {
         return true;
     }
@@ -892,6 +910,7 @@ std::optional<P2MRWitness> MaximumP2MRLeafWitness(const P2MRLeafInfo& info)
             MaximumP2MRCSFSSignature(info.csfs_algo),
             std::vector<unsigned char>(MAX_SCRIPT_ELEMENT_SIZE)};
     case P2MRLeafType::HTLC_TX:
+    case P2MRLeafType::HTLC_SHA256:
         return P2MRWitness{
             MaximumP2MRScriptSignature(info.htlc_algo),
             std::vector<unsigned char>(32)};
@@ -948,6 +967,7 @@ std::optional<P2MRWitness> SelectedP2MRLeafWitness(
     case P2MRLeafType::CSFS_VERIFY_CHECKSIG:
     case P2MRLeafType::HTLC:
     case P2MRLeafType::HTLC_TX:
+    case P2MRLeafType::HTLC_SHA256:
         // These paths require a caller-supplied message, preimage, or matching
         // transaction template. A provider alone cannot prove satisfiability.
         return std::nullopt;
@@ -1096,6 +1116,7 @@ bool HasGenericP2MRSigningPath(
         case P2MRLeafType::CSFS_VERIFY_CHECKSIG:
         case P2MRLeafType::HTLC:
         case P2MRLeafType::HTLC_TX:
+        case P2MRLeafType::HTLC_SHA256:
             break;
         }
     }
@@ -1327,6 +1348,34 @@ static bool SignP2MR(const SigningProvider& provider,
         case P2MRLeafType::HTLC_TX: {
             const auto it_pre = sigdata.hash160_preimages.find(leaf_info.htlc_hash160);
             if (it_pre == sigdata.hash160_preimages.end()) continue;
+
+            std::vector<unsigned char> sig;
+            if (!CreateP2MRScriptSig(
+                    creator,
+                    sigdata,
+                    provider,
+                    sig,
+                    leaf_info.htlc_pubkey,
+                    leaf_info.htlc_algo,
+                    leaf_hash,
+                    SigVersion::P2MR)) {
+                continue;
+            }
+            std::vector<valtype> candidate = Vector(sig, it_pre->second, script_bytes, *control);
+            const int priority = P2MRPriority(
+                leaf_info.htlc_algo, preferred_algo, /*preferred_priority=*/0, /*non_preferred_priority=*/10);
+            if (priority == 0) {
+                sigdata.p2mr_leaf_script = script;
+                sigdata.p2mr_control_block = *control;
+                result = std::move(candidate);
+                return true;
+            }
+            commit_candidate(priority, std::move(candidate), script_bytes, *control);
+            continue;
+        }
+        case P2MRLeafType::HTLC_SHA256: {
+            const auto it_pre = sigdata.sha256_preimages.find(leaf_info.htlc_sha256);
+            if (it_pre == sigdata.sha256_preimages.end()) continue;
 
             std::vector<unsigned char> sig;
             if (!CreateP2MRScriptSig(
