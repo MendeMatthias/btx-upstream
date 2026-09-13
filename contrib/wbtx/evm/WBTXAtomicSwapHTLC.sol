@@ -7,9 +7,9 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 /// @title WBTXAtomicSwapHTLC — trustless BTX <-> EVM atomic swaps (bridge Model B), hardened.
 /// @notice EVM leg of a hash-timelock atomic swap whose hashlock is byte-compatible with BTX's P2MR
-///         HTLC leaf: `OP_HASH160` = RIPEMD160(SHA256(preimage)). Both halves are EVM precompiles, so
-///         a single 20-byte hashlock secures both chains against the same 32-byte preimage. Revealing
-///         the preimage to claim one leg exposes it on-chain for the counterparty to claim the other.
+///         HTLC leaf: `OP_SHA256` of a 32-byte preimage. The EVM `sha256` precompile is the same
+///         digest, so a single 32-byte hashlock secures both chains. Revealing the preimage to claim
+///         one leg exposes it on-chain for the counterparty to claim the other.
 ///
 /// Trust model: NONE beyond the two chains' consensus. Hardened per contrib/wbtx/SECURITY.md:
 ///   - SafeERC20 + balance-delta accounting (tolerates non-standard / fee-on-transfer / rebasing tokens).
@@ -31,7 +31,7 @@ contract WBTXAtomicSwapHTLC is ReentrancyGuard {
         address sender;
         address recipient;
         uint256 amount;     // actual amount custodied (post-transfer balance delta)
-        bytes20 hashlock;   // RIPEMD160(SHA256(preimage))
+        bytes32 hashlock;  // SHA-256(preimage)
         uint64  timeout;    // unix seconds; refund allowed at/after this
         State   state;
     }
@@ -43,7 +43,7 @@ contract WBTXAtomicSwapHTLC is ReentrancyGuard {
     mapping(bytes32 => Swap) public swaps;
 
     event Opened(bytes32 indexed id, address indexed token, address indexed recipient,
-                 address sender, uint256 amount, bytes20 hashlock, uint64 timeout);
+                 address sender, uint256 amount, bytes32 hashlock, uint64 timeout);
     event Claimed(bytes32 indexed id, bytes preimage);
     event Refunded(bytes32 indexed id);
 
@@ -58,15 +58,15 @@ contract WBTXAtomicSwapHTLC is ReentrancyGuard {
     error NoValueReceived();
     error AmountMismatch(uint256 requested, uint256 received);
 
-    /// @dev BTX-compatible hashlock: RIPEMD160(SHA256(preimage)) (precompiles 0x02 then 0x03).
-    function btxHash160(bytes calldata preimage) public pure returns (bytes20) {
-        return ripemd160(abi.encodePacked(sha256(preimage)));
+    /// @dev BTX-compatible hashlock: SHA-256(preimage) (precompile 0x02).
+    function btxSha256(bytes calldata preimage) public pure returns (bytes32) {
+        return sha256(preimage);
     }
 
     /// @notice Deterministic, squat-proof swap id. Bound to msg.sender so a third party cannot
     ///         pre-register the same logical swap. `salt` disambiguates a sender's identical swaps.
     function computeId(
-        address recipient, address token, uint256 amount, bytes20 hashlock, uint64 timeout, bytes32 salt
+        address recipient, address token, uint256 amount, bytes32 hashlock, uint64 timeout, bytes32 salt
     ) public view returns (bytes32) {
         return keccak256(abi.encode(
             block.chainid, address(this), msg.sender, recipient, token, amount, hashlock, timeout, salt
@@ -76,7 +76,7 @@ contract WBTXAtomicSwapHTLC is ReentrancyGuard {
     /// @notice Lock `amount` of `token` to `recipient`, claimable with the preimage of `hashlock`
     ///         until `timeout`. Caller must `approve` first. Returns the derived swap id.
     function open(
-        address recipient, address token, uint256 amount, bytes20 hashlock, uint64 timeout, bytes32 salt
+        address recipient, address token, uint256 amount, bytes32 hashlock, uint64 timeout, bytes32 salt
     ) external nonReentrant returns (bytes32 id) {
         if (recipient == address(0) || token == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
@@ -105,7 +105,7 @@ contract WBTXAtomicSwapHTLC is ReentrancyGuard {
         Swap storage s = swaps[id];
         if (s.state != State.OPEN) revert NotOpen();
         if (block.timestamp >= s.timeout) revert Expired();
-        if (btxHash160(preimage) != s.hashlock) revert BadPreimage();
+        if (btxSha256(preimage) != s.hashlock) revert BadPreimage();
         s.state = State.CLAIMED;                              // effects before interaction
         IERC20(s.token).safeTransfer(s.recipient, s.amount);
         emit Claimed(id, preimage);

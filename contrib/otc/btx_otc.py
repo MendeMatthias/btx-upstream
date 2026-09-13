@@ -60,7 +60,7 @@ Spend-signing & key-reuse safety (audit guidance):
   * CSFS key/message uniqueness: OP_CHECKSIGFROMSTACK verifies a signature over a
     witness-supplied message, so a revealed (signature, message/preimage) pair
     REPLAYS on any output that reuses the same key + message. Prefer the
-    transaction-bound htlc_tx() leaf (which this SDK uses) over a bare csfs()
+    transaction-bound htlc_sha256() leaf (which this SDK uses) over a bare csfs()
     leaf; never reuse a CSFS/oracle key across offers, and bind each CSFS message
     to a unique per-offer context (the terms hash / nonce already provide this).
   * Confirmation depth: treat a bond as real supply only at a reorg-safe depth
@@ -913,7 +913,7 @@ def check_swap_timeout_asymmetry(btx_refund_height: int, other_leg_deadline_heig
             f"Need btx_refund_height >= {required_min}.")
 
 
-def swap_vault_descriptor(preimage_hash160_hex: str, claimer_pubkey: str, refund_locktime: int,
+def swap_vault_descriptor(preimage_sha256_hex: str, claimer_pubkey: str, refund_locktime: int,
                           sender_pubkey: str) -> str:
     """Stage-2, two-leaf HTLC settlement vault (identical to the wBTX Model-B leg).
 
@@ -925,7 +925,7 @@ def swap_vault_descriptor(preimage_hash160_hex: str, claimer_pubkey: str, refund
     # be a block height so its relation to the offer/expiry is meaningful and it
     # is not immediately spendable as a past timestamp.
     require_block_height_locktime(refund_locktime, "refund_locktime")
-    return (f"mr(htlc_tx({preimage_hash160_hex},{claimer_pubkey}),"
+    return (f"mr(htlc_sha256({preimage_sha256_hex},{claimer_pubkey}),"
             f"refund({refund_locktime},{sender_pubkey}))")
 
 
@@ -933,9 +933,9 @@ def new_preimage() -> bytes:
     return os.urandom(32)
 
 
-def swap_hash160_hex(preimage: bytes) -> str:
-    """RIPEMD160(SHA256(preimage)) — same hashlock domain as the EVM HTLC contract."""
-    return _ripemd160(hashlib.sha256(preimage).digest()).hex()
+def swap_sha256_hex(preimage: bytes) -> str:
+    """SHA-256(preimage) — same hashlock domain as the EVM HTLC contract."""
+    return hashlib.sha256(preimage).hexdigest()
 
 
 def build_swap_claim(rpc_wallet: Rpc, descriptor_with_checksum: str, txid: str,
@@ -1037,7 +1037,7 @@ def selftest() -> None:
         soft_bond_descriptor(f"pk_slh({'dd' * 32})", 900, k2), terms))
     # Unknown shapes fail closed.
     for bad in (f"mr({k1})",                                             # no refund leaf
-                f"mr({k1},{{htlc_tx({'ee' * 20},{k2}),refund(900,{k2})}})",  # extra leaf
+                f"mr({k1},{{htlc_sha256({'ee' * 32},{k2}),refund(900,{k2})}})",  # extra leaf
                 f"mr(multi_pq(1,{k1},{k3}),{{refund(900,{k2})}})"):       # 1-of-2 settle
         try:
             bind_bond_descriptor(bad, terms)
@@ -1054,7 +1054,7 @@ def selftest() -> None:
         lambda: soft_bond_descriptor(k1, ts_lock, k2),
         lambda: venue_bond_descriptor(k1, k3, ts_lock, k2),
         lambda: ctv_bond_descriptor("11" * 32, k1, ts_lock, k2),
-        lambda: swap_vault_descriptor("ab" * 20, k1, ts_lock, k2),
+        lambda: swap_vault_descriptor("ab" * 32, k1, ts_lock, k2),
     ):
         try:
             build()
@@ -1142,8 +1142,8 @@ def selftest() -> None:
         raise AssertionError("too-tight timeout asymmetry must fail closed")
     except ValueError:
         pass
-    # swap_hash160 fallback path uses same test vector as wBTX helper.
-    assert swap_hash160_hex(bytes([0x42]) * 32) == "8739f40ec4dbf569dcb38134c6e7310908566981"
+    # swap_sha256 path uses the SHA-256 test vector shared with the wBTX helper.
+    assert swap_sha256_hex(bytes([0x42]) * 32) == "425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c"
 
     # Amount formatting.
     assert sats_to_btx_str(5_000_000_000_000) == "50000.00000000"
@@ -1281,7 +1281,7 @@ __all__ = [
     "add_checksum", "bond_address", "refund_key_address", "ensure_refund_attestation_descriptor",
     "sats_to_btx_str", "to_sat", "create_offer",
     "Check", "OfferVerification", "verify_offer", "watch_offer", "build_bond_refund",
-    "check_swap_timeout_asymmetry", "swap_vault_descriptor", "new_preimage", "swap_hash160_hex",
+    "check_swap_timeout_asymmetry", "swap_vault_descriptor", "new_preimage", "swap_sha256_hex",
     "build_swap_claim",
     "build_swap_refund", "selftest",
 ]

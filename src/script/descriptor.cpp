@@ -1647,6 +1647,7 @@ enum class MRLeafType {
     CSV_MULTISIG_PQ,
     HTLC,
     HTLC_TX,
+    HTLC_SHA256,
     REFUND,
     CTV_ONLY,
     CTV_CHECKSIG,
@@ -1666,6 +1667,7 @@ struct MRLeafSpec {
     std::vector<int> multisig_provider_indices;
     std::vector<std::vector<unsigned char>> multisig_fixed_pubkeys;
     std::vector<unsigned char> htlc_hash160;
+    std::vector<unsigned char> htlc_sha256;
     int64_t locktime{0};
     int64_t sequence{0};
 
@@ -1688,6 +1690,7 @@ bool LeafUsesPrimaryKey(const MRLeafSpec& leaf)
 {
     return leaf.type == MRLeafType::CHECKSIG ||
            leaf.type == MRLeafType::HTLC_TX ||
+           leaf.type == MRLeafType::HTLC_SHA256 ||
            leaf.type == MRLeafType::REFUND ||
            leaf.type == MRLeafType::CTV_CHECKSIG ||
            leaf.type == MRLeafType::CSFS_VERIFY_CHECKSIG;
@@ -1732,6 +1735,8 @@ std::vector<unsigned char> BuildP2MRLeafScript(
         return BuildP2MRHTLCLeaf(leaf.htlc_hash160, leaf.csfs_algo, csfs_pubkey);
     case MRLeafType::HTLC_TX:
         return BuildP2MRHTLCTxLeaf(leaf.htlc_hash160, leaf.algo, primary_pubkey);
+    case MRLeafType::HTLC_SHA256:
+        return BuildP2MRHTLCSha256Leaf(leaf.htlc_sha256, leaf.algo, primary_pubkey);
     case MRLeafType::REFUND:
         return BuildP2MRRefundLeaf(leaf.locktime, leaf.algo, primary_pubkey);
     case MRLeafType::CTV_ONLY:
@@ -1868,6 +1873,7 @@ static std::optional<int64_t> GetP2MRLeafMaxSatSize(const MRLeafSpec& leaf, int6
         return 0;
     case MRLeafType::HTLC:
     case MRLeafType::HTLC_TX:
+    case MRLeafType::HTLC_SHA256:
     case MRLeafType::CSFS_ONLY:
     case MRLeafType::CSFS_VERIFY_CHECKSIG:
         return {};
@@ -1897,6 +1903,7 @@ static std::optional<int64_t> GetP2MRLeafMaxSatElems(const MRLeafSpec& leaf)
         return 0;
     case MRLeafType::HTLC:
     case MRLeafType::HTLC_TX:
+    case MRLeafType::HTLC_SHA256:
     case MRLeafType::CSFS_ONLY:
         return 4;
     case MRLeafType::CSFS_VERIFY_CHECKSIG:
@@ -2029,6 +2036,10 @@ protected:
             case MRLeafType::HTLC_TX:
                 if (!render_key(leaf.algo, leaf.provider_index, leaf.fixed_pubkey, key_expr)) return false;
                 ret += strprintf("htlc_tx(%s,%s)", HexStr(leaf.htlc_hash160), key_expr);
+                break;
+            case MRLeafType::HTLC_SHA256:
+                if (!render_key(leaf.algo, leaf.provider_index, leaf.fixed_pubkey, key_expr)) return false;
+                ret += strprintf("htlc_sha256(%s,%s)", HexStr(leaf.htlc_sha256), key_expr);
                 break;
             case MRLeafType::REFUND:
                 if (!render_key(leaf.algo, leaf.provider_index, leaf.fixed_pubkey, key_expr)) return false;
@@ -3106,6 +3117,22 @@ std::vector<std::unique_ptr<DescriptorImpl>> ParseScript(uint32_t& key_exp_index
             return true;
         };
 
+        auto parse_sha256 = [&](Span<const char> arg, std::vector<unsigned char>& hash_out, std::string& hash_hex_out) -> bool {
+            const std::string hash_hex(arg.begin(), arg.end());
+            if (!IsHex(hash_hex) || hash_hex.size() != uint256::size() * 2) {
+                error = "mr(): htlc_sha256 hash must be 32-byte hex";
+                return false;
+            }
+            const std::vector<unsigned char> hash_bytes = ParseHex(hash_hex);
+            if (hash_bytes.size() != uint256::size()) {
+                error = "mr(): htlc_sha256 hash must be 32-byte hex";
+                return false;
+            }
+            hash_out = hash_bytes;
+            hash_hex_out = HexStr(hash_bytes);
+            return true;
+        };
+
         auto check_leaf_policy_size = [&](const MRLeafSpec& leaf) -> bool {
             std::vector<unsigned char> leaf_script;
             if (!BuildDummyP2MRLeafScript(leaf, leaf_script)) {
@@ -3393,11 +3420,21 @@ std::vector<std::unique_ptr<DescriptorImpl>> ParseScript(uint32_t& key_exp_index
                 }
 
                 const auto sequence{ToIntegral<int64_t>(std::string_view(sequence_arg.data(), sequence_arg.size()))};
-                if (!sequence.has_value() ||
-                    *sequence < 1 ||
-                    *sequence >= static_cast<int64_t>(CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG)) {
+                if (!sequence.has_value()) {
                     error = strprintf("mr(): csv sequence '%s' is not valid",
                                       std::string(sequence_arg.begin(), sequence_arg.end()));
+                    return false;
+                }
+                if (!IsP2MRCSVSequenceBIP68Valid(*sequence)) {
+                    const bool extra_bits =
+                        *sequence >= 1 &&
+                        *sequence < static_cast<int64_t>(CTxIn::SEQUENCE_LOCKTIME_DISABLE_FLAG);
+                    error = extra_bits
+                        ? strprintf("mr(): csv sequence must be BIP68-valid (TYPE_FLAG | MASK only, got %lld). "
+                                    "Recreate csv_multi_pq/csv_sortedmulti_pq wallets that used values like 100000.",
+                                    static_cast<long long>(*sequence))
+                        : strprintf("mr(): csv sequence '%s' is not valid",
+                                    std::string(sequence_arg.begin(), sequence_arg.end()));
                     return false;
                 }
 
@@ -3485,6 +3522,41 @@ std::vector<std::unique_ptr<DescriptorImpl>> ParseScript(uint32_t& key_exp_index
                 spec.provider_index = claimant_key.provider_index;
                 spec.fixed_pubkey = std::move(claimant_key.fixed_pubkey);
                 return append_leaf(std::move(spec), strprintf("htlc_tx(%s,%s)", hash_hex, claimant_key.rendered), leaf_specs, leaf_exprs);
+            }
+
+            leaf_expr = arg;
+            if (Func("htlc_sha256", leaf_expr) || Func("model_htlc_sha256", leaf_expr)) {
+                const auto hash_arg = Expr(leaf_expr);
+                if (hash_arg.empty()) {
+                    error = "mr(): htlc_sha256() missing sha256 argument";
+                    return false;
+                }
+                if (!Const(",", leaf_expr)) {
+                    error = "mr(): htlc_sha256() missing claimant key argument";
+                    return false;
+                }
+                const auto claimant_arg = Expr(leaf_expr);
+                if (claimant_arg.empty()) {
+                    error = "mr(): htlc_sha256() claimant key argument is empty";
+                    return false;
+                }
+                if (!leaf_expr.empty()) {
+                    error = "mr(): htlc_sha256() has unexpected trailing data";
+                    return false;
+                }
+                std::vector<unsigned char> sha256;
+                std::string hash_hex;
+                if (!parse_sha256(hash_arg, sha256, hash_hex)) return false;
+                ParsedMRKey claimant_key;
+                if (!parse_mr_key(claimant_arg, providers, claimant_key)) return false;
+
+                MRLeafSpec spec;
+                spec.type = MRLeafType::HTLC_SHA256;
+                spec.htlc_sha256 = std::move(sha256);
+                spec.algo = claimant_key.algo;
+                spec.provider_index = claimant_key.provider_index;
+                spec.fixed_pubkey = std::move(claimant_key.fixed_pubkey);
+                return append_leaf(std::move(spec), strprintf("htlc_sha256(%s,%s)", hash_hex, claimant_key.rendered), leaf_specs, leaf_exprs);
             }
 
             leaf_expr = arg;

@@ -2936,11 +2936,12 @@ private:
     std::chrono::microseconds OldestInFlightRequestAge(std::chrono::microseconds now) const
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
-    /** Whether another connected peer advertised the exact branch containing
-     *  `index` and is currently eligible to serve its body. Download-owner
-     *  count is not a substitute: a single silent owner may coexist with
-     *  several idle sources, and must be paused after timeout so one of them
-     *  can take over. */
+    /** Whether another connected peer is a real replacement body source for
+     *  `index`. Advertised NODE_NETWORK plus a matching header is not enough:
+     *  the peer must have delivered a BLOCK/CMPCTBLOCK/BLOCKTXN. Download-
+     *  owner count is not a substitute: a single silent owner may coexist with
+     *  several idle header-only peers, and must be paused after timeout so a
+     *  proven body source can take over. */
     bool HasAlternativeBlockDownloadSource(
         NodeId excluded_peer, const CBlockIndex* index,
         std::chrono::microseconds now) const
@@ -4393,12 +4394,14 @@ bool PeerManagerImpl::HasAlternativeBlockDownloadSource(
             state.pindexBestKnownBlock->GetAncestor(index->nHeight) != index) {
             continue;
         }
-        if (!node::matmul_trusted::StalledTowerFetchPeerMayServeBodies(
-                PeerIsGpuAuthority(nodeid, state), state.m_can_serve_blocks,
-                /*version_handshake_complete=*/state.m_starting_height >= 0,
-                state.m_manual, state.m_noban) ||
-            (IsSignedFrontierBodyCatchUp() &&
-             !PeerIsSignedFrontierBodySource(nodeid, state))) {
+        if (!node::matmul_trusted::PeerCountsAsAlternativeBodyDownloadSource(
+                node::matmul_trusted::StalledTowerFetchPeerMayServeBodies(
+                    PeerIsGpuAuthority(nodeid, state), state.m_can_serve_blocks,
+                    /*version_handshake_complete=*/state.m_starting_height >= 0,
+                    state.m_manual, state.m_noban),
+                IsSignedFrontierBodyCatchUp(),
+                PeerIsSignedFrontierBodySource(nodeid, state),
+                state.m_has_served_block)) {
             continue;
         }
         return true;
@@ -21991,11 +21994,14 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 // body-silence for a preferred signed-frontier source so a
                 // body-silent capable archive is demoted from the prefer-gate
                 // here too (the far-behind tally lives in
-                // ReclaimStaleInFlightBlockRequests). One bump per peer-timeout
-                // round; reset on any delivered body. This is the path that
-                // owns the tally for the gap-2-99 wedge, which the far-behind
-                // reclaim never touches. Never disconnects the source.
-                if (IsSignedFrontierBodyCatchUp() &&
+                // ExpireOverdueBlockDownloads). Gate on !far_behind so the
+                // two paths cannot double-count the same silent round. One
+                // bump per peer-timeout round; reset on any delivered body.
+                // This is the path that owns the tally for the gap-2-99
+                // wedge, which the far-behind expire never touches. Never
+                // disconnects the source.
+                if (!far_behind_download &&
+                    IsSignedFrontierBodyCatchUp() &&
                     PeerIsSignedFrontierBodySource(pto->GetId(), state)) {
                     ++state.m_frontier_body_silence_count;
                 }

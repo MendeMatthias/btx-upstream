@@ -220,6 +220,9 @@ void RecordDeferredReorgDepth(
     int32_t old_tip_height,
     int32_t fork_height,
     int32_t candidate_height);
+/** Refresh last_deferred_unix while the same hysteresis episode stays
+ *  deferred. Does not increment deferred_reorgs or emit a warning. */
+void RefreshDeferredReorgHeartbeat();
 
 CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams);
 CAmount GetBlockSubsidyForBlock(int nHeight, const CBlock& block, const CBlockIndex* pindexPrev, const Consensus::Params& consensusParams);

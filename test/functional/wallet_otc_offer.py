@@ -332,10 +332,10 @@ class WalletOtcOfferTest(BitcoinTestFramework):
         self.log.info("stage-2 settlement: HTLC vault claim by buyer")
         buyer_pk = self.pq_pubkey(buyer)
         preimage = btx_otc.new_preimage()
-        h160 = btx_otc.swap_hash160_hex(preimage)
+        h256 = btx_otc.swap_sha256_hex(preimage)
         swap_locktime = node.getblockcount() + 100
         swap_desc = btx_otc.swap_vault_descriptor(
-            h160, buyer_pk, swap_locktime, refund_pk)
+            h256, buyer_pk, swap_locktime, refund_pk)
         swap_desc_ck = btx_otc.add_checksum(rpc, swap_desc)
         swap_addr = btx_otc.bond_address(rpc, swap_desc_ck)
         for w in (desk, buyer):
@@ -359,7 +359,7 @@ class WalletOtcOfferTest(BitcoinTestFramework):
         # The preimage is revealed on-chain (what makes cross-chain legs atomic).
         claim_tx = node.getrawtransaction(claim_txid, True, node.getbestblockhash())
         revealed = any(
-            btx_otc.swap_hash160_hex(bytes.fromhex(item)) == h160
+            btx_otc.swap_sha256_hex(bytes.fromhex(item)) == h256
             for vin in claim_tx["vin"] for item in vin.get("txinwitness", []) or []
             if len(item) % 2 == 0
         )

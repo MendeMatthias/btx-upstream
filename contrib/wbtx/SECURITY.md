@@ -93,8 +93,8 @@ upgrade/init bug, (5) access-control/message-auth, (6) infinite-approval/fronten
 - **Watchtower-defensible refunds:** anyone may trigger a timed-out refund, but funds always return to the
   original sender.
 - **ReentrancyGuard** + CEI; **timeout sanity bounds** (`MIN/MAX_TIMEOUT`, min 6h).
-- **Hash domain** `RIPEMD160(SHA256(preimage))` matches BTX `OP_HASH160` exactly (verified against a
-  BTX node: preimage `0x42…42` → `8739f40ec4dbf569dcb38134c6e7310908566981`).
+- **Hash domain** `SHA-256(preimage)` matches BTX `OP_SHA256` exactly (verified:
+  preimage `0x42…42` → `425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c`).
 
 ## 3. Design decisions (explicit, not by omission)
 

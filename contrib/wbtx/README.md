@@ -49,24 +49,24 @@ forge test          # 21 passing
 - **A — federation lock-and-mint (the wBTX path).** Lock BTX to a federation-controlled P2MR address
   carrying your EVM recipient; the M-of-N attestor set attests the deposit; `WBTXBridge.mint()` mints
   `sat × 1e10` wBTX. Burn wBTX via `WBTXBridge.redeem()` → the federation releases BTX (round-down).
-- **B — trustless atomic swap.** No custodian. Both legs lock under the **same 20-byte hashlock**;
+- **B — trustless atomic swap.** No custodian. Both legs lock under the **same 32-byte SHA-256 hashlock**;
   revealing the preimage to claim one leg exposes it for the other.
 
 ## The hashlock that makes Model B atomic
-BTX's P2MR HTLC leaf uses `OP_HASH160 = RIPEMD160(SHA256(preimage))`. Both are EVM precompiles, so the
-EVM contract hashes identically:
+BTX's P2MR HTLC leaf uses `OP_SHA256(preimage)` (32-byte digest, ~128-bit Grover preimage margin).
+The EVM contract hashes identically:
 ```solidity
-bytes20 h = ripemd160(abi.encodePacked(sha256(preimage)));   // == BTX HASH160(preimage)
+bytes32 h = sha256(preimage);   // == BTX SHA256(preimage)
 ```
-Use the **same 32-byte preimage** on both chains. The Python SDK's `btx_hash160(preimage)` produces the
-identical 20-byte value for the BTX descriptor.
+Use the **same 32-byte preimage** on both chains. The Python SDK's `btx_sha256(preimage)` produces the
+identical 32-byte value for the BTX descriptor.
 
 ## BTX-side recipe (Model B)
 1. **Lock address (descriptor):**
    ```
-   mr(htlc_tx(<H160>, <claimer_pk>), refund(<locktime>, <sender_pk>))
+   mr(htlc_sha256(<SHA256>, <claimer_pk>), refund(<locktime>, <sender_pk>))
    ```
-   - `<H160>` = `RIPEMD160(SHA256(preimage))` (hex, 20 bytes).
+   - `<SHA256>` = `SHA256(preimage)` (hex, 32 bytes).
    - `<claimer_pk>` = the claimer's ML-DSA/SLH-DSA transaction-signing pubkey.
    - `<locktime>` = absolute BTX block height after which `<sender_pk>` may refund.
    Add the checksum with `getdescriptorinfo`, derive with `deriveaddresses`, import with
@@ -81,7 +81,7 @@ identical 20-byte value for the BTX descriptor.
    ```
    It assembles the HTLC leaf witness `<tx_sig> <preimage> <leaf_script> <control_block>`
    (the wallet produces a normal P2MR transaction-bound PQ signature and injects the
-   32-byte `hash160` preimage), signs, and returns the raw tx. Broadcast
+   32-byte `sha256` preimage), signs, and returns the raw tx. Broadcast
    it with `sendrawtransaction` — the preimage is now on-chain, so the counterparty can claim the EVM leg.
 5. **Refund (sender)** — after `<locktime>`, use the wallet RPC:
    ```

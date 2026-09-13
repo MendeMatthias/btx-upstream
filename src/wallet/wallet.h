@@ -526,6 +526,10 @@ private:
     /** Wallet name: relative directory name or "" for default wallet. */
     std::string m_name;
 
+    /** Last non-OK LoadRecords error. Distinguishes BIP68 csv descriptor
+     *  rejection from generic unknown-descriptor / corruption messages. */
+    std::string m_last_load_error;
+
     /** Internal database handle. */
     std::unique_ptr<WalletDatabase> m_database;
 
@@ -606,6 +610,9 @@ public:
     /** Get a name for this wallet for logging/debugging purposes.
      */
     const std::string& GetName() const { return m_name; }
+
+    const std::string& GetLastLoadError() const { return m_last_load_error; }
+    void SetLastLoadError(std::string error) { m_last_load_error = std::move(error); }
 
     typedef std::map<unsigned int, CMasterKey> MasterKeyMap;
     MasterKeyMap mapMasterKeys;

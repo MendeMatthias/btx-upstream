@@ -18,7 +18,7 @@ wBTX is a wrapped, EVM-native representation of BTX. Two bridging models ship to
   P2MR address; an M-of-N attestor set authorizes a mint of wBTX on the EVM chain; burning wBTX
   requests a BTX release. Contracts: `WBTX.sol`, `WBTXBridge.sol`, `ECDSAMultisigVerifier`.
 - **B — trustless HTLC atomic swap**. No custodian — both legs lock under the same hashlock
-  (`RIPEMD160(SHA256(preimage))`, byte-compatible with BTX's `OP_HASH160`); revealing the preimage to
+  (`SHA-256(preimage)`, byte-compatible with BTX's `OP_SHA256`); revealing the preimage to
   claim one leg exposes it for the other. Contract: `WBTXAtomicSwapHTLC.sol`.
 
 ```
@@ -97,12 +97,12 @@ constant-gas SNARK proving "≥M registered attestor PQ-signatures over the dige
 the bridge, the lock format, or the statement*. See [architecture §8](wbtx-bridge-architecture.md).
 
 ### 2.4 The atomic swap — `WBTXAtomicSwapHTLC` (Model B)
-`open(recipient, token, amount, hashlock, timeout, salt)` locks an ERC-20 under a 20-byte hashlock with
+`open(recipient, token, amount, hashlock, timeout, salt)` locks an ERC-20 under a 32-byte SHA-256 hashlock with
 **balance-delta accounting** (fee-on-transfer/USDT-safe) and an **in-contract, sender-bound swap id**
 (`computeId`, so it can't be squatted/front-run). `claim(id, preimage)` checks
-`RIPEMD160(SHA256(preimage)) == hashlock` and pays the recipient, **revealing the preimage on-chain**
+`SHA256(preimage) == hashlock` and pays the recipient, **revealing the preimage on-chain**
 for the BTX leg. `refund(id)` returns to the sender after `timeout`. The hashlock is byte-identical to
-BTX's `OP_HASH160` (verified: `0x42×32 → 8739f40ec4dbf569dcb38134c6e7310908566981`).
+BTX's `OP_SHA256` (verified: `0x42×32 → 425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c`).
 
 ---
 
@@ -177,8 +177,8 @@ one chain). No proxy ⇒ no initializer/storage-gap concerns.
 - **Signer rotation:** `rotateSigners(newSet, M)` via the Timelock; the old set is cleared.
 
 ### 5.3 Atomic-swap integrators (Model B, no federation)
-- **Build the BTX leg** as `mr(htlc_tx(<H160>, <claimerPk>), refund(<locktime>, <senderPk>))`
-  with `H160 = RIPEMD160(SHA256(preimage))`; lock the EVM leg via `WBTXAtomicSwapHTLC.open(...)` under
+- **Build the BTX leg** as `mr(htlc_sha256(<SHA256>, <claimerPk>), refund(<locktime>, <senderPk>))`
+  with `SHA256 = SHA256(preimage)`; lock the EVM leg via `WBTXAtomicSwapHTLC.open(...)` under
   the **same** `hashlock`. Assemble + import the lock with stock descriptor RPCs:
   `getdescriptorinfo` (add checksum) → `deriveaddresses` (the P2MR lock address) → `importdescriptors`
   (watch for the deposit), then `sendtoaddress` to fund it.

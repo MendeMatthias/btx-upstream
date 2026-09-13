@@ -872,7 +872,8 @@ struct Params {
     // is flag-day gated to keep upgraded/non-upgraded nodes in agreement until activation.
     int32_t nMatMulTimewarpReconcileHeight{std::numeric_limits<int32_t>::max()};
     // EncDr stall recovery (live 2026-08-24 height 199297). Struct default
-    // is INT32_MAX (inert). Mainnet chainparams sets 199299 with num/den 1/1.
+    // is INT32_MAX (inert). Mainnet chainparams also leave this INT32_MAX:
+    // the 199299 flag day was withdrawn after it split the network.
     // Setting a reachable height is a mandatory unsignalled hard fork even
     // at num/den 1/1: the rescale is ratio-gated, the ASERT re-anchor is not.
     //   1. one-shot ASERT rescale parent_target * num/den, then re-anchor

@@ -628,6 +628,26 @@ BOOST_AUTO_TEST_CASE(p2mr_metadata_weight_estimator_is_fail_closed_and_covers_po
             /*coin_control=*/nullptr),
         -1);
 
+    const auto htlc_sha256_script = BuildP2MRHTLCSha256Leaf(
+        std::vector<unsigned char>(32, 0x43), PQAlgorithm::SLH_DSA_128S, csfs_pubkey);
+    BOOST_REQUIRE(!htlc_sha256_script.empty());
+    auto htlc_sha256_fixture = MakeP2MRWeightFixture(htlc_sha256_script, /*depth=*/0);
+    const auto htlc_sha256_maximum = CalculateMaximumP2MRInputWeight(
+        htlc_sha256_fixture.script_pubkey, htlc_sha256_fixture.provider);
+    BOOST_REQUIRE(htlc_sha256_maximum);
+    CTxIn expected_htlc_sha256;
+    expected_htlc_sha256.scriptWitness.stack = {
+        std::vector<unsigned char>(SLHDSA128S_SIGNATURE_SIZE + 1),
+        std::vector<unsigned char>(32),
+        htlc_sha256_script,
+        htlc_sha256_fixture.control,
+    };
+    BOOST_CHECK_EQUAL(*htlc_sha256_maximum, GetTransactionInputWeight(expected_htlc_sha256));
+    BOOST_CHECK(!CalculateSelectedP2MRInputWeight(
+        htlc_sha256_fixture.script_pubkey, htlc_sha256_fixture.provider, PQAlgorithm::SLH_DSA_128S));
+    BOOST_CHECK(!HasGenericP2MRSigningPath(
+        htlc_sha256_fixture.script_pubkey, htlc_sha256_fixture.provider));
+
     // Missing, malformed, or root-inconsistent provider metadata must never
     // turn an unknown P2MR output into a solvable one.
     FlatSigningProvider empty_provider;

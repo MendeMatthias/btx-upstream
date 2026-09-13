@@ -1338,6 +1338,11 @@ void RecordDeferredReorgDepth(
     g_reorg_protection_last_deferred_unix.store(GetTime(), std::memory_order_relaxed);
 }
 
+void RefreshDeferredReorgHeartbeat()
+{
+    g_reorg_protection_last_deferred_unix.store(GetTime(), std::memory_order_relaxed);
+}
+
 TRACEPOINT_SEMAPHORE(validation, block_connected);
 TRACEPOINT_SEMAPHORE(utxocache, flush);
 TRACEPOINT_SEMAPHORE(mempool, replaced);
@@ -10337,6 +10342,14 @@ CBlockIndex* Chainstate::FindMostWorkChain()
                                 m_last_hysteresis_deferred_candidate = pindexNew;
                                 m_last_hysteresis_deferred_work_margin =
                                     hysteresis_work_margin;
+                            } else {
+                                // Keep mining-guard's deferred_reorg_watch
+                                // window armed for the still-open episode.
+                                // Recording only on new_episode left
+                                // last_deferred_unix frozen, so after
+                                // deferred_reorg_watch_seconds the guard
+                                // treated an unresolved deferral as healthy.
+                                RefreshDeferredReorgHeartbeat();
                             }
                         }
                         setBlockIndexCandidates.erase(pindexNew);

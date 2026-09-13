@@ -544,6 +544,48 @@ BOOST_AUTO_TEST_CASE(mr_descriptor_parses_transaction_bound_htlc_leaf)
     BOOST_CHECK(scripts[0] == BuildP2MROutput(root));
 }
 
+BOOST_AUTO_TEST_CASE(mr_descriptor_parses_sha256_htlc_leaf)
+{
+    const std::vector<unsigned char> sha256 = MakePattern(uint256::size(), 0x61);
+    const std::vector<unsigned char> claimant = MakePattern(MLDSA44_PUBKEY_SIZE, 0x62);
+    const std::string desc_str =
+        AddChecksum("mr(htlc_sha256(" + HexStr(sha256) + "," + HexStr(claimant) + "))");
+    const auto desc = ParseSingleDescriptor(desc_str);
+
+    std::vector<CScript> scripts;
+    FlatSigningProvider out;
+    BOOST_REQUIRE(desc->Expand(/*pos=*/0, DUMMY_SIGNING_PROVIDER, scripts, out));
+    BOOST_REQUIRE_EQUAL(scripts.size(), 1U);
+
+    const auto leaf_script =
+        BuildP2MRHTLCSha256Leaf(sha256, PQAlgorithm::ML_DSA_44, claimant);
+    const uint256 root =
+        ComputeP2MRMerkleRoot({ComputeP2MRLeafHash(P2MR_LEAF_VERSION, leaf_script)});
+    BOOST_CHECK(scripts[0] == BuildP2MROutput(root));
+}
+
+BOOST_AUTO_TEST_CASE(mr_descriptor_model_htlc_sha256_alias_canonicalizes)
+{
+    const std::vector<unsigned char> sha256 = MakePattern(uint256::size(), 0x63);
+    const std::vector<unsigned char> claimant = MakePattern(MLDSA44_PUBKEY_SIZE, 0x64);
+    const auto alias = ParseSingleDescriptor(
+        AddChecksum("mr(model_htlc_sha256(" + HexStr(sha256) + "," + HexStr(claimant) + "))"));
+    const auto canonical = ParseSingleDescriptor(
+        AddChecksum("mr(htlc_sha256(" + HexStr(sha256) + "," + HexStr(claimant) + "))"));
+
+    std::vector<CScript> alias_scripts;
+    std::vector<CScript> canonical_scripts;
+    FlatSigningProvider alias_out;
+    FlatSigningProvider canonical_out;
+    BOOST_REQUIRE(alias->Expand(/*pos=*/0, DUMMY_SIGNING_PROVIDER, alias_scripts, alias_out));
+    BOOST_REQUIRE(canonical->Expand(/*pos=*/0, DUMMY_SIGNING_PROVIDER, canonical_scripts, canonical_out));
+    BOOST_REQUIRE_EQUAL(alias_scripts.size(), 1U);
+    BOOST_REQUIRE_EQUAL(canonical_scripts.size(), 1U);
+    BOOST_CHECK(alias_scripts[0] == canonical_scripts[0]);
+    BOOST_CHECK(alias->ToString().find("htlc_sha256(") != std::string::npos);
+    BOOST_CHECK(alias->ToString().find("model_htlc_sha256") == std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(mr_descriptor_parses_refund_leaf)
 {
     const std::vector<unsigned char> spender = MakePattern(MLDSA44_PUBKEY_SIZE, 0x46);
@@ -616,11 +658,11 @@ BOOST_AUTO_TEST_CASE(mr_descriptor_parses_csv_multisig_leaf)
 
 BOOST_AUTO_TEST_CASE(mr_descriptor_parses_two_leaf_htlc_refund_tree)
 {
-    const std::vector<unsigned char> hash160 = MakePattern(uint160::size(), 0x47);
+    const std::vector<unsigned char> sha256 = MakePattern(uint256::size(), 0x47);
     const std::vector<unsigned char> oracle = MakePattern(MLDSA44_PUBKEY_SIZE, 0x48);
     const std::vector<unsigned char> spender = MakePattern(MLDSA44_PUBKEY_SIZE, 0x49);
     const std::string desc_str = AddChecksum(
-        "mr(htlc_tx(" + HexStr(hash160) + "," + HexStr(oracle) + "),refund(1024," + HexStr(spender) + "))");
+        "mr(htlc_sha256(" + HexStr(sha256) + "," + HexStr(oracle) + "),refund(1024," + HexStr(spender) + "))");
     const auto desc = ParseSingleDescriptor(desc_str);
 
     std::vector<CScript> scripts;
@@ -628,7 +670,7 @@ BOOST_AUTO_TEST_CASE(mr_descriptor_parses_two_leaf_htlc_refund_tree)
     BOOST_REQUIRE(desc->Expand(/*pos=*/0, DUMMY_SIGNING_PROVIDER, scripts, out));
     BOOST_REQUIRE_EQUAL(scripts.size(), 1U);
 
-    const auto htlc_leaf = BuildP2MRHTLCTxLeaf(hash160, PQAlgorithm::ML_DSA_44, oracle);
+    const auto htlc_leaf = BuildP2MRHTLCSha256Leaf(sha256, PQAlgorithm::ML_DSA_44, oracle);
     const auto refund_leaf = BuildP2MRRefundLeaf(/*timeout=*/1024, PQAlgorithm::ML_DSA_44, spender);
     const uint256 root = ComputeP2MRMerkleRoot({
         ComputeP2MRLeafHash(P2MR_LEAF_VERSION, htlc_leaf),
@@ -664,6 +706,20 @@ BOOST_AUTO_TEST_CASE(mr_descriptor_rejects_htlc_tx_wrong_hash_length)
     std::string error;
     const auto parsed = Parse(
         AddChecksum("mr(htlc_tx(" + bad_hash + "," + claimant + "))"),
+        provider,
+        error,
+        /*require_checksum=*/true);
+    BOOST_CHECK(parsed.empty());
+}
+
+BOOST_AUTO_TEST_CASE(mr_descriptor_rejects_htlc_sha256_wrong_hash_length)
+{
+    const std::string bad_hash = HexStr(MakePattern(uint256::size() - 1, 0x55));
+    const std::string claimant = HexStr(MakePattern(MLDSA44_PUBKEY_SIZE, 0x56));
+    FlatSigningProvider provider;
+    std::string error;
+    const auto parsed = Parse(
+        AddChecksum("mr(htlc_sha256(" + bad_hash + "," + claimant + "))"),
         provider,
         error,
         /*require_checksum=*/true);
@@ -907,6 +963,20 @@ BOOST_AUTO_TEST_CASE(mr_descriptor_roundtrip_timelocked_multisig_expressions)
     const std::string csv_expr = "mr(csv_sortedmulti_pq(144,1," + pk1 + ",pk_slh(" + pk2 + ")))";
     const auto csv_desc = ParseSingleDescriptor(AddChecksum(csv_expr));
     BOOST_CHECK_EQUAL(csv_desc->ToString(), AddChecksum(csv_expr));
+}
+
+BOOST_AUTO_TEST_CASE(mr_descriptor_rejects_non_bip68_csv_sequence)
+{
+    const std::string pk1 = HexStr(MakePattern(MLDSA44_PUBKEY_SIZE, 0x9A));
+    const std::string pk2 = HexStr(MakePattern(SLHDSA128S_PUBKEY_SIZE, 0x9B));
+    FlatSigningProvider provider;
+    std::string error;
+    const auto parsed = Parse(
+        AddChecksum("mr(csv_multi_pq(100000,1," + pk1 + ",pk_slh(" + pk2 + ")))"),
+        provider, error, /*require_checksum=*/true);
+    BOOST_CHECK(parsed.empty());
+    BOOST_CHECK(error.find("BIP68") != std::string::npos);
+    BOOST_CHECK(error.find("100000") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(mr_descriptor_checksum_validation)

@@ -2591,6 +2591,22 @@ static constexpr auto GPU_RETAIN_ATTESTATION_RETRY{std::chrono::seconds{2}};
            manual || noban;
 }
 
+/** Advertised NODE_NETWORK plus a matching header is not a replacement body
+ *  source. Only a peer that has actually delivered a BLOCK/CMPCTBLOCK/
+ *  BLOCKTXN counts, so only-source protection is not inverted by header-only
+ *  archives. Eligibility (GPU / NODE_NETWORK / manual / noban) still goes
+ *  through `may_serve_bodies`; that peer must also have served a body. */
+[[nodiscard]] inline bool PeerCountsAsAlternativeBodyDownloadSource(
+    bool may_serve_bodies,
+    bool signed_frontier_catch_up,
+    bool signed_frontier_body_source,
+    bool has_served_block)
+{
+    if (!may_serve_bodies) return false;
+    if (signed_frontier_catch_up && !signed_frontier_body_source) return false;
+    return has_served_block;
+}
+
 /** Root-first must not delete a fresh GETDATA because a second peer is
  *  eligible as a parallel owner. Live public CPU archive 2026-08-16: MayDuplicate
  *  (owners<2) called RemoveBlockRequest(nullopt); the GPU BLOCK then

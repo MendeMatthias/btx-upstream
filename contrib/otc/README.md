@@ -108,11 +108,11 @@ crypto↔crypto trades use the HTLC vault (identical shape and hashlock
 domain to the wBTX Model-B EVM leg, `contrib/wbtx`):
 
 ```python
-from btx_otc import (swap_vault_descriptor, new_preimage, swap_hash160_hex,
+from btx_otc import (swap_vault_descriptor, new_preimage, swap_sha256_hex,
                      build_swap_claim, build_swap_refund)
 
 secret = new_preimage()
-desc = swap_vault_descriptor(swap_hash160_hex(secret), buyer_pk,
+desc = swap_vault_descriptor(swap_sha256_hex(secret), buyer_pk,
                              refund_height, seller_pk)
 # buyer claims with the preimage (revealing it for the other chain's leg):
 raw = build_swap_claim(rpc_buyer, desc_ck, txid, vout, secret, buyer_dest)

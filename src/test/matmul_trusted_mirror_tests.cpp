@@ -1993,6 +1993,20 @@ BOOST_AUTO_TEST_CASE(above_frontier_and_parked_branch_do_not_admit)
     // Handshake-incomplete peer is never a target even if it would serve.
     BOOST_CHECK(!StalledTowerFetchPeerMayServeBodies(
         true, true, /*version_handshake_complete=*/false, false, false));
+    using node::matmul_trusted::PeerCountsAsAlternativeBodyDownloadSource;
+    // Header-only NODE_NETWORK is not a replacement body source.
+    BOOST_CHECK(!PeerCountsAsAlternativeBodyDownloadSource(
+        /*may_serve_bodies=*/true, /*signed_frontier_catch_up=*/false,
+        /*signed_frontier_body_source=*/false, /*has_served_block=*/false));
+    BOOST_CHECK(PeerCountsAsAlternativeBodyDownloadSource(
+        true, false, false, /*has_served_block=*/true));
+    BOOST_CHECK(!PeerCountsAsAlternativeBodyDownloadSource(
+        /*may_serve_bodies=*/false, false, false, true));
+    BOOST_CHECK(!PeerCountsAsAlternativeBodyDownloadSource(
+        true, /*signed_frontier_catch_up=*/true,
+        /*signed_frontier_body_source=*/false, true));
+    BOOST_CHECK(PeerCountsAsAlternativeBodyDownloadSource(
+        true, true, /*signed_frontier_body_source=*/true, true));
     using node::matmul_trusted::TrustedMirrorKeepFetchingCoveredUnconnected;
     BOOST_CHECK(TrustedMirrorKeepFetchingCoveredUnconnected(
         /*signed_frontier_catch_up=*/true,

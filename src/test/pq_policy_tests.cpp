@@ -969,6 +969,40 @@ BOOST_AUTO_TEST_CASE(p2mr_htlc_tx_witness_is_standard)
     BOOST_CHECK(IsWitnessStandard(CTransaction{tx_spend}, coins_cache, "", reason));
 }
 
+BOOST_AUTO_TEST_CASE(p2mr_htlc_sha256_witness_is_standard)
+{
+    CPQKey claimant_key;
+    claimant_key.MakeNewKey(PQAlgorithm::ML_DSA_44);
+    BOOST_REQUIRE(claimant_key.IsValid());
+
+    const std::vector<unsigned char> preimage(32, 0x42);
+    uint256 sha256;
+    CSHA256().Write(preimage.data(), preimage.size()).Finalize(sha256.begin());
+    const std::vector<unsigned char> sha256_bytes(sha256.begin(), sha256.end());
+    const std::vector<unsigned char> leaf_script = BuildP2MRHTLCSha256Leaf(
+        sha256_bytes, PQAlgorithm::ML_DSA_44, claimant_key.GetPubKey());
+    const uint256 leaf_hash = ComputeP2MRLeafHash(P2MR_LEAF_VERSION, leaf_script);
+    const uint256 merkle_root = ComputeP2MRMerkleRoot({leaf_hash});
+
+    const CMutableTransaction tx_credit =
+        BuildCreditingTransaction(BuildP2MROutput(merkle_root), /*nValue=*/50'000);
+    CMutableTransaction tx_spend =
+        BuildSpendingTransaction(CScript{}, CScriptWitness{}, CTransaction{tx_credit});
+    const auto witness =
+        BuildSignedSingleLeafP2MRWitness(tx_spend, tx_credit.vout.at(0), claimant_key, leaf_script);
+    BOOST_REQUIRE(witness.has_value());
+    tx_spend.vin.at(0).scriptWitness = *witness;
+    tx_spend.vin.at(0).scriptWitness.stack.insert(
+        tx_spend.vin.at(0).scriptWitness.stack.begin() + 1, preimage);
+
+    CCoinsView coins_view;
+    CCoinsViewCache coins_cache(&coins_view);
+    AddCoins(coins_cache, CTransaction{tx_credit}, /*nHeight=*/0);
+
+    std::string reason;
+    BOOST_CHECK(IsWitnessStandard(CTransaction{tx_spend}, coins_cache, "", reason));
+}
+
 BOOST_AUTO_TEST_CASE(p2mr_legacy_htlc_witness_is_nonstandard)
 {
     CPQKey claimant_key;

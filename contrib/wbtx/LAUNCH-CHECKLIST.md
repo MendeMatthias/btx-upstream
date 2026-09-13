@@ -71,7 +71,7 @@ Tests: `forge test` green; Python SDK selftests green.
 ## 4. Integrator / operator invariants (usage, documented in the SDKs)
 
 - Sign every escrow/HTLC spend with **SIGHASH_ALL** (never NONE/SINGLE/ANYONECANPAY).
-- Never reuse a **CSFS/oracle key** across contexts; prefer `htlc_tx()` over bare `csfs()`; bind CSFS
+- Never reuse a **CSFS/oracle key** across contexts; prefer `htlc_sha256()` over bare `csfs()`; bind CSFS
   messages to a unique per-contract context (terms hash / nonce / operation_id).
 - Treat a deposit/bond as real only at **≥ 100 confirmations** and non-RBF; `check_timeout_ordering()` is
   necessary-but-not-sufficient — the preimage-holder must fund the long (BTX) leg and claim the short leg first.

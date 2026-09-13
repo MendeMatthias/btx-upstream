@@ -1307,16 +1307,16 @@ contract HTLCTest is Test {
     }
 
     function test_HashDomainMatchesBTX() public view {
-        // BTX OP_HASH160 of 0x42*32 (verified against a BTX node) == 8739f40e...566981
+        // BTX OP_SHA256 of 0x42*32 == 425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c
         bytes memory pre = new bytes(32);
         for (uint i; i < 32; i++) pre[i] = 0x42;
-        assertEq(htlc.btxHash160(pre), bytes20(hex"8739f40ec4dbf569dcb38134c6e7310908566981"));
+        assertEq(htlc.btxSha256(pre), bytes32(hex"425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c"));
     }
 
     function test_ClaimWithPreimage() public {
         bytes memory pre = new bytes(32);
         for (uint i; i < 32; i++) pre[i] = 0x42;
-        bytes20 h = htlc.btxHash160(pre);
+        bytes32 h = htlc.btxSha256(pre);
         vm.startPrank(alice);
         token.approve(address(htlc), 100e18);
         bytes32 id = htlc.open(bob, address(token), 100e18, h, uint64(block.timestamp + 7 hours), bytes32("s"));
@@ -1327,7 +1327,7 @@ contract HTLCTest is Test {
     }
 
     function test_RefundAfterTimeout() public {
-        bytes20 h = bytes20(hex"8739f40ec4dbf569dcb38134c6e7310908566981");
+        bytes32 h = bytes32(hex"425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c");
         vm.startPrank(alice);
         token.approve(address(htlc), 100e18);
         bytes32 id = htlc.open(bob, address(token), 100e18, h, uint64(block.timestamp + 7 hours), bytes32("s"));
@@ -1341,7 +1341,7 @@ contract HTLCTest is Test {
     function test_ClaimRevertsWhenExpired() public {
         bytes memory pre = new bytes(32);
         for (uint i; i < 32; i++) pre[i] = 0x42;
-        bytes20 h = htlc.btxHash160(pre);
+        bytes32 h = htlc.btxSha256(pre);
 
         vm.startPrank(alice);
         token.approve(address(htlc), 100e18);
@@ -1355,7 +1355,7 @@ contract HTLCTest is Test {
     }
 
     function test_RefundAfterTimeoutAllowsThirdParty() public {
-        bytes20 h = bytes20(hex"8739f40ec4dbf569dcb38134c6e7310908566981");
+        bytes32 h = bytes32(hex"425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c");
         vm.startPrank(alice);
         token.approve(address(htlc), 100e18);
         bytes32 id = htlc.open(bob, address(token), 100e18, h, uint64(block.timestamp + 7 hours), bytes32("s-watchtower"));
@@ -1375,7 +1375,7 @@ contract HTLCTest is Test {
 
         bytes memory pre = new bytes(32);
         for (uint i; i < 32; i++) pre[i] = 0x42;
-        bytes20 h = htlc.btxHash160(pre);
+        bytes32 h = htlc.btxSha256(pre);
 
         vm.startPrank(alice);
         feeToken.approve(address(htlc), 100e18);
