@@ -51,7 +51,7 @@ target_link_libraries(bitcoin_wallet
     $<TARGET_NAME_IF_EXISTS:USDT::headers>
 )
 if(WITH_MODELNET)
-  target_sources(bitcoin_wallet PRIVATE model_payment.cpp)
+  target_sources(bitcoin_wallet PRIVATE model_payment.cpp model_funding.cpp)
   target_link_libraries(bitcoin_wallet PRIVATE bitcoin_modelnet)
 endif()
 

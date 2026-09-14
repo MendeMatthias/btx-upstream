@@ -5,6 +5,7 @@
 #include <modelnet/records.h>
 
 #include <modelnet/crypto.h>
+#include <modelnet/identity.h>
 #include <crypto/common.h>
 #include <span.h>
 #include <util/strencodings.h>
@@ -625,6 +626,57 @@ bool SigningMessage(uint8_t kind, const UniValue& body, Digest48& msg, std::stri
     payload.insert(payload.end(), net->begin(), net->end());
     payload.insert(payload.end(), rid.data.begin(), rid.data.end());
     msg = DomainHash("BTX/ModelExtensionSig/v1.1", payload);
+    return true;
+}
+
+void FillRecordCommon(UniValue& body, uint8_t signer_role, const Digest48& signer_id, int64_t now, int64_t ttl_s)
+{
+    if (now < 0) now = 0;
+    body.pushKV("ext_version", static_cast<int>(EXT_VERSION_V11));
+    body.pushKV("network", std::string(64, '0'));
+    body.pushKV("signer_role", signer_role);
+    body.pushKV("signer_id", signer_id.Hex());
+    body.pushKV("sequence", 1);
+    body.pushKV("issued_at", now);
+    body.pushKV("expires_at", ttl_s > 0 ? now + ttl_s : int64_t{0});
+}
+
+bool SignTypedRecord(uint8_t kind, const UniValue& body,
+                      Span<const unsigned char> sk,
+                      std::vector<unsigned char>& payload,
+                      std::vector<unsigned char>& sig,
+                      Digest48& record_id,
+                      std::string& err)
+{
+    if (!EncodeRecord(kind, body, payload, err)) return false;
+    if (!RecordId(kind, body, record_id, err)) return false;
+    Digest48 msg;
+    if (!SigningMessage(kind, body, msg, err)) return false;
+    return SignMlDsa44(sk, Span<const unsigned char>{msg.data.data(), msg.data.size()}, sig, err);
+}
+
+bool VerifyTypedRecord(uint8_t kind,
+                       Span<const unsigned char> payload,
+                       Span<const unsigned char> sig,
+                       Span<const unsigned char> pk,
+                       int64_t now,
+                       UniValue& body,
+                       Digest48& record_id,
+                       std::string& err)
+{
+    if (!DecodeRecord(kind, payload, body, err)) return false;
+    if (!RecordId(kind, body, record_id, err)) return false;
+    Digest48 msg;
+    if (!SigningMessage(kind, body, msg, err)) return false;
+    if (!VerifyMlDsa44(pk, Span<const unsigned char>{msg.data.data(), msg.data.size()}, sig)) {
+        err = "bad signature";
+        return false;
+    }
+    const int64_t exp = body.exists("expires_at") ? body["expires_at"].getInt<int64_t>() : 0;
+    if (exp && now > 0 && exp < now) {
+        err = "expired record";
+        return false;
+    }
     return true;
 }
 

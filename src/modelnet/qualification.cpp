@@ -9,7 +9,9 @@
 #include <util/strencodings.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <set>
 
 namespace modelnet {
@@ -24,6 +26,7 @@ const char* QualResultName(QualResult r)
     case QualResult::NOT_RUN_RESOURCE_LIMIT: return "NOT_RUN_RESOURCE_LIMIT";
     case QualResult::REJECTED_UNSAFE_FORMAT: return "REJECTED_UNSAFE_FORMAT";
     case QualResult::ENCRYPTED_UNQUALIFIED: return "ENCRYPTED_UNQUALIFIED";
+    case QualResult::NOT_RUN_CUDA_ISOLATION: return "NOT_RUN_CUDA_ISOLATION";
     }
     return "UNKNOWN";
 }
@@ -53,21 +56,26 @@ namespace {
 constexpr uint64_t MAX_ST_HEADER = 8ULL << 20;
 constexpr uint64_t MAX_TENSORS = 200000;
 
-QualResult QualifySafeTensors(Span<const unsigned char> bytes, QualReport& report)
+QualResult QualifySafeTensors(Span<const unsigned char> header_and_maybe_body, uint64_t file_size, QualReport& report)
 {
-    if (bytes.size() < 8) {
+    if (header_and_maybe_body.size() < 8) {
         report.detail = "truncated safetensors";
         report.result = QualResult::INVALID_MODEL;
         return report.result;
     }
-    const uint64_t hlen = ReadLE64(bytes.data());
+    const uint64_t hlen = ReadLE64(header_and_maybe_body.data());
     report.header_bytes = hlen;
-    if (hlen == 0 || hlen > MAX_ST_HEADER || 8 + hlen > bytes.size()) {
+    if (hlen == 0 || hlen > MAX_ST_HEADER || 8 + hlen > header_and_maybe_body.size()) {
         report.detail = "safetensors header size";
         report.result = QualResult::INVALID_MODEL;
         return report.result;
     }
-    std::string json(reinterpret_cast<const char*>(bytes.data() + 8), hlen);
+    if (8 + hlen > file_size) {
+        report.detail = "safetensors header size";
+        report.result = QualResult::INVALID_MODEL;
+        return report.result;
+    }
+    std::string json(reinterpret_cast<const char*>(header_and_maybe_body.data() + 8), hlen);
     if (json.find('\0') != std::string::npos) {
         report.detail = "NUL in header";
         report.result = QualResult::INVALID_MODEL;
@@ -113,7 +121,7 @@ QualResult QualifySafeTensors(Span<const unsigned char> bytes, QualReport& repor
         }
         const uint64_t begin = t["data_offsets"][0].getInt<uint64_t>();
         const uint64_t end = t["data_offsets"][1].getInt<uint64_t>();
-        if (end < begin || 8 + hlen + end > bytes.size()) {
+        if (end < begin || 8 + hlen + end > file_size) {
             report.detail = "tensor offset";
             report.result = QualResult::INVALID_MODEL;
             return report.result;
@@ -126,7 +134,7 @@ QualResult QualifySafeTensors(Span<const unsigned char> bytes, QualReport& repor
         report.result = QualResult::INVALID_MODEL;
         return report.result;
     }
-    if (max_end != bytes.size()) {
+    if (max_end != file_size) {
         report.detail = "trailing or missing tensor bytes";
         report.result = QualResult::INVALID_MODEL;
         return report.result;
@@ -188,7 +196,7 @@ QualResult QualifyBytes(const std::string& filename_hint, Span<const unsigned ch
         return report.result;
     }
     if (lower.ends_with(".safetensors") || (bytes.size() >= 8 && bytes[0] < 8 && bytes[1] == 0)) {
-        return QualifySafeTensors(bytes, report);
+        return QualifySafeTensors(bytes, bytes.size(), report);
     }
     if (lower.ends_with(".gguf") || (bytes.size() >= 4 && std::memcmp(bytes.data(), "GGUF", 4) == 0)) {
         return QualifyGGUF(bytes, report);
@@ -197,6 +205,181 @@ QualResult QualifyBytes(const std::string& filename_hint, Span<const unsigned ch
     report.detail = "unsupported model container";
     report.level = AdmissionLevel::FAILED;
     return report.result;
+}
+
+QualResult QualifyFile(const std::string& path, QualReport& report)
+{
+    report = {};
+    const auto lower = ToLower(path);
+    if (LooksLikeExecutable(path, Span<const unsigned char>{})) {
+        report.result = QualResult::REJECTED_UNSAFE_FORMAT;
+        report.detail = "rejected pickle/executable/script format";
+        report.level = AdmissionLevel::FAILED;
+        return report.result;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        report.result = QualResult::INVALID_MODEL;
+        report.detail = "cannot open";
+        report.level = AdmissionLevel::FAILED;
+        return report.result;
+    }
+    in.seekg(0, std::ios::end);
+    const std::streamoff sz = in.tellg();
+    if (sz < 0) {
+        report.result = QualResult::INVALID_MODEL;
+        report.detail = "stat failed";
+        return report.result;
+    }
+    const uint64_t file_size = static_cast<uint64_t>(sz);
+    in.seekg(0);
+    unsigned char magic[24]{};
+    const size_t want = std::min<uint64_t>(file_size, 24);
+    in.read(reinterpret_cast<char*>(magic), static_cast<std::streamsize>(want));
+    const auto prefix = Span<const unsigned char>{magic, static_cast<size_t>(in.gcount())};
+    if (LooksLikePickle(prefix) || LooksLikeExecutable(path, prefix)) {
+        report.result = QualResult::REJECTED_UNSAFE_FORMAT;
+        report.detail = "rejected pickle/executable/script format";
+        report.level = AdmissionLevel::FAILED;
+        return report.result;
+    }
+    if (prefix.size() >= 8 && std::memcmp(magic, "BTXENC2", 7) == 0) {
+        report.result = QualResult::ENCRYPTED_UNQUALIFIED;
+        report.level = AdmissionLevel::ENCRYPTED_UNQUALIFIED;
+        report.detail = "ciphertext only; not a plaintext model check";
+        return report.result;
+    }
+    if (lower.ends_with(".gguf") || (prefix.size() >= 4 && std::memcmp(magic, "GGUF", 4) == 0)) {
+        std::vector<unsigned char> head(prefix.begin(), prefix.end());
+        return QualifyGGUF(head, report);
+    }
+    if (lower.ends_with(".safetensors") || (prefix.size() >= 2 && magic[1] == 0)) {
+        if (file_size < 8) {
+            report.result = QualResult::INVALID_MODEL;
+            report.detail = "truncated safetensors";
+            return report.result;
+        }
+        const uint64_t hlen = ReadLE64(magic);
+        if (hlen == 0 || hlen > MAX_ST_HEADER || 8 + hlen > file_size) {
+            report.result = QualResult::INVALID_MODEL;
+            report.detail = "safetensors header size";
+            return report.result;
+        }
+        std::vector<unsigned char> buf(8 + static_cast<size_t>(hlen));
+        in.clear();
+        in.seekg(0);
+        in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+        if (static_cast<uint64_t>(in.gcount()) != buf.size()) {
+            report.result = QualResult::INVALID_MODEL;
+            report.detail = "truncated safetensors header";
+            return report.result;
+        }
+        return QualifySafeTensors(buf, file_size, report);
+    }
+    report.result = QualResult::REJECTED_UNSAFE_FORMAT;
+    report.detail = "unsupported model container";
+    report.level = AdmissionLevel::FAILED;
+    return report.result;
+}
+
+int ValidatorGpuIndex()
+{
+    if (const char* env = std::getenv("BTX_VALIDATOR_GPU")) {
+        int32_t parsed = 0;
+        if (ParseInt32(env, &parsed) && parsed >= 0) {
+            return parsed;
+        }
+    }
+    return DEFAULT_MINING_GPU_INDEX;
+}
+
+bool IsValidatorOrMiningGpu(int gpu_index)
+{
+    return gpu_index == DEFAULT_MINING_GPU_INDEX || gpu_index == ValidatorGpuIndex();
+}
+
+bool ModelCudaQualifyKernelCompiled()
+{
+#ifdef BTX_MODEL_CUDA_QUALIFY_COMPILE
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool ModelWorkTakesConsensusLock()
+{
+    return false;
+}
+
+bool ModelWorkMayStarveExactReplay()
+{
+    return false;
+}
+
+namespace {
+
+QualResult FinishNotRun(QualReport& report, QualResult result, std::string detail)
+{
+    report.result = result;
+    report.level = AdmissionLevel::NOT_RUN_RESOURCE_LIMIT;
+    report.detail = std::move(detail);
+    return result;
+}
+
+#ifdef BTX_MODEL_CUDA_QUALIFY_COMPILE
+// Dedicated qualification worker only. Default btxd / test_btx do not define
+// this macro, so this stub is not compiled and libcuda is not required.
+// Even when compiled, this revision does not cudaSetDevice or launch a kernel:
+// a mis-set -modelgpu must never touch the live mining GPU from in-process code.
+QualResult RunIsolatedCudaQualKernel(int gpu_index, QualReport& report)
+{
+    (void)gpu_index;
+    return FinishNotRun(report, QualResult::NOT_RUN_CUDA_ISOLATION,
+                        "BTX_MODEL_CUDA_QUALIFY_COMPILE worker stub is in-process and still does not cudaSetDevice");
+}
+#endif
+
+} // namespace
+
+QualResult QualifyRuntime(const std::string& path, const QualRuntimeOpts& opts, QualReport& report)
+{
+    const QualResult static_q = QualifyFile(path, report);
+    if (static_q != QualResult::STRUCTURE_VERIFIED && static_q != QualResult::PROFILE_VERIFIED) {
+        return static_q;
+    }
+
+    if (!opts.runtime_check) {
+        return FinishNotRun(report, QualResult::NOT_RUN_CUDA_ISOLATION,
+                            "-modelruntimecheck=0 (default); CUDA runtime qualification not run; "
+                            "cuda_qualification remains false");
+    }
+
+    if (!opts.gpu_index.has_value()) {
+        return FinishNotRun(report, QualResult::NOT_RUN_RESOURCE_LIMIT,
+                            "operator must set -modelgpu to a non-validator device; "
+                            "qualification does not inherit the validator/mining GPU");
+    }
+
+    const int gpu = *opts.gpu_index;
+    if (gpu < 0) {
+        return FinishNotRun(report, QualResult::NOT_RUN_RESOURCE_LIMIT,
+                            "operator must set -modelgpu to a non-validator device");
+    }
+
+    if (!opts.allow_validator_gpu && IsValidatorOrMiningGpu(gpu)) {
+        return FinishNotRun(report, QualResult::NOT_RUN_CUDA_ISOLATION,
+                            "refusing validator/mining GPU (device 0 default, or BTX_VALIDATOR_GPU); "
+                            "never cudaSetDevice on that index");
+    }
+
+#ifdef BTX_MODEL_CUDA_QUALIFY_COMPILE
+    return RunIsolatedCudaQualKernel(gpu, report);
+#else
+    return FinishNotRun(report, QualResult::NOT_RUN_RESOURCE_LIMIT,
+                        "CUDA qualification kernel is not compiled "
+                        "(BTX_MODEL_CUDA_QUALIFY_COMPILE unset); libcuda not required");
+#endif
 }
 
 } // namespace modelnet

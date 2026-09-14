@@ -14,9 +14,11 @@ add_library(bitcoin_modelnet STATIC
   resource_uri.cpp
   records.cpp
   policy.cpp
+  firstrun.cpp
   protocol.cpp
   store.cpp
   swarm.cpp
+  free_grant.cpp
   router.cpp
   transport_pq.cpp
   bridge.cpp
@@ -25,7 +27,14 @@ add_library(bitcoin_modelnet STATIC
   qualification.cpp
   identity.cpp
   acl.cpp
+  access_policy.cpp
+  community.cpp
+  reciprocity.cpp
   http_bridge.cpp
+  cores.cpp
+  catalog.cpp
+    helper.cpp
+    pq1_runtime.cpp
 )
 target_link_libraries(bitcoin_modelnet
   PUBLIC
@@ -37,6 +46,7 @@ target_link_libraries(bitcoin_modelnet
     bitcoinpqc
     OpenSSL::SSL
     OpenSSL::Crypto
+    Threads::Threads
 )
 target_include_directories(bitcoin_modelnet
   PUBLIC
@@ -61,4 +71,13 @@ else()
   target_link_libraries(btx-modelcheck bitcoin_modelnet)
 endif()
 
-install(TARGETS btx-modeld btx-modelcheck RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+add_executable(btx-open ../btx-open.cpp)
+set_target_properties(btx-open PROPERTIES OUTPUT_NAME btx-open)
+target_link_libraries(btx-open core_interface)
+if(UNIX AND NOT APPLE)
+  target_link_btx_linux_archive_group(btx-open bitcoin_modelnet ${BTX_BASE_ARCHIVES})
+else()
+  target_link_libraries(btx-open bitcoin_modelnet)
+endif()
+
+install(TARGETS btx-modeld btx-modelcheck btx-open RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

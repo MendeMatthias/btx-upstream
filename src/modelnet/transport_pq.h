@@ -38,6 +38,9 @@ public:
     bool LoadSelfSignedMlDsa(const std::string& cert_pem, const std::string& key_pem, std::string& err);
 };
 
+/** Pin TLS 1.3 / MLKEM768 / AES-256-GCM-SHA384 / mldsa44 on an SSL_CTX. */
+bool PinPq1SslCtx(void* ssl_ctx, std::string& err);
+
 bool InspectNegotiated(void* ssl, NegotiatedPq1& out);
 bool IsStrictPq1(const NegotiatedPq1& n);
 bool HandshakePair(Pq1Context& server, Pq1Context& client, NegotiatedPq1& negotiated, std::string& err);

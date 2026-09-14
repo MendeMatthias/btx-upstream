@@ -63,6 +63,7 @@ constexpr uint16_t EXT_VERSION_V11 = 257; // 0x0101
 constexpr int64_t MAX_MONEY_ATOMS = 21000000LL * 100000000LL;
 constexpr int64_t DAY_SECONDS = 86400;
 constexpr uint64_t MIB = uint64_t{1} << 20;
+constexpr uint64_t GIB = uint64_t{1} << 30;
 constexpr size_t PIECE_SIZE = 4U << 20;
 constexpr size_t MAX_URI_INPUT = 512;
 

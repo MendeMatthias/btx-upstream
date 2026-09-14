@@ -7,6 +7,8 @@
 
 #include <modelnet/types.h>
 #include <span.h>
+#include <univalue.h>
+#include <util/fs.h>
 
 #include <string>
 #include <vector>
@@ -30,6 +32,9 @@ struct ReleaseCampaign {
 
 Hash32 ReleaseHash(Span<const unsigned char> secret32);
 bool ValidRefundWindow(uint32_t latest_funding, uint32_t min_conf, uint32_t claim_margin, uint32_t refund_height);
+UniValue CampaignToJson(const ReleaseCampaign& c);
+bool LoadCampaigns(const fs::path& dir, std::vector<ReleaseCampaign>& out, std::string& err);
+bool SaveCampaigns(const fs::path& dir, const std::vector<ReleaseCampaign>& campaigns, std::string& err);
 
 } // namespace modelnet
 

@@ -8,6 +8,10 @@ reduced-data transaction constraints (BIP 110-style) from genesis, and
 implements **Dandelion++ transaction relay** (BIP 156) for network-layer
 anonymity.
 
+A BTX node already has compute. The 0.34.7 Native Model Network delivers
+**models and optional payment** to that node. Inference is **local after
+acquisition**. BTX is not a remote inference marketplace.
+
 A **shielded transaction pool** with lattice-based confidential transactions
 operated from genesis and was **closed at height 199300**. The remaining
 shielded balance is treated as burned. Nodes past that height do not maintain
@@ -18,9 +22,13 @@ infrastructure, and test suites.
 
 ## 0.34.1 is the base reference. This is a handover.
 
-**v0.34.1 is the base reference implementation.** Further enhancements,
-features, and releases are expected to come from **community forks and
-modifications, not from this repository.** That is a handover, not a roadmap.
+**v0.34.1 is the base reference implementation.** Further monetary-consensus
+enhancements, features, and releases are expected to come from **community
+forks and modifications, not from this repository.** That is a handover, not
+a roadmap. The 0.34.7 Native Model Network is an **isolated in-tree plane**
+on the 0.34.6 monetary baseline: it does not change ExactReplay, issuance, or
+fork choice, and it does not revoke this handover. See
+[Native Model Network (0.34.7)](#native-model-network-0347).
 
 The two documents that make the handover real, rather than a slogan:
 
@@ -126,6 +134,7 @@ datadir.
 
 - [Release notes](doc/release-notes.md)
 - [0.34.5 convergence notes](doc/release-notes/release-notes-0.34.5.md)
+- [0.34.7 Native Model Network (draft / RC)](doc/release-notes/release-notes-0.34.7.md) — isolated model plane; not a monetary `CLIENT_VERSION` bump
 - [GitHub releases](https://github.com/btxchain/btx/releases) — Linux CPU, Linux CUDA, macOS arm64 Metal
 - [AssumeUTXO snapshot 201500](https://github.com/btxchain/btx/releases/tag/assumeutxo-201500) (`btx-assumeutxo-201500.dat` SHA256 `08c52c8b34e878c4d48546cfec066bc48fceed51d7287b4ff7ec7b5727cf52c7`)
 
@@ -210,6 +219,7 @@ feature, not a live surface. See [Shielded Pool](#shielded-pool).
 - [GPU-verified network (three-phase)](#gpu-verified-network-three-phase)
 - [Chain Parameters](#chain-parameters)
 - [MatMul Proof of Work](#matmul-proof-of-work)
+- [Native Model Network (0.34.7)](#native-model-network-0347)
 - [Post-Quantum Cryptography](#post-quantum-cryptography)
 - [Shielded Pool](#shielded-pool)
 - [Dandelion++ Transaction Relay](#dandelion-transaction-relay)
@@ -343,9 +353,11 @@ MatMul PoW is an AI-infrastructure-friendly proof of work based on the paper
 
 Instead of brute-force hashing, miners perform matrix multiplications over a
 Mersenne prime field (q = 2^31 - 1). The core work unit — large dense matrix
-multiplication — is the same operation that dominates GPU and TPU workloads for
-AI/ML training and inference, making the mining hardware directly reusable for
-productive computation.
+multiplication — is the same operation that dominates GPU workloads for
+training and **local** inference. That is why a BTX node already has
+compute. The 0.34.7 Native Model Network then **delivers models and
+optional payment** to that node. BTX does not sell remote inference and
+does not expose an inference endpoint.
 
 > **MatMul v4.7 Resident Curriculum — Epoch A is live at height 185000.**
 > The implementation preserves the 182-byte digest-only header and a
@@ -494,6 +506,30 @@ Total serialized header: ~182 bytes.
 
 For the full MatMul PoW specification, see
 [doc/btx-matmul-pow-spec.md](doc/btx-matmul-pow-spec.md).
+
+---
+
+## Native Model Network (0.34.7)
+
+**A BTX node already has compute. BTX gives it models and money.**
+
+Share a compact `btx://` URI, retrieve the exact artifact **free-first**,
+verify SHA-384 / chunk proofs, and use it **locally**. Optional BTX
+payments settle scarce delivery or public release. They are not an
+admission charge to research, not a remote-inference tariff, and not a
+consensus privilege.
+
+- Isolated helper `btx-modeld` (strict PQ1 or fail closed). Monetary
+  `btxd` stays up if the helper dies.
+- Default automatic spend is **zero**. `FREE_ONLY` never becomes paid
+  because a timer expired.
+- Model ACL, seeding, and relays never write BanMan, AddrMan, or fork
+  choice.
+- Remote/paid inference is **off the roadmap**.
+
+Operator and researcher docs: [doc/modelnet/README.md](doc/modelnet/README.md).
+Draft notes: [doc/release-notes/release-notes-0.34.7.md](doc/release-notes/release-notes-0.34.7.md).
+This plane does not authorize a `CLIENT_VERSION` bump by itself.
 
 ---
 
@@ -865,6 +901,7 @@ branch, use the files in `contrib/prebuilt/windows/`.
 | `BUILD_BENCH` | OFF | Build benchmark binary |
 | `ENABLE_WALLET` | ON | Enable wallet support |
 | `WITH_SQLITE` | auto | SQLite wallet backend |
+| `WITH_MODELNET` | ON | Native Model Network (`btx-modeld`, `btx-modelcheck`, `btx-open`). Needs OpenSSL 3.5+ with ML-KEM-768 / ML-DSA-44 for the helper. Monetary-only: `-DWITH_MODELNET=OFF`. |
 
 ### Platform-Specific Guides
 

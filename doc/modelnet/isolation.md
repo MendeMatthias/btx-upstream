@@ -20,3 +20,6 @@ artifact endpoints into AddrMan.
 
 Model ACL deny lists do not BanMan a valid monetary peer. CPU-only model
 relays have zero monetary-consensus authority.
+
+Hosting can make a node useful and economically sustainable. An additional
+host is not automatically an additional independent monetary validator.

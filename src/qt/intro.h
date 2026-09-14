@@ -9,6 +9,7 @@
 #include <QMutex>
 #include <QThread>
 
+#include <cstdint>
 #include <memory>
 
 static const bool DEFAULT_CHOOSE_DATADIR = false;
@@ -40,6 +41,13 @@ public:
     void setDataDirectory(const QString &dataDir);
     int64_t getPruneMiB() const;
     QString getAssumeValid() const;
+
+    /** First-run Model Network storage. 0 = no payload. */
+    uint64_t getModelStorageBytes() const;
+    /** ParseModelBytes-compatible token (`0`, `500GiB`). */
+    QString getModelStorageArg() const;
+    bool getDemandSeedChecked() const;
+    bool getPreserveRareChecked() const;
 
     /**
      * Determine data directory. Let the user choose if the current one doesn't exist.

@@ -23,7 +23,9 @@
 #include <QSettings>
 #include <QMessageBox>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 /* Check free space asynchronously to prevent hanging the UI thread.
 
@@ -159,6 +161,12 @@ Intro::Intro(QWidget *parent, int64_t blockchain_size_gb, int64_t chain_state_si
     ui->lblPruneSuffix->setToolTip(ui->prune->toolTip());
     UpdatePruneLabels(ui->prune->checkState() == Qt::Checked);
 
+    ui->modelStorageSpin->setRange(0, 1048576);
+    ui->modelStorageSpin->setValue(500);
+    ui->modelStorageUnit->setCurrentIndex(1); // GiB
+    ui->modelDemandSeed->setChecked(true);
+    ui->modelPreserveRare->setChecked(true);
+
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 7, 0))
     connect(ui->prune, &QCheckBox::checkStateChanged, [this](const Qt::CheckState prune_state) {
 #else
@@ -255,6 +263,41 @@ QString Intro::getAssumeValid() const
         return QStringLiteral("0");
     }
     return ui->assumevalidBlock->text();
+}
+
+uint64_t Intro::getModelStorageBytes() const
+{
+    const uint64_t n = static_cast<uint64_t>(std::max(0, ui->modelStorageSpin->value()));
+    uint64_t mul = 1024ULL * 1024ULL * 1024ULL;
+    switch (ui->modelStorageUnit->currentIndex()) {
+    case 0: mul = 1024ULL * 1024ULL; break;
+    case 1: mul = 1024ULL * 1024ULL * 1024ULL; break;
+    case 2: mul = 1024ULL * 1024ULL * 1024ULL * 1024ULL; break;
+    default: break;
+    }
+    if (n != 0 && n > std::numeric_limits<uint64_t>::max() / mul) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    return n * mul;
+}
+
+QString Intro::getModelStorageArg() const
+{
+    const int n = std::max(0, ui->modelStorageSpin->value());
+    if (n == 0) return QStringLiteral("0");
+    static const char* units[] = {"MiB", "GiB", "TiB"};
+    const int idx = std::clamp(ui->modelStorageUnit->currentIndex(), 0, 2);
+    return QString::number(n) + QLatin1String(units[idx]);
+}
+
+bool Intro::getDemandSeedChecked() const
+{
+    return ui->modelDemandSeed->isChecked();
+}
+
+bool Intro::getPreserveRareChecked() const
+{
+    return ui->modelPreserveRare->isChecked();
 }
 
 bool Intro::showIfNeeded(std::unique_ptr<Intro>& intro)

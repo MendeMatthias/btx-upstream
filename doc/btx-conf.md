@@ -90,3 +90,29 @@ To use the generated configuration file, copy the example file into your data di
 # example copy command for linux user
 cp share/examples/btx.conf ~/.btx
 ```
+
+## Native Model Network (`btxd` bridge)
+
+Model-plane options are optional. A validating node does not need them.
+`btxd` never starts `btx-modeld`; run the helper as a **separate process**.
+If the helper dies, model RPCs fail closed and the chain continues.
+
+Copy and edit the dedicated example (not the generated `share/examples/btx.conf`):
+
+```
+cp share/examples/modelnet.conf.example ~/.btx/modelnet.conf
+# optional: includeconf=modelnet.conf
+```
+
+| Option | Role |
+|---|---|
+| `modelnet=1` | Enable the introduction bridge so model RPCs proxy to the helper. Default **off**. |
+| `modelrpcsocket=<path>` | Unix socket for helper JSON-RPC (default `<datadir>/modelnet/modeld.sock`). |
+| `modelrelay=1` | CPU-only model discovery relay hint; requires `modelnet=1`. Not monetary AddrMan. |
+| `modelhost=1` | Advertise a public model-serving hint; requires a running helper and explicit endpoint. |
+
+Helper-only flags (`modeldir`, `modelstorage`/`modelcache`, `modelseed`,
+`modelpreserverare`, `modelbind`, `modeltransport=pq1`,
+`modeltlscert`, `modeltlskey`, …) belong on the **`btx-modeld`** command line.
+See [share/examples/modelnet.conf.example](../share/examples/modelnet.conf.example)
+and [modelnet/architecture.md](modelnet/architecture.md).

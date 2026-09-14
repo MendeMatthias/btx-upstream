@@ -114,6 +114,36 @@ Useful operational additions in the current BTX RPC surface:
   reports registry status, health, and quarantine details for shared redeem
   stores.
 
+## Native Model Network RPCs
+
+When built with `-DWITH_MODELNET=ON` (default), `btxd` exposes model-plane
+JSON-RPC methods that **proxy** to `btx-modeld` over `-modelrpcsocket` (default
+`<datadir>/modelnet/modeld.sock`). `btxd` never starts the helper. If the helper
+is down, PQ1 is unavailable, or the store is corrupt, model RPCs **fail closed**
+with an error; monetary RPCs, P2P, and chain validation continue unchanged.
+
+Product contract: a BTX node already has compute; BTX gives it models and
+money. Inference is **local after acquire** — there is no inference endpoint,
+inference seller, or cloud fallback on this RPC surface. Fresh-install defaults
+include **automatic spend 0**; `FREE_ONLY` retrieval never becomes paid because
+a timer expired. Unsolicited fetch of advertised models stays off until
+`preserve_rare`. After a positive storage budget, demand-seed is the default
+(`getmodelpolicy` / [modelnet/propagation.md](modelnet/propagation.md)).
+
+Catalogue and semantics: [modelnet/rpc.md](modelnet/rpc.md). Peer HTTP
+(` /btx-model/2/`): [modelnet/http.md](modelnet/http.md). Isolation from
+BanMan, AddrMan, fork choice, ExactReplay, and issuance:
+[modelnet/isolation.md](modelnet/isolation.md).
+
+Campaign-style funding and SHA-256 HTLC claim/refund for model releases **reuse
+the 0.34.6 wallet HTLC RPCs** (`buildhtlcclaim`, `buildhtlcrefund`, etc.); they
+are not a separate inference-payment API. Model-specific HTLC builder RPCs listed
+in the catalogue remain honest `NOT_IMPLEMENTED` until wired.
+
+Enable the introduction bridge with `-modelnet=1` only when you intend to use
+model RPCs through `btxd`; researchers may call the helper unix socket directly
+without a synced chain.
+
 ## Parameter passing
 
 The JSON-RPC server supports both _by-position_ and _by-name_ [parameter

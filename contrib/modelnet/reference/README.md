@@ -1,5 +1,8 @@
 # New v1.1 reference checks
 
+A BTX node already has compute; BTX gives it models and money — inference is
+local after acquire, not a remote inference marketplace.
+
 Run `python -m unittest -v test_v11` in this directory. Standard Python 3.10+ is sufficient.
 
 `reference_v11.py` implements the specified compact URI wrapper, canonical extension-body codec, domain hashes and small local-policy examples. `record-layouts.json` is a machine-readable ordered field register. `test_v11.py` checks these examples, including every single-symbol mutation of one 85-character token.

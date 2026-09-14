@@ -39,6 +39,9 @@ bool ChoosePlan(RetrievalMode mode,
                 PlanChoice& out,
                 std::string& err);
 
+/** False if any argument is negative, outstanding+additional > ceiling, or the sum overflows MAX_MONEY_ATOMS. */
+bool ExposureWithinCeiling(int64_t outstanding_atoms, int64_t additional_atoms, int64_t ceiling);
+
 AclDecision DecideAcl(bool crypto_ok,
                        bool hard_limit_ok,
                        bool local_deny,
@@ -59,6 +62,10 @@ class ReciprocityLedger {
     std::set<std::tuple<std::string, int, int>> m_seen; // artifact,file,piece
 
 public:
+    /** ReciprocityLedger never includes, constructs, or writes BanMan/AddrMan. */
+    static constexpr bool TOUCHES_BANMAN = false;
+    static constexpr bool TOUCHES_ADDRMAN = false;
+
     bool Received(const std::string& peer,
                   const std::string& artifact,
                   int file,
@@ -68,11 +75,34 @@ public:
                   bool verified,
                   bool needed,
                   bool paid,
-                  int observed_sources);
+                  int observed_sources,
+                  bool unsolicited = false);
+    /** Third-party/self-reported receipts never mint useful-free credit. */
+    bool CreditThirdPartyReceipt(const std::string& peer, int64_t nbytes, int64_t when);
     int64_t Effective(const std::string& peer, int64_t now) const;
     int Weight(const std::string& peer, int64_t now) const;
     UniValue Snapshot() const;
     bool Load(const UniValue& obj, std::string& err);
+
+    bool TouchesBanMan() const { return false; }
+    bool TouchesAddrMan() const { return false; }
+    bool ClonesCreditOnKeyRotation() const { return false; }
+    int64_t AutomaticSpendAtoms() const { return 0; }
+};
+
+/** Per-key/day, per-netgroup/hour, and aggregate bootstrap caps. */
+class BootstrapLimiter {
+    int64_t m_aggregate_cap{0};
+    int64_t m_aggregate_used{0};
+    std::map<std::string, int64_t> m_key_day;
+    std::map<std::string, int64_t> m_group_hour;
+
+public:
+    static constexpr int64_t PER_KEY_DAY = int64_t{256} << 20;
+    static constexpr int64_t GROUP_HOUR = int64_t{1} << 30;
+
+    explicit BootstrapLimiter(int64_t aggregate_cap_bytes) : m_aggregate_cap(aggregate_cap_bytes) {}
+    bool Allow(const std::string& service_id, const std::string& netgroup, int64_t bytes);
 };
 
 std::vector<std::string> LaneSequence(const std::map<std::string, int>& backlogs, int quanta);
@@ -85,20 +115,105 @@ struct ReciprocityStatus {
 
 TrustLabel ClassifyPeer(int64_t effective_bytes, int successful_sessions, int invalid_pieces, bool blocked, bool preferred, bool trusted);
 
+enum class SeedMode : uint8_t {
+    OFF = 0,
+    MANUAL = 1,
+    AUTO = 2,
+};
+
+const char* SeedModeName(SeedMode mode);
+bool SeedModeFromName(const std::string& name, SeedMode& out);
+
 struct PreservationPolicy {
-    bool seed_upon_download{false};
+    SeedMode seed_mode{SeedMode::AUTO};
+    /** B0 alias of seed_mode==AUTO. Not an independent opt-in; ShouldDemandSeed ignores it. */
+    bool seed_upon_download{true};
     double giveback_ratio{1.0};
     int64_t retain_seconds{7 * DAY_SECONDS};
     uint64_t storage_quota_bytes{0};
     uint64_t upload_bps{0};
     bool preserve_rare{false};
+    bool allow_encrypted{false};
 };
+
+/** True when the local give-back target/time is met. Never invents download demand. */
+bool GiveBackComplete(const PreservationPolicy& p,
+                      int64_t useful_served,
+                      int64_t useful_received,
+                      int64_t started_at,
+                      int64_t now);
 
 enum class EvictClass : uint8_t {
     EXPIRED_CIPHERTEXT = 0,
-    UNPINNED_LRU = 1,
-    PINNED = 2,
+    COMMON_UNPINNED = 1,
+    DEMAND_SEEDED = 2,
+    RARE_SEEDED = 3,
+    PINNED = 4,
 };
+
+/** Parse 85899345920, 80GiB, 500G. Binary prefixes (1024). Empty/invalid fails. */
+bool ParseModelBytes(const std::string& in, uint64_t& out, std::string& err);
+
+/** Demand-seed after an intentional import/retrieve.
+ *  True iff quota > 0 and seed_mode==AUTO. FAILED admission refuses.
+ *  seed_upon_download is a B0 alias only; it is not a second gate. */
+bool ShouldDemandSeed(const PreservationPolicy& p, AdmissionLevel admission);
+
+/** Unsolicited fetch of a model the operator did not request. */
+bool MayPreserveFetch(const PreservationPolicy& p, AdmissionLevel admission, bool encrypted,
+                       int observed_sources, uint64_t bytes, uint64_t spare_bytes);
+
+struct PreserveCandidate {
+    Digest48 model_id;
+    uint64_t bytes{0};
+    int observed_sources{0};
+    AdmissionLevel admission{AdmissionLevel::DISCOVERED};
+    bool encrypted{false};
+    std::string peer;
+};
+
+/** Deterministic preserve-rare jitter: hash(model_id.Hex() || now/300). now==0 uses bucket 0. */
+uint64_t PreserveRareJitterScore(const Digest48& model_id, int64_t now);
+
+/** Pick at most one under-replicated qualified public model that fits spare quota.
+ *  Primary order: fewer observed_sources, then fewer bytes. Full ties keep first when now==0;
+ *  when now!=0 they break with PreserveRareJitterScore (5-minute buckets). */
+bool SelectPreserveRare(const std::vector<PreserveCandidate>& observed,
+                        const std::set<Digest48>& local,
+                        uint64_t spare_bytes,
+                        const PreservationPolicy& p,
+                        PreserveCandidate& out,
+                        int64_t now = 0);
+
+struct EvictItem {
+    Digest48 model_id;
+    Digest48 artifact_id;
+    bool pinned{false};
+    bool seeded{false};
+    int observed_sources{0};
+    uint64_t bytes{0};
+};
+
+/** Lower is evicted first. Pinned is never selected. */
+int EvictPriority(const EvictItem& item);
+
+UniValue PolicyToJson(const PreservationPolicy& p);
+bool PolicyFromJson(const UniValue& obj, PreservationPolicy& p, std::string& err);
+
+constexpr size_t COLLECTION_MAX_ENTRIES = 512;
+/** Sort unique; reject >512. Collections never qualify files or load code. */
+bool NormalizeCollection(std::vector<Digest48>& ids, std::string& err);
+
+struct AliasMapping {
+    std::string slug;
+    uint64_t sequence{0};
+    Digest48 target;
+    uint8_t target_kind{0};
+    bool frozen{false};
+};
+
+/** Sequence conflict freezes the prior mapping. Alias-to-alias is rejected. */
+bool ApplyAlias(AliasMapping& st, uint64_t sequence, uint8_t target_kind, const Digest48& target, std::string& err);
 
 } // namespace modelnet
 

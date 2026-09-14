@@ -1,0 +1,56 @@
+# Executable CLI examples (B0 DOC-01)
+
+These commands are the in-tree examples. Run
+`contrib/modelnet/validate-doc-examples.sh` against `build-gcc13/bin`
+(or `BIN_DIR=...`) to prove they still execute. Packaged CSV stays **NOT_RUN**.
+
+GUI / `btx-qt` examples are out of scope.
+
+## Qualify (no execution)
+
+```bash
+build-gcc13/bin/btx-modelcheck /path/to/model.safetensors
+```
+
+A `STRUCTURE_VERIFIED` line is not a claim that the model is useful.
+
+## Preview a URI (no wallet)
+
+```bash
+build-gcc13/bin/btx-open 'btx://pqwy06q0q7wwzy70aeq45sxnlvq3mr067yt4jzphzvnfn2c4zc24zxz665zdprf0nwgskvqq9cq365u9n8l25'
+```
+
+Expect `action=preview-only` and `wallet=not-opened`. Extra arguments are refused.
+
+## Helper (loopback)
+
+```bash
+build-gcc13/bin/btx-modeld \
+  -modeldir=./modelnet-data \
+  -modelstorage=80GiB \
+  -modelbind=127.0.0.1:29447 \
+  -modelhost
+```
+
+Unix RPC is one JSON line. Default quota is **0** until `-modelstorage` /
+`-modelcache` is positive.
+
+## Two-helper retrieve
+
+```bash
+contrib/modelnet/e2e-two-helper-pq1.sh
+contrib/modelnet/e2e-all.sh
+contrib/modelnet/e2e-regtest-two-host.sh
+```
+
+WAN (non-production seeder only):
+
+```bash
+BTX_WAN_E2E=1 SEEDER=127.0.0.1:39447 contrib/modelnet/e2e-wan-two-helper.sh
+```
+
+## Monetary-only tree (no second cmake)
+
+```bash
+contrib/modelnet/check-with-modelnet-off.sh
+```

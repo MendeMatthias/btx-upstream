@@ -8,6 +8,7 @@
 #include <modelnet/types.h>
 #include <span.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,8 @@ enum class QualResult : uint8_t {
     NOT_RUN_RESOURCE_LIMIT = 4,
     REJECTED_UNSAFE_FORMAT = 5,
     ENCRYPTED_UNQUALIFIED = 6,
+    /** CUDA was skipped so the validator/mining GPU is never shared. */
+    NOT_RUN_CUDA_ISOLATION = 7,
 };
 
 const char* QualResultName(QualResult r);
@@ -33,11 +36,48 @@ struct QualReport {
     uint64_t tensor_count{0};
 };
 
+/**
+ * Optional CUDA runtime observation. Defaults match `-modelruntimecheck=0` and
+ * `-modelgpu` unset: no libcuda, no cudaSetDevice, no kernel, no sharing of the
+ * validator/mining GPU. Catalog `cuda_qualification=false` stays honest because
+ * QualifyFile never calls this and this API's defaults never run CUDA.
+ */
+struct QualRuntimeOpts {
+    /** `-modelgpu`. Unset means none; never inherit the validator GPU. */
+    std::optional<int> gpu_index{};
+    /** Production default. True only if the operator explicitly allows it. */
+    bool allow_validator_gpu{false};
+    /** `-modelruntimecheck`. Default 0: return NOT_RUN without touching CUDA. */
+    bool runtime_check{false};
+};
+
+/** Default ExactReplay / mining device. Qualification never auto-selects this. */
+constexpr int DEFAULT_MINING_GPU_INDEX = 0;
+
 /** Static SafeTensors / GGUF checks. Never executes Pickle, .pt, Python, or CUDA kernels. */
 QualResult QualifyBytes(const std::string& filename_hint, Span<const unsigned char> bytes, QualReport& report);
+/** Header-only file qualification. Does not load a multi-gigabyte artifact into RAM. Never CUDA. */
+QualResult QualifyFile(const std::string& path, QualReport& report);
+/**
+ * Structure check, then optional runtime. Default opts return NOT_RUN_CUDA_ISOLATION
+ * without loading libcuda. Pickle / .pt / Python are rejected and never executed.
+ */
+QualResult QualifyRuntime(const std::string& path, const QualRuntimeOpts& opts, QualReport& report);
 
 bool LooksLikePickle(Span<const unsigned char> bytes);
 bool LooksLikeExecutable(const std::string& filename_hint, Span<const unsigned char> bytes);
+
+/** BTX_VALIDATOR_GPU if set to a non-negative int, else DEFAULT_MINING_GPU_INDEX. */
+int ValidatorGpuIndex();
+/** True if index is device 0 (default mining) or the validator GPU from env. */
+bool IsValidatorOrMiningGpu(int gpu_index);
+/** True only when BTX_MODEL_CUDA_QUALIFY_COMPILE is defined. Production/tests: false. */
+bool ModelCudaQualifyKernelCompiled();
+
+/** ISO-02: model import/retrieve/qualify never takes cs_main. */
+bool ModelWorkTakesConsensusLock();
+/** ISO-02: model work must yield to ExactReplay / monetary validation. */
+bool ModelWorkMayStarveExactReplay();
 
 } // namespace modelnet
 

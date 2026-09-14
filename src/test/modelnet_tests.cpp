@@ -2,9 +2,16 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/license/mit/.
 
+#include <test/util/setup_common.h>
+#include <rpc/register.h>
+#include <rpc/server.h>
 #include <crypto/sha256.h>
 #include <modelnet/acl.h>
+#include <modelnet/catalog.h>
+#include <modelnet/cores.h>
 #include <modelnet/crypto.h>
+#include <modelnet/crypto.h>
+#include <modelnet/helper.h>
 #include <modelnet/http_bridge.h>
 #include <modelnet/identity.h>
 #include <modelnet/policy.h>
@@ -17,9 +24,11 @@
 #include <modelnet/store.h>
 #include <modelnet/swarm.h>
 #include <modelnet/transfer.h>
-#include <modelnet/transport_pq.h>
+#include <modelnet/pq1_runtime.h>
+#include <thread>
+#include <chrono>
+#include <unistd.h>
 #include <protocol.h>
-#include <test/util/setup_common.h>
 #include <univalue.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
@@ -39,6 +48,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <set>
 
 BOOST_FIXTURE_TEST_SUITE(modelnet_tests, BasicTestingSetup)
 
@@ -218,6 +228,185 @@ BOOST_AUTO_TEST_CASE(store_and_paths)
     BOOST_CHECK(!store.PutVerifiedPiece(art, 0, 1, big, leaf2, err));
 }
 
+BOOST_AUTO_TEST_CASE(demand_seed_and_preserve_rare_policy)
+{
+    uint64_t bytes = 0;
+    std::string err;
+    BOOST_REQUIRE(modelnet::ParseModelBytes("80GiB", bytes, err));
+    BOOST_CHECK_EQUAL(bytes, 80ULL << 30);
+    BOOST_REQUIRE(modelnet::ParseModelBytes("500G", bytes, err));
+    BOOST_CHECK_EQUAL(bytes, 500ULL << 30);
+    BOOST_REQUIRE(modelnet::ParseModelBytes("85899345920", bytes, err));
+    BOOST_CHECK_EQUAL(bytes, 85899345920ULL);
+
+    modelnet::PreservationPolicy auto_p;
+    auto_p.storage_quota_bytes = 80ULL << 30;
+    auto_p.seed_mode = modelnet::SeedMode::AUTO;
+    auto_p.seed_upon_download = true;
+    BOOST_CHECK(modelnet::ShouldDemandSeed(auto_p, modelnet::AdmissionLevel::STRUCTURE_VERIFIED));
+    BOOST_CHECK(!modelnet::ShouldDemandSeed(auto_p, modelnet::AdmissionLevel::FAILED));
+    auto_p.storage_quota_bytes = 0;
+    BOOST_CHECK(!modelnet::ShouldDemandSeed(auto_p, modelnet::AdmissionLevel::STRUCTURE_VERIFIED));
+
+    modelnet::PreservationPolicy off_p;
+    off_p.storage_quota_bytes = 80ULL << 30;
+    off_p.seed_mode = modelnet::SeedMode::OFF;
+    off_p.seed_upon_download = false;
+    BOOST_CHECK(!modelnet::ShouldDemandSeed(off_p, modelnet::AdmissionLevel::STRUCTURE_VERIFIED));
+
+    modelnet::PreservationPolicy rare;
+    rare.storage_quota_bytes = 500ULL << 30;
+    rare.preserve_rare = true;
+    BOOST_CHECK(modelnet::MayPreserveFetch(rare, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 1, 70ULL << 30, 200ULL << 30));
+    BOOST_CHECK(!modelnet::MayPreserveFetch(rare, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 8, 70ULL << 30, 200ULL << 30));
+    BOOST_CHECK(!modelnet::MayPreserveFetch(rare, modelnet::AdmissionLevel::BYTES_VERIFIED, true, 1, 10, 200ULL << 30));
+    rare.preserve_rare = false;
+    BOOST_CHECK(!modelnet::MayPreserveFetch(rare, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 1, 10, 200ULL << 30));
+
+    modelnet::PreserveCandidate a, b, pick;
+    a.model_id.data[0] = 1;
+    a.bytes = 110ULL << 30;
+    a.observed_sources = 1;
+    a.admission = modelnet::AdmissionLevel::BYTES_VERIFIED;
+    b.model_id.data[0] = 2;
+    b.bytes = 90ULL << 30;
+    b.observed_sources = 8;
+    b.admission = modelnet::AdmissionLevel::BYTES_VERIFIED;
+    rare.preserve_rare = true;
+    rare.storage_quota_bytes = 500ULL << 30;
+    std::set<modelnet::Digest48> local;
+    BOOST_REQUIRE(modelnet::SelectPreserveRare({a, b}, local, 200ULL << 30, rare, pick));
+    BOOST_CHECK(pick.model_id.data[0] == 1);
+    BOOST_CHECK(!modelnet::SelectPreserveRare({b}, local, 200ULL << 30, rare, pick));
+
+    modelnet::EvictItem common, rare_item, pinned;
+    common.seeded = true;
+    common.observed_sources = 20;
+    rare_item.seeded = true;
+    rare_item.observed_sources = 1;
+    pinned.pinned = true;
+    BOOST_CHECK(modelnet::EvictPriority(common) < modelnet::EvictPriority(rare_item));
+    BOOST_CHECK(modelnet::EvictPriority(rare_item) < modelnet::EvictPriority(pinned));
+
+    const fs::path tmp = m_args.GetDataDirBase() / "model-demand";
+    modelnet::ModelCatalog cat{tmp, /*quota*/ 8 << 20};
+    BOOST_CHECK(cat.Policy().seed_mode == modelnet::SeedMode::AUTO);
+    const fs::path src = tmp / "src";
+    fs::create_directories(src);
+    std::vector<unsigned char> st(10, 0);
+    WriteLE64(st.data(), 2);
+    st[8] = '{';
+    st[9] = '}';
+    {
+        std::ofstream out(src / "model.safetensors", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(st.data()), st.size());
+    }
+    modelnet::CatalogEntry imported;
+    BOOST_REQUIRE_MESSAGE(cat.ImportPath(fs::PathToString(src), /*pin=*/false, imported, err), err);
+    BOOST_CHECK(imported.seeded);
+
+    modelnet::PreservationPolicy manual = cat.Policy();
+    manual.seed_mode = modelnet::SeedMode::OFF;
+    manual.seed_upon_download = false;
+    cat.SetPolicy(manual);
+    const fs::path src2 = tmp / "src2";
+    fs::create_directories(src2);
+    {
+        std::ofstream out(src2 / "other.safetensors", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(st.data()), st.size());
+    }
+    modelnet::CatalogEntry imported2;
+    BOOST_REQUIRE_MESSAGE(cat.ImportPath(fs::PathToString(src2), /*pin=*/false, imported2, err), err);
+    BOOST_CHECK(!imported2.seeded);
+    modelnet::NativeRequest nreq;
+    nreq.method = "GET";
+    nreq.path = "/btx-model/2/transfers/" + imported2.artifact_id.Hex() + "/pieces/0/0";
+    modelnet::NativeResponse nresp;
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 404);
+
+    nreq.path = "/btx-model/2/transfers/" + imported.artifact_id.Hex() + "/pieces/0/0";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 403);
+
+    UniValue req(UniValue::VOBJ);
+    req.pushKV("method", "getmodelpolicy");
+    req.pushKV("params", UniValue(UniValue::VARR));
+    UniValue result;
+    std::string code;
+    BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, req, result, code, err));
+    BOOST_CHECK_EQUAL(result["seed"].get_str(), "off");
+    BOOST_CHECK(!result["demand_propagation"].get_bool());
+}
+
+BOOST_AUTO_TEST_CASE(default_demand_propagation_is_not_opt_in)
+{
+    // v1.1 §2.3: a leftover B0 seed_upon_download=false bit is not a second gate.
+    modelnet::PreservationPolicy stale_b0;
+    stale_b0.storage_quota_bytes = 8 << 20;
+    stale_b0.seed_mode = modelnet::SeedMode::AUTO;
+    stale_b0.seed_upon_download = false;
+    BOOST_CHECK(modelnet::ShouldDemandSeed(stale_b0, modelnet::AdmissionLevel::STRUCTURE_VERIFIED));
+    const UniValue dumped = modelnet::PolicyToJson(stale_b0);
+    BOOST_CHECK(dumped["demand_propagation"].get_bool());
+    BOOST_CHECK(dumped["seed_upon_download"].get_bool());
+    BOOST_CHECK(!dumped["seed_upon_download_opt_in"].get_bool());
+
+    std::string err;
+    UniValue mixed(UniValue::VOBJ);
+    mixed.pushKV("seed", "auto");
+    mixed.pushKV("seed_upon_download", false);
+    mixed.pushKV("storage_quota_bytes", static_cast<uint64_t>(8 << 20));
+    modelnet::PreservationPolicy parsed;
+    BOOST_REQUIRE_MESSAGE(modelnet::PolicyFromJson(mixed, parsed, err), err);
+    BOOST_CHECK(parsed.seed_mode == modelnet::SeedMode::AUTO);
+    BOOST_CHECK(modelnet::ShouldDemandSeed(parsed, modelnet::AdmissionLevel::STRUCTURE_VERIFIED));
+
+    const fs::path tmp = m_args.GetDataDirBase() / "demand-default-no-flag";
+    modelnet::ModelCatalog cat{tmp, /*quota*/ 8 << 20};
+    BOOST_CHECK(cat.Policy().seed_mode == modelnet::SeedMode::AUTO);
+    BOOST_CHECK(modelnet::PolicyToJson(cat.Policy())["demand_propagation"].get_bool());
+    BOOST_CHECK(!modelnet::PolicyToJson(cat.Policy())["seed_upon_download_opt_in"].get_bool());
+
+    const fs::path src = tmp / "src";
+    fs::create_directories(src);
+    std::vector<unsigned char> st(10, 0);
+    WriteLE64(st.data(), 2);
+    st[8] = '{';
+    st[9] = '}';
+    {
+        std::ofstream out(src / "model.safetensors", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(st.data()), st.size());
+    }
+    UniValue req(UniValue::VOBJ);
+    req.pushKV("method", "importmodel");
+    UniValue params(UniValue::VARR);
+    params.push_back(fs::PathToString(src));
+    UniValue opts(UniValue::VOBJ);
+    opts.pushKV("pin", false);
+    params.push_back(opts);
+    req.pushKV("params", params);
+    UniValue result;
+    std::string code;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, req, result, code, err), err);
+    BOOST_CHECK(result["seeded"].get_bool());
+    BOOST_CHECK_EQUAL(result["propagation"].get_str(), "demand");
+    BOOST_CHECK_EQUAL(result["admission"].get_str(), "SEEDING");
+
+    modelnet::CatalogEntry imported;
+    modelnet::Digest48 mid;
+    BOOST_REQUIRE(modelnet::Digest48::FromHex(result["model_id"].get_str(), mid, err));
+    BOOST_REQUIRE(cat.Find(mid, imported));
+    BOOST_CHECK(imported.seeded);
+
+    modelnet::NativeRequest nreq;
+    nreq.method = "GET";
+    nreq.path = "/btx-model/2/transfers/" + imported.artifact_id.Hex() + "/pieces/0/0";
+    modelnet::NativeResponse nresp;
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 403);
+}
+
 BOOST_AUTO_TEST_CASE(qualification_rejects_unsafe)
 {
     modelnet::QualReport report;
@@ -239,6 +428,24 @@ BOOST_AUTO_TEST_CASE(qualification_rejects_unsafe)
     std::memcpy(gguf.data(), "GGUF", 4);
     WriteLE32(gguf.data() + 4, 3);
     BOOST_CHECK(modelnet::QualifyBytes("x.gguf", gguf, report) == modelnet::QualResult::STRUCTURE_VERIFIED);
+}
+
+BOOST_AUTO_TEST_CASE(store_recounts_used_bytes)
+{
+    const fs::path tmp = m_args.GetDataDirBase() / "modelstore-recount";
+    const std::string payload = "hello-modelnet-piece";
+    std::vector<unsigned char> file(payload.begin(), payload.end());
+    modelnet::Digest48 art{};
+    art.data[0] = 2;
+    const auto leaf = modelnet::ChunkLeaf(0, file);
+    std::string err;
+    {
+        modelnet::ModelStore store{tmp, /*quota*/ 1024};
+        BOOST_REQUIRE(store.PutVerifiedPiece(art, 0, 0, file, leaf, err));
+        BOOST_CHECK_EQUAL(store.UsedBytes(), file.size());
+    }
+    modelnet::ModelStore again{tmp, /*quota*/ 1024};
+    BOOST_CHECK_EQUAL(again.UsedBytes(), file.size());
 }
 
 BOOST_AUTO_TEST_CASE(acl_does_not_ban_monetary)
@@ -381,6 +588,40 @@ BOOST_AUTO_TEST_CASE(pq1_rejects_hybrid_peer)
     SSL_CTX_free(rogue);
 }
 
+BOOST_AUTO_TEST_CASE(pq19_openssl_conf_cannot_weaken_pq1)
+{
+    const fs::path dir = m_path_root / "pq19";
+    fs::create_directories(dir);
+    const fs::path conf = dir / "hostile.cnf";
+    {
+        std::ofstream out(conf);
+        out << "openssl_conf = openssl_init\n"
+            << "[openssl_init]\n"
+            << "ssl_conf = ssl_configuration\n"
+            << "[ssl_configuration]\n"
+            << "system_default = ssl_default\n"
+            << "[ssl_default]\n"
+            << "MinProtocol = TLSv1.2\n"
+            << "MaxProtocol = TLSv1.3\n"
+            << "Groups = X25519:X25519MLKEM768\n"
+            << "Ciphersuites = TLS_AES_128_GCM_SHA256\n"
+            << "SignatureAlgorithms = ECDSA+SHA256:ed25519\n";
+    }
+    BOOST_REQUIRE_EQUAL(setenv("OPENSSL_CONF", fs::PathToString(conf).c_str(), 1), 0);
+    BOOST_REQUIRE_EQUAL(setenv("OPENSSL_MODULES", "/nonexistent-btx-pq19-modules", 1), 0);
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(modelnet::Pq1HostileConfCannotWeaken(err), err);
+    BOOST_CHECK(modelnet::Pq1OpenSslEnvIsClean());
+    modelnet::Pq1Context server;
+    modelnet::Pq1Context client;
+    BOOST_REQUIRE_MESSAGE(server.Ready(), server.Error());
+    BOOST_REQUIRE_MESSAGE(client.Ready(), client.Error());
+    BOOST_CHECK_EQUAL(static_cast<int>(SSL_CTX_get_min_proto_version(static_cast<SSL_CTX*>(server.SslCtx()))),
+                      static_cast<int>(TLS1_3_VERSION));
+    BOOST_CHECK_EQUAL(static_cast<int>(SSL_CTX_get_max_proto_version(static_cast<SSL_CTX*>(server.SslCtx()))),
+                      static_cast<int>(TLS1_3_VERSION));
+}
+
 BOOST_AUTO_TEST_CASE(identity_is_not_wallet_and_release_is_sha256)
 {
     std::vector<unsigned char> pk, sk;
@@ -408,6 +649,344 @@ BOOST_AUTO_TEST_CASE(identity_is_not_wallet_and_release_is_sha256)
     BOOST_CHECK((SeedsServiceFlags() & NODE_MODEL_HOST) == 0);
     BOOST_CHECK(!MayHaveUsefulAddressDB(NODE_MODEL_RELAY));
     BOOST_CHECK(!MayHaveUsefulAddressDB(NODE_MODEL_HOST));
+}
+
+BOOST_AUTO_TEST_CASE(b0_model_core_codec_vectors)
+{
+    std::ifstream in{MODELNET_B0_CODEC_VECTORS_PATH};
+    BOOST_REQUIRE(in);
+    std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    UniValue v;
+    BOOST_REQUIRE(v.read(raw));
+    const UniValue& mcj = v["model-core"]["object"];
+    modelnet::ModelCore mc;
+    mc.version = 2;
+    mc.format_profile = static_cast<uint16_t>(mcj["format_profile"].getInt<int>());
+    mc.execution_profile = static_cast<uint16_t>(mcj["execution_profile"].getInt<int>());
+    std::string err;
+    BOOST_REQUIRE(modelnet::Digest48::FromHex(mcj["config_sha384"].get_str(), mc.config_sha384, err));
+    BOOST_REQUIRE(modelnet::Digest48::FromHex(mcj["tokenizer_sha384"].get_str(), mc.tokenizer_sha384, err));
+    modelnet::CoreFile cf;
+    cf.path = mcj["files"][0]["path"].get_str();
+    cf.role = modelnet::FileRole::WEIGHTS;
+    cf.size = mcj["files"][0]["size"].getInt<uint64_t>();
+    BOOST_REQUIRE(modelnet::Digest48::FromHex(mcj["files"][0]["sha384"].get_str(), cf.sha384, err));
+    BOOST_REQUIRE(modelnet::Digest48::FromHex(mcj["files"][0]["pieces_root"].get_str(), cf.pieces_root, err));
+    mc.files.push_back(cf);
+    std::vector<unsigned char> encoded;
+    BOOST_REQUIRE(modelnet::EncodeModelCore(mc, encoded, err));
+    BOOST_CHECK_EQUAL(HexStr(encoded), v["model-core"]["canonical_hex"].get_str());
+    BOOST_CHECK_EQUAL(modelnet::ModelCoreId(encoded).Hex(), v["model-core"]["id"].get_str());
+
+    modelnet::ArtifactCore ac;
+    ac.version = 2;
+    ac.codec = 1;
+    BOOST_REQUIRE(modelnet::Digest48::FromHex(v["artifact-core"]["object"]["model_id"].get_str(), ac.model_id, err));
+    ac.files = mc.files;
+    std::vector<unsigned char> aenc;
+    BOOST_REQUIRE(modelnet::EncodeArtifactCore(ac, aenc, err));
+    BOOST_CHECK_EQUAL(HexStr(aenc), v["artifact-core"]["canonical_hex"].get_str());
+    BOOST_CHECK_EQUAL(modelnet::ArtifactCoreId(aenc).Hex(), v["artifact-core"]["id"].get_str());
+}
+
+BOOST_AUTO_TEST_CASE(catalog_import_seed_list_and_native_http)
+{
+    const fs::path tmp = m_args.GetDataDirBase() / "modelcatalog";
+    modelnet::ModelCatalog cat{tmp, /*quota*/ 8 << 20};
+    const fs::path src = tmp / "src";
+    fs::create_directories(src);
+    std::vector<unsigned char> st(10, 0);
+    WriteLE64(st.data(), 2);
+    st[8] = '{';
+    st[9] = '}';
+    {
+        std::ofstream out(src / "model.safetensors", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(st.data()), st.size());
+    }
+    modelnet::QualReport qf;
+    BOOST_CHECK(modelnet::QualifyFile(fs::PathToString(src / "model.safetensors"), qf) == modelnet::QualResult::STRUCTURE_VERIFIED);
+
+    modelnet::CatalogEntry imported;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(cat.ImportPath(fs::PathToString(src), /*pin=*/true, imported, err), err);
+    BOOST_CHECK(!imported.model_id.IsNull());
+    BOOST_CHECK(imported.seeded);
+    UniValue listed;
+    BOOST_REQUIRE(cat.List(listed));
+    BOOST_CHECK_EQUAL(listed["local_count"].getInt<int>(), 1);
+    BOOST_REQUIRE(cat.Seed(imported.model_id, true, err));
+
+    UniValue man;
+    BOOST_REQUIRE(cat.GetManifest(imported.model_id, man, err));
+    BOOST_CHECK_EQUAL(man["files"].size(), 1);
+
+    std::vector<unsigned char> piece;
+    std::vector<modelnet::Digest48> proof;
+    uint64_t file_size = 0;
+    BOOST_REQUIRE(cat.GetVerifiedPiece(imported.artifact_id, 0, 0, piece, proof, file_size, err));
+    BOOST_CHECK_EQUAL(file_size, 10U);
+    BOOST_CHECK(piece == st);
+
+    UniValue req(UniValue::VOBJ);
+    req.pushKV("method", "listmodels");
+    req.pushKV("params", UniValue(UniValue::VARR));
+    UniValue rpc_result;
+    std::string code;
+    BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, req, rpc_result, code, err));
+    BOOST_CHECK_EQUAL(rpc_result["local_count"].getInt<int>(), 1);
+
+    modelnet::NativeRequest nreq;
+    nreq.method = "POST";
+    nreq.path = "/btx-model/2/hello";
+    modelnet::NativeResponse nresp;
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 200);
+    UniValue hello;
+    BOOST_REQUIRE(hello.read(nresp.body));
+    BOOST_CHECK_EQUAL(hello["suite"].get_str(), "pq1");
+
+    nreq.method = "GET";
+    nreq.path = "/btx-model/2/transfers/" + imported.artifact_id.Hex() + "/pieces/0/0";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 403);
+
+    nreq.method = "POST";
+    nreq.path = "/btx-model/2/ext/free/grant";
+    nreq.body = "{\"model_id\":\"" + imported.model_id.Hex() + "\"}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 200);
+    UniValue grantj;
+    BOOST_REQUIRE(grantj.read(nresp.body));
+    BOOST_REQUIRE(grantj.exists("payload_hex") && grantj.exists("sig_hex") && grantj.exists("pubkey_hex"));
+
+    nreq.method = "GET";
+    nreq.path = "/btx-model/2/transfers/" + imported.artifact_id.Hex() + "/pieces/0/0";
+    nreq.body.clear();
+    nreq.headers = {
+        {"X-BTX-Grant-Payload", grantj["payload_hex"].get_str()},
+        {"X-BTX-Grant-Sig", grantj["sig_hex"].get_str()},
+        {"X-BTX-Grant-Pubkey", grantj["pubkey_hex"].get_str()},
+    };
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 200);
+    BOOST_CHECK_EQUAL(nresp.content_type, "application/octet-stream");
+    BOOST_CHECK_EQUAL(nresp.body.size(), st.size());
+    BOOST_CHECK(std::vector<unsigned char>(nresp.body.begin(), nresp.body.end()) == st);
+    const std::string wire = modelnet::FormatHttpResponse(nresp);
+    BOOST_CHECK(wire.find("bytes_hex") == std::string::npos);
+    BOOST_CHECK(wire.find("application/octet-stream") != std::string::npos);
+    bool saw_size = false;
+    for (const auto& h : nresp.headers) {
+        if (h.first == "X-BTX-File-Size") {
+            BOOST_CHECK_EQUAL(h.second, "10");
+            saw_size = true;
+        }
+    }
+    BOOST_CHECK(saw_size);
+
+    nreq.method = "POST";
+    nreq.path = "/btx-model/2/query";
+    nreq.body = "{\"text\":\"model\"}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 200);
+    UniValue qj;
+    BOOST_REQUIRE(qj.read(nresp.body));
+    BOOST_CHECK_EQUAL(qj["coverage"].get_str(), "incomplete");
+    BOOST_CHECK(qj["ids"].size() >= 1);
+
+    nreq.path = "/btx-model/2/ext/caps";
+    nreq.body.clear();
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    UniValue caps;
+    BOOST_REQUIRE(caps.read(nresp.body));
+    BOOST_CHECK_EQUAL(caps["extension_version"].getInt<int>(), 257);
+    BOOST_CHECK_EQUAL(caps["features"].getInt<int>(), 127);
+
+    nreq.path = "/btx-model/2/records/announce";
+    nreq.body = "{\"record_id\":\"" + imported.model_id.Hex() + "\",\"kind\":19,\"provider_id\":\"local\"}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 400);
+
+    UniValue join(UniValue::VOBJ);
+    join.pushKV("method", "joinmodelcircle");
+    UniValue jparams(UniValue::VARR);
+    jparams.push_back(imported.model_id.Hex());
+    join.pushKV("params", jparams);
+    UniValue joined;
+    BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, join, joined, code, err));
+    BOOST_CHECK_EQUAL(joined["on_chain_membership"].get_bool(), false);
+    BOOST_REQUIRE(joined.exists("signed_record_id"));
+
+    nreq.path = "/btx-model/2/records/get";
+    nreq.body = "{\"ids\":[\"" + joined["signed_record_id"].get_str() + "\"]}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    UniValue got;
+    BOOST_REQUIRE(got.read(nresp.body));
+    BOOST_CHECK(got["records"].size() >= 1);
+
+    nreq.path = "/btx-model/2/ext/free/grant";
+    nreq.body = "{\"model_id\":\"" + imported.model_id.Hex() + "\"}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 200);
+
+    UniValue openreq(UniValue::VOBJ);
+    openreq.pushKV("method", "openbtxuri");
+    UniValue oparams(UniValue::VARR);
+    std::string uri;
+    std::string uerr;
+    BOOST_REQUIRE(modelnet::EncodeResource(modelnet::ResourceKind::MODEL, imported.model_id, uri, uerr));
+    oparams.push_back(uri);
+    openreq.pushKV("params", oparams);
+    UniValue openres;
+    BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, openreq, openres, code, err));
+    BOOST_CHECK_EQUAL(openres["inference"].get_bool(), false);
+
+    unsigned char secret_for_campaign[32];
+    for (int i = 0; i < 32; ++i) secret_for_campaign[i] = static_cast<unsigned char>(i + 3);
+    BOOST_REQUIRE(modelnet::EncodeResource(modelnet::ResourceKind::MODEL, imported.model_id, uri, err));
+    UniValue cparams(UniValue::VARR);
+    cparams.push_back(uri);
+    cparams.push_back(HexStr(Span{secret_for_campaign, 32}));
+    cparams.push_back(100000);
+    req = UniValue(UniValue::VOBJ);
+    req.pushKV("method", "createmodelrelease");
+    req.pushKV("params", cparams);
+    BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, req, rpc_result, code, err));
+    BOOST_CHECK(rpc_result.exists("release_id"));
+    BOOST_CHECK(rpc_result.exists("key_hash"));
+    req.pushKV("method", "buildmodelhtlcclaim");
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, req, rpc_result, code, err));
+    BOOST_CHECK_EQUAL(code, "NOT_IMPLEMENTED");
+
+    UniValue listed_after_seed;
+    BOOST_REQUIRE(cat.List(listed_after_seed));
+    BOOST_REQUIRE_EQUAL(listed_after_seed["models"].size(), 1);
+    BOOST_CHECK(listed_after_seed["models"][0]["bytes_verified"].get_bool());
+}
+
+BOOST_AUTO_TEST_CASE(catalog_quota_zero_refuses_import)
+{
+    const fs::path tmp = m_args.GetDataDirBase() / "modelcatalog-zero";
+    modelnet::ModelCatalog cat{tmp, /*quota*/ 0};
+    const fs::path src = tmp / "model.safetensors";
+    std::vector<unsigned char> st(10, 0);
+    WriteLE64(st.data(), 2);
+    st[8] = '{';
+    st[9] = '}';
+    {
+        std::ofstream out(src, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(st.data()), st.size());
+    }
+    modelnet::CatalogEntry imported;
+    std::string err;
+    BOOST_CHECK(!cat.ImportPath(fs::PathToString(src), true, imported, err));
+    BOOST_CHECK(err.find("quota") != std::string::npos || err.find("0") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(payment_journal_and_tofu_pin)
+{
+    std::vector<modelnet::PaymentJournal> journal;
+    BOOST_CHECK(!modelnet::DuplicatePayment(journal, "aa"));
+    journal.push_back({"offer", "deadbeef", false, false});
+    BOOST_CHECK(modelnet::DuplicatePayment(journal, "deadbeef"));
+
+    const fs::path pinfile = m_args.GetDataDirBase() / "pins.json";
+    modelnet::Digest48 a = modelnet::DomainHash("BTX/TransportKey/v2", Span{UCharCast("abc"), 3});
+    modelnet::Digest48 b = modelnet::DomainHash("BTX/TransportKey/v2", Span{UCharCast("xyz"), 3});
+    std::string err;
+    BOOST_REQUIRE(modelnet::CheckOrStorePin(pinfile, "127.0.0.1:1", a, err));
+    BOOST_REQUIRE(modelnet::CheckOrStorePin(pinfile, "127.0.0.1:1", a, err));
+    BOOST_CHECK(!modelnet::CheckOrStorePin(pinfile, "127.0.0.1:1", b, err));
+    BOOST_CHECK(err.find("pin") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(modelnet_rpc_table_constructs)
+{
+    CRPCTable table;
+    RegisterModelNetRPCCommands(table);
+}
+
+BOOST_AUTO_TEST_CASE(helper_stop_interrupts_accept_loop)
+{
+    const fs::path tmp = m_args.GetDataDirBase() / "modeld-stop";
+    fs::create_directories(tmp);
+    modelnet::HelperConfig cfg;
+    cfg.modeldir = tmp;
+    cfg.quota_bytes = 1 << 20;
+    cfg.rpc_socket = fs::PathFromString("/tmp/btx-md-stop-" + std::to_string(getpid()) + ".sock");
+    ::unlink(fs::PathToString(cfg.rpc_socket).c_str());
+    const int port = 39000 + (static_cast<int>(getpid()) % 500);
+    cfg.bind = "127.0.0.1:" + std::to_string(port);
+    std::atomic<bool> stop{false};
+    std::thread t;
+    auto join = [&] {
+        stop.store(true);
+        if (t.joinable()) t.join();
+        ::unlink(fs::PathToString(cfg.rpc_socket).c_str());
+    };
+    t = std::thread([&] { modelnet::RunModelDaemon(cfg, &stop); });
+    const auto t0 = std::chrono::steady_clock::now();
+    bool ready = false;
+    try {
+        while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(8)) {
+            if (fs::exists(cfg.rpc_socket)) {
+                ready = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        BOOST_REQUIRE(ready);
+        stop.store(true);
+        t.join();
+        BOOST_CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(12));
+    } catch (...) {
+        join();
+        throw;
+    }
+    join();
+}
+
+BOOST_AUTO_TEST_CASE(helper_unix_rpc_survives_peer_hup)
+{
+    const fs::path tmp = m_args.GetDataDirBase() / "modeld-hup";
+    fs::create_directories(tmp);
+    modelnet::HelperConfig cfg;
+    cfg.modeldir = tmp;
+    cfg.quota_bytes = 1 << 20;
+    cfg.rpc_socket = fs::PathFromString("/tmp/btx-md-hup-" + std::to_string(getpid()) + ".sock");
+    ::unlink(fs::PathToString(cfg.rpc_socket).c_str());
+    const int port = 39500 + (static_cast<int>(getpid()) % 400);
+    cfg.bind = "127.0.0.1:" + std::to_string(port);
+    std::atomic<bool> stop{false};
+    std::thread t;
+    auto join = [&] {
+        stop.store(true);
+        if (t.joinable()) t.join();
+        ::unlink(fs::PathToString(cfg.rpc_socket).c_str());
+    };
+    t = std::thread([&] { modelnet::RunModelDaemon(cfg, &stop); });
+    const auto t0 = std::chrono::steady_clock::now();
+    bool ready = false;
+    try {
+        while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(8)) {
+            if (fs::exists(cfg.rpc_socket)) {
+                ready = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        BOOST_REQUIRE(ready);
+        UniValue result;
+        std::string err;
+        UniValue params(UniValue::VARR);
+        BOOST_REQUIRE_MESSAGE(modelnet::CallUnixRpc(cfg.rpc_socket, "getmodelnetworkinfo", params, result, err), err);
+        BOOST_CHECK(result["helper_ready"].get_bool());
+        BOOST_CHECK(result["enabled"].get_bool());
+    } catch (...) {
+        join();
+        throw;
+    }
+    join();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

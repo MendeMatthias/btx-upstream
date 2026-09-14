@@ -4,6 +4,8 @@
 
 #include <modelnet/transport_pq.h>
 
+#include <modelnet/pq1_runtime.h>
+
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -23,8 +25,15 @@ std::string OpenSslErr()
     return buf;
 }
 
-bool ConfigurePq1(SSL_CTX* ctx, std::string& err)
+} // namespace
+
+bool PinPq1SslCtx(void* ssl_ctx, std::string& err)
 {
+    auto* ctx = static_cast<SSL_CTX*>(ssl_ctx);
+    if (!ctx) {
+        err = "no ctx";
+        return false;
+    }
     if (SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION) != 1 ||
         SSL_CTX_set_max_proto_version(ctx, TLS1_3_VERSION) != 1) {
         err = "TLS1.3 only";
@@ -48,6 +57,12 @@ bool ConfigurePq1(SSL_CTX* ctx, std::string& err)
                                  SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2);
     SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
     SSL_CTX_set_max_early_data(ctx, 0);
+    // Stay under common WAN/NAT MTU. Default 16 KiB records stalled granite
+    // retrieve (host Send-Q filled, client Recv-Q empty).
+    if (SSL_CTX_set_max_send_fragment(ctx, 512) != 1) {
+        err = "max_send_fragment";
+        return false;
+    }
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                        [](int preverify_ok, X509_STORE_CTX*) -> int {
                            // Self-signed ML-DSA is expected; pin checks happen after handshake.
@@ -57,17 +72,15 @@ bool ConfigurePq1(SSL_CTX* ctx, std::string& err)
     return true;
 }
 
-} // namespace
-
 Pq1Context::Pq1Context()
 {
-    OPENSSL_init_ssl(0, nullptr);
+    Pq1InitOpenSsl();
     m_ctx = SSL_CTX_new(TLS_method());
     if (!m_ctx) {
         m_error = "SSL_CTX_new failed";
         return;
     }
-    if (!ConfigurePq1(static_cast<SSL_CTX*>(m_ctx), m_error)) {
+    if (!PinPq1SslCtx(m_ctx, m_error)) {
         SSL_CTX_free(static_cast<SSL_CTX*>(m_ctx));
         m_ctx = nullptr;
         return;

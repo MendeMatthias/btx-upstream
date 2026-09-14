@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>674</width>
-    <height>447</height>
+    <height>620</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -199,6 +199,122 @@
       </layout>
      </item>
     </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupModelStorage">
+     <property name="title">
+      <string>Model Network Storage</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayoutModelStorage">
+      <item>
+       <widget class="QLabel" name="lblModelStorageIntro">
+        <property name="text">
+         <string>Allocate a finite disk budget before any model payload is stored. Zero means no download, no seeding, and no preserve-rare. This does not open a wallet, spend coins, or fetch models.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="horizontalLayoutModelStorage">
+        <item>
+         <widget class="QLabel" name="lblModelStorage">
+          <property name="text">
+           <string>Use up to:</string>
+          </property>
+          <property name="buddy">
+           <cstring>modelStorageSpin</cstring>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QSpinBox" name="modelStorageSpin">
+          <property name="toolTip">
+           <string>Payload quota. 0 stores no model bytes until a later budget is set.</string>
+          </property>
+          <property name="specialValueText">
+           <string>0 (no payload)</string>
+          </property>
+          <property name="minimum">
+           <number>0</number>
+          </property>
+          <property name="maximum">
+           <number>1048576</number>
+          </property>
+          <property name="value">
+           <number>500</number>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QComboBox" name="modelStorageUnit">
+          <property name="toolTip">
+           <string>Binary units (1024), same as -modelstorage 80GiB.</string>
+          </property>
+          <property name="currentIndex">
+           <number>1</number>
+          </property>
+          <item>
+           <property name="text">
+            <string notr="true">MiB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string notr="true">GiB</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string notr="true">TiB</string>
+           </property>
+          </item>
+         </widget>
+        </item>
+        <item>
+         <spacer name="horizontalSpacerModelStorage">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>40</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="modelDemandSeed">
+        <property name="toolTip">
+         <string>Demand propagation: keep and re-advertise qualified public models you intentionally import or download (-modelseed=auto). Uncheck for -modelseed=off. GUI default is checked after a positive budget.</string>
+        </property>
+        <property name="text">
+         <string>Help preserve downloaded models</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="modelPreserveRare">
+        <property name="toolTip">
+         <string>Preservation propagation: spare quota may fetch qualified under-replicated models (-modelpreserverare). CLI default is off; the GUI first-run default is checked. Uncheck to leave it off.</string>
+        </property>
+        <property name="text">
+         <string>Help preserve rare models</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
    </item>
    <item>
     <widget class="QLabel" name="lblExplanation1">

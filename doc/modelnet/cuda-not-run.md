@@ -1,19 +1,16 @@
-# CUDA / RTX 5060 Ti qualification
+# CUDA / runtime GPU qualification
 
 GPU runtime qualification is **not** a proof of model usefulness or safety.
-This document records why the 0.34.7 private tree marks group M **NOT_RUN**
-on the implementation host.
-
-## This host
-
-- `nvidia-smi` is unavailable (no working NVIDIA driver in this userspace).
-- `nvcc` is not on PATH.
-- macpro2 is the live canonical GPU / attestation authority. Do not starve
-  its mining GPU, do not reboot it, and do not run CUDA goldens against it
-  for modelnet work.
+Capabilities report `cuda_qualification=false`. Group M is **NOT_RUN**.
 
 ## Policy
 
-- Static qualification (`btx-modelcheck`) never launches CUDA kernels.
+- Static qualification (`btx-modelcheck` / `QualifyFile`) never launches
+  CUDA kernels. It reads SafeTensors/GGUF **headers** vs filesystem size.
 - Pickle / `.pt` / Python / `.so` are rejected before any runtime.
-- A future CUDA worker must be a separate process from `btxd`.
+- A future CUDA worker MUST be a separate process from `btxd` and MUST
+  not contend with a live mining/ExactReplay GPU.
+- Shared validation GPUs remain B0-restricted: model qualification must
+  not starve ExactReplay.
+
+Do not treat a `STRUCTURE_VERIFIED` shard as “it runs on this GPU.”

@@ -4,7 +4,13 @@
 
 #include <modelnet/policy.h>
 
+#include <crypto/common.h>
+#include <crypto/sha256.h>
+#include <util/strencodings.h>
+
 #include <algorithm>
+#include <cctype>
+#include <limits>
 #include <stdexcept>
 
 namespace modelnet {
@@ -71,6 +77,14 @@ bool ChoosePlan(RetrievalMode mode,
     return true;
 }
 
+bool ExposureWithinCeiling(int64_t outstanding_atoms, int64_t additional_atoms, int64_t ceiling)
+{
+    if (outstanding_atoms < 0 || additional_atoms < 0 || ceiling < 0) return false;
+    if (outstanding_atoms > MAX_MONEY_ATOMS || additional_atoms > MAX_MONEY_ATOMS) return false;
+    if (additional_atoms > MAX_MONEY_ATOMS - outstanding_atoms) return false;
+    return outstanding_atoms + additional_atoms <= ceiling;
+}
+
 AclDecision DecideAcl(bool crypto_ok,
                        bool hard_limit_ok,
                        bool local_deny,
@@ -98,15 +112,26 @@ bool ReciprocityLedger::Received(const std::string& peer,
                                   bool verified,
                                   bool needed,
                                   bool paid,
-                                  int observed_sources)
+                                  int observed_sources,
+                                  bool unsolicited)
 {
     if (nbytes <= 0 || when < 0) throw std::runtime_error("invalid observation");
     const auto key = std::tuple<std::string, int, int>{artifact, file, piece};
-    if (!verified || !needed || paid || m_seen.count(key)) return false;
+    if (unsolicited || !verified || !needed || paid || m_seen.count(key)) return false;
     m_seen.insert(key);
-    const int64_t bonus = (observed_sources == 1 || observed_sources == 2) ? 2 : 1;
+    int64_t bonus = (observed_sources == 1 || observed_sources == 2) ? 2 : 1;
+    if (bonus > 2) bonus = 2;
+    if (bonus < 1) bonus = 1;
     m_events.push_back({peer, nbytes * bonus, when});
     return true;
+}
+
+bool ReciprocityLedger::CreditThirdPartyReceipt(const std::string& peer, int64_t nbytes, int64_t when)
+{
+    (void)peer;
+    (void)nbytes;
+    (void)when;
+    return false;
 }
 
 int64_t ReciprocityLedger::Effective(const std::string& peer, int64_t now) const
@@ -139,6 +164,19 @@ UniValue ReciprocityLedger::Snapshot() const
         events.push_back(ev);
     }
     obj.pushKV("events", events);
+    obj.pushKV("lane_bootstrap_share", 0.20);
+    obj.pushKV("lane_reciprocal_share", 0.60);
+    obj.pushKV("lane_preservation_share", 0.20);
+    obj.pushKV("newcomer_bootstrap_ok", true);
+    UniValue seen(UniValue::VARR);
+    for (const auto& k : m_seen) {
+        UniValue row(UniValue::VOBJ);
+        row.pushKV("artifact", std::get<0>(k));
+        row.pushKV("file", std::get<1>(k));
+        row.pushKV("piece", std::get<2>(k));
+        seen.push_back(row);
+    }
+    obj.pushKV("seen", seen);
     return obj;
 }
 
@@ -152,6 +190,15 @@ bool ReciprocityLedger::Load(const UniValue& obj, std::string& err)
     m_seen.clear();
     for (const auto& ev : obj["events"].getValues()) {
         m_events.push_back({ev["peer"].get_str(), ev["bytes"].getInt<int64_t>(), ev["when"].getInt<int64_t>()});
+    }
+    if (obj.exists("seen") && obj["seen"].isArray()) {
+        for (const auto& row : obj["seen"].getValues()) {
+            if (!row.isObject() || !row.exists("artifact") || !row.exists("file") || !row.exists("piece")) {
+                err = "invalid ledger seen row";
+                return false;
+            }
+            m_seen.insert({row["artifact"].get_str(), row["file"].getInt<int>(), row["piece"].getInt<int>()});
+        }
     }
     return true;
 }
@@ -175,6 +222,200 @@ std::vector<std::string> LaneSequence(const std::map<std::string, int>& backlogs
     return out;
 }
 
+const char* SeedModeName(SeedMode mode)
+{
+    switch (mode) {
+    case SeedMode::OFF: return "off";
+    case SeedMode::MANUAL: return "manual";
+    case SeedMode::AUTO: return "auto";
+    }
+    return "auto";
+}
+
+bool SeedModeFromName(const std::string& name, SeedMode& out)
+{
+    const std::string n = ToLower(name);
+    if (n == "off" || n == "0" || n == "false" || n == "no") {
+        out = SeedMode::OFF;
+        return true;
+    }
+    if (n == "manual") {
+        out = SeedMode::MANUAL;
+        return true;
+    }
+    if (n == "auto" || n == "1" || n == "true" || n == "yes") {
+        out = SeedMode::AUTO;
+        return true;
+    }
+    return false;
+}
+
+bool ParseModelBytes(const std::string& in, uint64_t& out, std::string& err)
+{
+    std::string s;
+    s.reserve(in.size());
+    for (char c : in) {
+        if (c != ' ' && c != '_') s.push_back(c);
+    }
+    if (s.empty()) {
+        err = "empty size";
+        return false;
+    }
+    size_t i = 0;
+    if (!std::isdigit(static_cast<unsigned char>(s[0]))) {
+        err = "size must start with a digit";
+        return false;
+    }
+    uint64_t n = 0;
+    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
+        const int d = s[i] - '0';
+        if (n > (std::numeric_limits<uint64_t>::max() - static_cast<uint64_t>(d)) / 10) {
+            err = "size overflow";
+            return false;
+        }
+        n = n * 10 + static_cast<uint64_t>(d);
+        ++i;
+    }
+    std::string unit = s.substr(i);
+    for (char& c : unit) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    uint64_t mul = 1;
+    if (unit.empty() || unit == "b" || unit == "byte" || unit == "bytes") mul = 1;
+    else if (unit == "k" || unit == "kib" || unit == "kb") mul = 1024;
+    else if (unit == "m" || unit == "mib" || unit == "mb") mul = MIB;
+    else if (unit == "g" || unit == "gib" || unit == "gb") mul = GIB;
+    else if (unit == "t" || unit == "tib" || unit == "tb") mul = GIB * 1024;
+    else {
+        err = "unknown size unit";
+        return false;
+    }
+    if (mul != 1 && n > std::numeric_limits<uint64_t>::max() / mul) {
+        err = "size overflow";
+        return false;
+    }
+    out = n * mul;
+    return true;
+}
+
+bool ShouldDemandSeed(const PreservationPolicy& p, AdmissionLevel admission)
+{
+    if (p.storage_quota_bytes == 0) return false;
+    if (p.seed_mode != SeedMode::AUTO) return false;
+    if (admission == AdmissionLevel::FAILED) return false;
+    return true;
+}
+
+bool MayPreserveFetch(const PreservationPolicy& p, AdmissionLevel admission, bool encrypted,
+                      int observed_sources, uint64_t bytes, uint64_t spare_bytes)
+{
+    if (!p.preserve_rare || p.storage_quota_bytes == 0) return false;
+    if (encrypted && !p.allow_encrypted) return false;
+    if (admission == AdmissionLevel::FAILED) return false;
+    if (observed_sources <= 0 || observed_sources > 2) return false;
+    if (bytes == 0 || bytes > spare_bytes) return false;
+    return true;
+}
+
+uint64_t PreserveRareJitterScore(const Digest48& model_id, int64_t now)
+{
+    const int64_t bucket = (now == 0) ? 0 : now / 300;
+    const std::string hex = model_id.Hex();
+    unsigned char bucket_le[8];
+    WriteLE64(bucket_le, static_cast<uint64_t>(bucket));
+    unsigned char hash[CSHA256::OUTPUT_SIZE];
+    CSHA256()
+        .Write(reinterpret_cast<const unsigned char*>(hex.data()), hex.size())
+        .Write(bucket_le, sizeof(bucket_le))
+        .Finalize(hash);
+    return ReadLE64(hash);
+}
+
+bool SelectPreserveRare(const std::vector<PreserveCandidate>& observed,
+                        const std::set<Digest48>& local,
+                        uint64_t spare_bytes,
+                        const PreservationPolicy& p,
+                        PreserveCandidate& out,
+                        int64_t now)
+{
+    const PreserveCandidate* best = nullptr;
+    for (const auto& c : observed) {
+        if (local.count(c.model_id)) continue;
+        if (!MayPreserveFetch(p, c.admission, c.encrypted, c.observed_sources, c.bytes, spare_bytes)) continue;
+        if (!best) {
+            best = &c;
+            continue;
+        }
+        if (c.observed_sources < best->observed_sources) {
+            best = &c;
+            continue;
+        }
+        if (c.observed_sources > best->observed_sources) continue;
+        if (c.bytes < best->bytes) {
+            best = &c;
+            continue;
+        }
+        if (c.bytes > best->bytes) continue;
+        if (now != 0 && PreserveRareJitterScore(c.model_id, now) < PreserveRareJitterScore(best->model_id, now)) {
+            best = &c;
+        }
+    }
+    if (!best) return false;
+    out = *best;
+    return true;
+}
+
+int EvictPriority(const EvictItem& item)
+{
+    if (item.pinned) return 1000;
+    if (item.observed_sources > 0 && item.observed_sources <= 2) return 80;
+    if (item.seeded) return 40;
+    return 0;
+}
+
+UniValue PolicyToJson(const PreservationPolicy& p)
+{
+    UniValue o(UniValue::VOBJ);
+    o.pushKV("schema_version", 2);
+    o.pushKV("seed", SeedModeName(p.seed_mode));
+    o.pushKV("seed_upon_download", p.seed_mode == SeedMode::AUTO);
+    o.pushKV("seed_upon_download_opt_in", false);
+    o.pushKV("preserve_rare", p.preserve_rare);
+    o.pushKV("allow_encrypted", p.allow_encrypted);
+    o.pushKV("storage_quota_bytes", p.storage_quota_bytes);
+    o.pushKV("upload_bps", p.upload_bps);
+    o.pushKV("giveback_ratio", p.giveback_ratio);
+    o.pushKV("automatic_spend_atoms", 0);
+    o.pushKV("retrieval_default", "FREE_ONLY");
+    o.pushKV("demand_propagation", p.seed_mode == SeedMode::AUTO && p.storage_quota_bytes > 0);
+    o.pushKV("preservation_propagation", p.preserve_rare && p.storage_quota_bytes > 0);
+    o.pushKV("release_propagation", p.seed_mode == SeedMode::AUTO && p.storage_quota_bytes > 0);
+    o.pushKV("unsolicited_fetch", "disabled unless preserve_rare=1 and a positive storage budget");
+    return o;
+}
+
+bool PolicyFromJson(const UniValue& obj, PreservationPolicy& p, std::string& err)
+{
+    if (!obj.isObject()) {
+        err = "policy object required";
+        return false;
+    }
+    if (obj.exists("seed") && obj["seed"].isStr()) {
+        if (!SeedModeFromName(obj["seed"].get_str(), p.seed_mode)) {
+            err = "seed must be auto, manual, or off";
+            return false;
+        }
+    } else if (obj.exists("seed_upon_download")) {
+        // B0 0|1 alias used only when `seed` is omitted. Never a second gate.
+        p.seed_mode = obj["seed_upon_download"].get_bool() ? SeedMode::AUTO : SeedMode::OFF;
+    }
+    p.seed_upon_download = p.seed_mode == SeedMode::AUTO;
+    if (obj.exists("preserve_rare")) p.preserve_rare = obj["preserve_rare"].get_bool();
+    if (obj.exists("allow_encrypted")) p.allow_encrypted = obj["allow_encrypted"].get_bool();
+    if (obj.exists("upload_bps")) p.upload_bps = obj["upload_bps"].getInt<uint64_t>();
+    if (obj.exists("storage_quota_bytes")) p.storage_quota_bytes = obj["storage_quota_bytes"].getInt<uint64_t>();
+    if (obj.exists("giveback_ratio")) p.giveback_ratio = obj["giveback_ratio"].get_real();
+    return true;
+}
+
 TrustLabel ClassifyPeer(int64_t effective_bytes, int successful_sessions, int invalid_pieces, bool blocked, bool preferred, bool trusted)
 {
     if (blocked) return TrustLabel::BLOCKED;
@@ -185,6 +426,71 @@ TrustLabel ClassifyPeer(int64_t effective_bytes, int successful_sessions, int in
     if (effective_bytes > 0) return TrustLabel::RECIPROCAL;
     if (successful_sessions > 0) return TrustLabel::OBSERVED;
     return TrustLabel::NEW;
+}
+
+bool BootstrapLimiter::Allow(const std::string& service_id, const std::string& netgroup, int64_t bytes)
+{
+    if (bytes <= 0 || m_aggregate_cap <= 0) return false;
+    if (bytes > PER_KEY_DAY || m_key_day[service_id] > PER_KEY_DAY - bytes) return false;
+    if (bytes > GROUP_HOUR || m_group_hour[netgroup] > GROUP_HOUR - bytes) return false;
+    if (bytes > m_aggregate_cap || m_aggregate_used > m_aggregate_cap - bytes) return false;
+    m_key_day[service_id] += bytes;
+    m_group_hour[netgroup] += bytes;
+    m_aggregate_used += bytes;
+    return true;
+}
+
+bool GiveBackComplete(const PreservationPolicy& p,
+                      int64_t useful_served,
+                      int64_t useful_received,
+                      int64_t started_at,
+                      int64_t now)
+{
+    if (useful_served < 0 || useful_received < 0 || now < started_at) return true;
+    if (p.retain_seconds > 0 && now - started_at >= p.retain_seconds) return true;
+    if (useful_received > 0 && p.giveback_ratio >= 0.0 &&
+        static_cast<double>(useful_served) >= p.giveback_ratio * static_cast<double>(useful_received)) {
+        return true;
+    }
+    return false;
+}
+
+bool NormalizeCollection(std::vector<Digest48>& ids, std::string& err)
+{
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    if (ids.size() > COLLECTION_MAX_ENTRIES) {
+        err = "collection exceeds 512 models";
+        return false;
+    }
+    return true;
+}
+
+bool ApplyAlias(AliasMapping& st, uint64_t sequence, uint8_t target_kind, const Digest48& target, std::string& err)
+{
+    if (target_kind == static_cast<uint8_t>(ResourceKind::ALIAS)) {
+        err = "alias must not chain to another alias";
+        return false;
+    }
+    if (st.frozen) {
+        err = "alias frozen";
+        return false;
+    }
+    if (st.sequence == 0) {
+        st.sequence = sequence;
+        st.target = target;
+        st.target_kind = target_kind;
+        return true;
+    }
+    if (sequence == st.sequence + 1) {
+        st.sequence = sequence;
+        st.target = target;
+        st.target_kind = target_kind;
+        return true;
+    }
+    st.frozen = true;
+    err = "alias sequence conflict; prior mapping frozen";
+    return false;
 }
 
 } // namespace modelnet

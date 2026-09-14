@@ -8,11 +8,15 @@ namespace wallet {
 
 bool ModelPaymentPolicy::CheckQuote(const modelnet::Quote& q, std::string& err) const
 {
+    if (auto_pay) {
+        err = "auto_pay is refused; automatic BTX spend is zero";
+        return false;
+    }
     if (q.price_atoms <= 0) {
         err = "paid quote required a positive price or use free retrieval";
         return false;
     }
-    if (!auto_pay && budget_atoms <= 0) {
+    if (budget_atoms <= 0) {
         err = "automatic BTX spend is zero; explicit approval required";
         return false;
     }

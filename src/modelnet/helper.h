@@ -1,0 +1,77 @@
+// Copyright (c) 2026 The BTX developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://opensource.org/license/mit/.
+
+#ifndef BITCOIN_MODELNET_HELPER_H
+#define BITCOIN_MODELNET_HELPER_H
+
+#include <modelnet/catalog.h>
+#include <modelnet/transport_pq.h>
+#include <univalue.h>
+
+#include <atomic>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace modelnet {
+
+struct NativeRequest {
+    std::string method;
+    std::string path;
+    std::string body;
+    std::vector<std::pair<std::string, std::string>> headers;
+};
+
+struct NativeResponse {
+    int status{200};
+    std::string content_type{"application/json"};
+    std::string body;
+    std::vector<unsigned char> raw;
+    bool binary{false};
+    std::vector<std::pair<std::string, std::string>> headers;
+};
+
+struct HelperConfig {
+    fs::path modeldir;
+    uint64_t quota_bytes{0};
+    std::string bind; // host:port; empty = unix RPC only
+    fs::path rpc_socket;
+    fs::path tls_cert;
+    fs::path tls_key;
+    bool relay{false};
+    bool host{false};
+    std::string seed{"auto"};
+    bool preserve_rare{false};
+    bool allow_encrypted{false};
+    uint64_t upload_bps{0};
+    std::vector<std::string> peers;
+};
+
+bool ParseHttpRequest(const std::string& raw, NativeRequest& req, std::string& err);
+std::string FormatHttpResponse(const NativeResponse& resp);
+
+bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResponse& resp);
+
+/** ISO-01: native HTTP is served only after a verified PQ1 session (HandlePq1Fd). */
+bool NativeHttpRequiresVerifiedPq1();
+/** Advertised /btx-model/2/ paths from capabilities.http. */
+std::vector<std::string> AdvertisedNativeHttpPaths();
+
+bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& result, std::string& err_code, std::string& err, std::atomic<bool>* stop = nullptr);
+
+bool EnsureMlDsaTlsFiles(const fs::path& cert, const fs::path& key, std::string& err);
+bool LoadPq1Identity(Pq1Context& pq, const fs::path& modeldir, std::string& err);
+
+int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop = nullptr);
+
+bool CallUnixRpc(const fs::path& socket_path, const std::string& method, const UniValue& params, UniValue& result, std::string& err);
+
+bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& host, uint16_t port,
+                           const Digest48& model_id, std::string& err, std::atomic<bool>* stop = nullptr,
+                           const fs::path& pinfile = {});
+
+} // namespace modelnet
+
+#endif // BITCOIN_MODELNET_HELPER_H

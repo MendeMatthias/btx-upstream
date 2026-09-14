@@ -4,35 +4,476 @@
 
 #include <modelnet/http_bridge.h>
 
+#include <common/url.h>
 #include <univalue.h>
+#include <util/strencodings.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
 
 namespace modelnet {
+namespace {
 
-bool HandleBridgeGet(const std::string& path, BrowserBridgeResponse& out)
+constexpr const char* BRIDGE_NOTE =
+    "HTTP bridge is not the identity authority; verify native hash. "
+    "Browser edge is not end-to-end PQ. Upstream to BTX remains PQ1 or unix RPC.";
+
+constexpr const char* PUBLIC_DOWNLOAD_ENV = "BTX_BRIDGE_PUBLIC_DOWNLOAD";
+
+constexpr const char* WEB_COMPAT =
+    "WEB COMPATIBILITY - NOT NATIVE END-TO-END PQ";
+
+std::string TrimCopy(std::string s);
+std::string PathOnly(const std::string& path);
+std::string QueryParam(const std::string& path, const std::string& key);
+
+bool HeaderHas(const std::string& headers, const std::string& name, const std::string& needle)
 {
-    out = {};
-    std::string token = path;
-    if (!token.empty() && token[0] == '/') token.erase(0, 1);
-    Resource r;
-    std::string err;
-    if (!DecodeResource(token, r, err) && !DecodeResource("btx://" + token, r, err)) {
-        out.http_status = 400;
-        out.content_type = "text/plain";
-        out.body = "malformed token";
-        return true;
+    size_t i = 0;
+    while (i < headers.size()) {
+        size_t line_end = headers.find('\n', i);
+        if (line_end == std::string::npos) line_end = headers.size();
+        std::string line = headers.substr(i, line_end - i);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto colon = line.find(':');
+        const std::string hname = ToLower(TrimCopy(colon == std::string::npos ? line : line.substr(0, colon)));
+        const std::string hval = colon == std::string::npos ? std::string{} : ToLower(TrimCopy(line.substr(colon + 1)));
+        if (hname == ToLower(name) && hval.find(ToLower(needle)) != std::string::npos) return true;
+        i = line_end + 1;
     }
+    return false;
+}
+
+bool WantsHtml(const std::string& path, const std::string& headers)
+{
+    if (QueryParam(path, "format") == "html") return true;
+    return HeaderHas(headers, "accept", "text/html");
+}
+
+bool ParseInclusiveRange(const std::string& path, const std::string& headers,
+                          uint64_t size, uint64_t& first, uint64_t& last)
+{
+    first = 0;
+    last = size ? size - 1 : 0;
+    std::string spec = QueryParam(path, "range");
+    if (spec.empty()) {
+        size_t i = 0;
+        while (i < headers.size()) {
+            size_t line_end = headers.find('\n', i);
+            if (line_end == std::string::npos) line_end = headers.size();
+            std::string line = headers.substr(i, line_end - i);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            const auto colon = line.find(':');
+            const std::string name = ToLower(TrimCopy(colon == std::string::npos ? line : line.substr(0, colon)));
+            if (name == "range") {
+                spec = colon == std::string::npos ? std::string{} : TrimCopy(line.substr(colon + 1));
+                break;
+            }
+            i = line_end + 1;
+        }
+    }
+    if (spec.empty() || size == 0) return true;
+    if (spec.rfind("bytes=", 0) == 0) spec = spec.substr(6);
+    const auto dash = spec.find('-');
+    if (dash == std::string::npos) return false;
+    const uint64_t a = spec.substr(0, dash).empty() ? 0 : std::strtoull(spec.c_str(), nullptr, 10);
+    const uint64_t b = spec.substr(dash + 1).empty() ? size - 1 : std::strtoull(spec.c_str() + dash + 1, nullptr, 10);
+    if (a > last || a > b) return false;
+    first = a;
+    last = std::min(b, size - 1);
+    return first <= last;
+}
+
+bool SplitTokenFile(const std::string& path, std::string& token, uint32_t& file_index)
+{
+    std::string p = PathOnly(path);
+    if (!p.empty() && p.front() == '/') p.erase(0, 1);
+    const auto fpos = p.find("/f/");
+    if (fpos == std::string::npos) return false;
+    token = p.substr(0, fpos);
+    file_index = static_cast<uint32_t>(std::strtoul(p.c_str() + fpos + 3, nullptr, 10));
+    return !token.empty();
+}
+
+std::string LinkOnlyHtml(const Resource& r)
+{
+    const std::string uri = r.Uri();
+    return std::string("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
+        + "<title>Open in BTX</title>"
+        + "<meta name=\"btx-web-compatibility\" content=\"" + WEB_COMPAT + "\">"
+        + "</head><body>"
+        + "<p>LINK_ONLY</p>"
+        + "<p><a href=\"" + uri + "\">Open in BTX</a></p>"
+        + "<p><code>" + uri + "</code></p>"
+        + "<p>" + WEB_COMPAT + "</p>"
+        + "<p>Browser edge is not native end-to-end PQ. Upstream remains PQ1.</p>"
+        + "</body></html>";
+}
+
+bool FillHtml(BrowserBridgeResponse& out, const Resource& r)
+{
+    out.ok = true;
+    out.http_status = 200;
+    out.content_type = "text/html; charset=utf-8";
+    out.canonical_btx = r.Uri();
+    out.body = LinkOnlyHtml(r);
+    out.headers.emplace_back("X-BTX-Web-Compatibility", WEB_COMPAT);
+    out.headers.emplace_back("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+    out.headers.emplace_back("X-Content-Type-Options", "nosniff");
+    return true;
+}
+
+void PushDisclosure(UniValue& obj)
+{
+    // Disclosed-weaker profile (D09). These three names are canonical; tests
+    // also accept mixed-case spellings of the same keys.
+    obj.pushKV("pq_end_to_end", false);
+    obj.pushKV("native_fallback", false);
+    obj.pushKV("wallet", false);
+}
+
+bool FillJson(BrowserBridgeResponse& out, int status, UniValue obj, bool ok, std::string canonical = {})
+{
+    PushDisclosure(obj);
+    out.ok = ok;
+    out.http_status = status;
+    out.content_type = "application/json";
+    out.body = obj.write();
+    out.canonical_btx = std::move(canonical);
+    return true;
+}
+
+std::string PathOnly(const std::string& path)
+{
+    std::string p = path;
+    const auto q = p.find('?');
+    if (q != std::string::npos) p.resize(q);
+    const auto h = p.find('#');
+    if (h != std::string::npos) p.resize(h);
+    return p;
+}
+
+std::string NormalizedRoute(const std::string& path)
+{
+    std::string p = ToLower(PathOnly(path));
+    if (p.empty()) return "/";
+    if (p.front() != '/') p.insert(p.begin(), '/');
+    while (p.size() > 1 && p.back() == '/') p.pop_back();
+    return p;
+}
+
+std::string QueryParam(const std::string& path, const std::string& key)
+{
+    const auto qpos = path.find('?');
+    if (qpos == std::string::npos) return {};
+    const std::string query = path.substr(qpos + 1);
+    const std::string want = ToLower(key);
+    size_t start = 0;
+    while (start < query.size()) {
+        size_t amp = query.find('&', start);
+        if (amp == std::string::npos) amp = query.size();
+        const std::string pair = query.substr(start, amp - start);
+        const auto eq = pair.find('=');
+        const std::string k = ToLower(UrlDecode(eq == std::string::npos ? pair : pair.substr(0, eq)));
+        const std::string v = eq == std::string::npos ? std::string{} : UrlDecode(pair.substr(eq + 1));
+        if (k == want) return v;
+        start = amp + 1;
+    }
+    return {};
+}
+
+bool SegmentLooksWallet(std::string_view seg)
+{
+    return seg.starts_with("wallet") || seg.starts_with("sign") || seg.starts_with("dump");
+}
+
+bool WalletLikePath(const std::string& path)
+{
+    const std::string p = NormalizedRoute(path);
+    size_t i = 0;
+    while (i < p.size()) {
+        if (p[i] == '/') {
+            ++i;
+            continue;
+        }
+        size_t j = p.find('/', i);
+        if (j == std::string::npos) j = p.size();
+        if (SegmentLooksWallet(std::string_view{p.data() + i, j - i})) return true;
+        i = j;
+    }
+    return false;
+}
+
+bool MethodLooksWallet(const std::string& method)
+{
+    const std::string m = ToLower(method);
+    if (m.empty()) return false;
+    if (m.find("wallet") != std::string::npos) return true;
+    if (m.find("dump") != std::string::npos) return true;
+    if (m.find("sign") != std::string::npos) return true;
+    if (m.find("importpriv") != std::string::npos) return true;
+    if (m.starts_with("send")) return true;
+    if (m.find("backupwallet") != std::string::npos) return true;
+    if (m.find("encryptwallet") != std::string::npos) return true;
+    if (m.find("listunspent") != std::string::npos) return true;
+    return false;
+}
+
+bool WalletLikeBody(const std::string& body)
+{
+    if (body.empty()) return false;
+    UniValue j;
+    if (j.read(body) && j.isObject() && j.exists("method") && j["method"].isStr()) {
+        if (MethodLooksWallet(j["method"].get_str())) return true;
+    }
+    const std::string b = ToLower(body);
+    static const char* kNeedles[] = {
+        "dumpprivkey",
+        "dumpwallet",
+        "signrawtransaction",
+        "walletpassphrase",
+        "importprivkey",
+        "sendtoaddress",
+    };
+    for (const char* n : kNeedles) {
+        if (b.find(n) != std::string::npos) return true;
+    }
+    return false;
+}
+
+bool IsSafeMethod(const std::string& method)
+{
+    const std::string m = ToUpper(method);
+    return m == "GET" || m == "HEAD";
+}
+
+std::string TrimCopy(std::string s)
+{
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+    return s;
+}
+
+/** True if a Range query or header is present. Never applied to body bytes. */
+bool RequestHasRange(const std::string& path, const std::string& headers)
+{
+    if (!QueryParam(path, "range").empty()) return true;
+    size_t i = 0;
+    while (i < headers.size()) {
+        size_t line_end = headers.find('\n', i);
+        if (line_end == std::string::npos) line_end = headers.size();
+        std::string line = headers.substr(i, line_end - i);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const auto colon = line.find(':');
+        const std::string name = ToLower(TrimCopy(colon == std::string::npos ? line : line.substr(0, colon)));
+        if (name == "range") return true;
+        i = line_end + 1;
+    }
+    return false;
+}
+
+UniValue DecodeObject(const Resource& r)
+{
     UniValue obj(UniValue::VOBJ);
     obj.pushKV("canonical", r.Uri());
     obj.pushKV("kind", ResourceKindName(r.kind));
     obj.pushKV("digest", r.digest.Hex());
     obj.pushKV("open_in_btx", r.Uri());
-    obj.pushKV("note", "HTTP bridge is not the identity authority; verify native hash.");
+    obj.pushKV("note", BRIDGE_NOTE);
+    obj.pushKV("bind_default", "127.0.0.1");
+    obj.pushKV("upstream", "PQ1 or unix RPC getmodel/listmodels; never native-client TLS fallback");
+    return obj;
+}
+
+} // namespace
+
+int BridgeTlsMaxWildcardDepth()
+{
+    // Native-style: this edge is not a DNS-wildcard identity authority.
+    return 0;
+}
+
+bool BridgeRangeToPieces(uint64_t first_byte, uint64_t last_byte, uint64_t piece_size,
+                         uint32_t& first_piece, uint32_t& piece_count)
+{
+    if (piece_size == 0 || last_byte < first_byte) return false;
+    const uint64_t first64 = first_byte / piece_size;
+    const uint64_t last64 = last_byte / piece_size;
+    if (first64 > std::numeric_limits<uint32_t>::max()) return false;
+    const uint64_t count64 = last64 - first64 + 1;
+    if (count64 > std::numeric_limits<uint32_t>::max()) return false;
+    first_piece = static_cast<uint32_t>(first64);
+    piece_count = static_cast<uint32_t>(count64);
+    return true;
+}
+
+std::string BridgeCacheKey(const std::string& canonical_uri, uint32_t file_index)
+{
+    // Full canonical token, not a 42-char DNS split. File index is required so
+    // two files of the same URI cannot share a key. No disk cache is implied.
+    return canonical_uri + "/f/" + std::to_string(file_index);
+}
+
+bool BridgePublicDownloadEnabled()
+{
+    const char* e = std::getenv(PUBLIC_DOWNLOAD_ENV);
+    return e != nullptr && std::string_view{e} == "1";
+}
+
+bool HandleBridgeGet(const std::string& path, BrowserBridgeResponse& out,
+                     const std::string& headers)
+{
+    out = {};
+    const bool range_hint = RequestHasRange(path, headers);
+    (void)range_hint;
+
+    if (WalletLikePath(path)) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "wallet paths are not served");
+        return FillJson(out, 403, std::move(obj), false);
+    }
+
+    std::string file_token;
+    uint32_t file_index = 0;
+    if (SplitTokenFile(path, file_token, file_index)) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", BridgePublicDownloadEnabled() ?
+                   "verified chunks required before emission" :
+                   "public download disabled");
+        obj.pushKV("public_download", BridgePublicDownloadEnabled());
+        obj.pushKV("file_index", static_cast<int>(file_index));
+        obj.pushKV("web_compatibility", WEB_COMPAT);
+        return FillJson(out, BridgePublicDownloadEnabled() ? 409 : 403, std::move(obj), false);
+    }
+
+    const std::string route = NormalizedRoute(path);
+    if (route == "/health") {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("ok", true);
+        obj.pushKV("service", "btx-model-browser-bridge");
+        obj.pushKV("profile", "D09");
+        obj.pushKV("bind_default", "127.0.0.1");
+        obj.pushKV("catalog_browser_bridge", false);
+        obj.pushKV("wildcard_dns_depth", BridgeTlsMaxWildcardDepth());
+        obj.pushKV("public_download", BridgePublicDownloadEnabled());
+        obj.pushKV("web_compatibility", WEB_COMPAT);
+        obj.pushKV("note", BRIDGE_NOTE);
+        return FillJson(out, 200, std::move(obj), true);
+    }
+
+    if (route == "/open") {
+        const std::string uri = QueryParam(path, "uri");
+        Resource r;
+        std::string err;
+        if (uri.empty() || (!DecodeResource(uri, r, err) && !DecodeResource("btx://" + uri, r, err))) {
+            UniValue obj(UniValue::VOBJ);
+            obj.pushKV("error", "malformed URI");
+            return FillJson(out, 400, std::move(obj), false);
+        }
+        if (WantsHtml(path, headers)) return FillHtml(out, r);
+        return FillJson(out, 200, DecodeObject(r), true, r.Uri());
+    }
+
+    std::string token = PathOnly(path);
+    if (!token.empty() && token.front() == '/') token.erase(0, 1);
+    Resource r;
+    std::string err;
+    if (!DecodeResource(token, r, err) && !DecodeResource("btx://" + token, r, err)) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "malformed URI");
+        return FillJson(out, 400, std::move(obj), false);
+    }
+    if (WantsHtml(path, headers)) return FillHtml(out, r);
+    return FillJson(out, 200, DecodeObject(r), true, r.Uri());
+}
+
+bool HandleBridgePublicFile(const std::string& path, const std::string& headers,
+                            Span<const unsigned char> verified,
+                            BrowserBridgeResponse& out)
+{
+    out = {};
+    if (!BridgePublicDownloadEnabled()) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "public download disabled");
+        obj.pushKV("web_compatibility", WEB_COMPAT);
+        return FillJson(out, 403, std::move(obj), false);
+    }
+    std::string token;
+    uint32_t file_index = 0;
+    if (!SplitTokenFile(path, token, file_index)) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "expected /<token>/f/<index>");
+        return FillJson(out, 400, std::move(obj), false);
+    }
+    Resource r;
+    std::string err;
+    if (!DecodeResource(token, r, err) && !DecodeResource("btx://" + token, r, err)) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "malformed URI");
+        return FillJson(out, 400, std::move(obj), false);
+    }
+    if (verified.empty()) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "verified chunks required before emission");
+        obj.pushKV("web_compatibility", WEB_COMPAT);
+        return FillJson(out, 409, std::move(obj), false);
+    }
+    uint64_t first = 0, last = 0;
+    if (!ParseInclusiveRange(path, headers, verified.size(), first, last)) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "invalid range");
+        return FillJson(out, 416, std::move(obj), false);
+    }
+    uint32_t first_piece = 0, piece_count = 0;
+    BridgeRangeToPieces(first, last, modelnet::PIECE_SIZE, first_piece, piece_count);
+    const size_t n = static_cast<size_t>(last - first + 1);
     out.ok = true;
     out.http_status = 200;
-    out.content_type = "application/json";
-    out.body = obj.write();
+    out.content_type = "application/octet-stream";
     out.canonical_btx = r.Uri();
+    out.body.assign(reinterpret_cast<const char*>(verified.data() + first), n);
+    out.headers.emplace_back("Content-Disposition", "attachment");
+    out.headers.emplace_back("X-Content-Type-Options", "nosniff");
+    out.headers.emplace_back("Content-Security-Policy", "default-src 'none'");
+    out.headers.emplace_back("X-BTX-Web-Compatibility", WEB_COMPAT);
+    out.headers.emplace_back("X-BTX-Cache-Key", BridgeCacheKey(r.Uri(), file_index));
+    out.headers.emplace_back("X-BTX-First-Piece", std::to_string(first_piece));
+    out.headers.emplace_back("X-BTX-Piece-Count", std::to_string(piece_count));
     return true;
+}
+
+bool HandleBridgeRequest(const std::string& method, const std::string& path,
+                         const std::string& body, BrowserBridgeResponse& out,
+                         const std::string& headers)
+{
+    out = {};
+    const bool mutating = !IsSafeMethod(method);
+    const bool wallet_path = WalletLikePath(path);
+    const bool wallet_body = mutating && WalletLikeBody(body);
+
+    if (mutating && (wallet_path || wallet_body)) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "method not allowed");
+        obj.pushKV("allow", "GET, HEAD");
+        return FillJson(out, 405, std::move(obj), false);
+    }
+    if (wallet_path) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "wallet paths are not served");
+        return FillJson(out, 403, std::move(obj), false);
+    }
+    if (mutating) {
+        UniValue obj(UniValue::VOBJ);
+        obj.pushKV("error", "method not allowed");
+        obj.pushKV("allow", "GET, HEAD");
+        return FillJson(out, 405, std::move(obj), false);
+    }
+    return HandleBridgeGet(path, out, headers);
 }
 
 } // namespace modelnet

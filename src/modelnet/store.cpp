@@ -7,10 +7,13 @@
 #include <modelnet/crypto.h>
 #include <crypto/common.h>
 #include <crypto/sha384.h>
+#include <univalue.h>
 #include <util/fs.h>
+#include <util/strencodings.h>
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <regex>
@@ -118,6 +121,26 @@ std::vector<std::vector<Digest48>> BuildChunkTree(Span<const unsigned char> file
     return rows;
 }
 
+std::vector<std::vector<Digest48>> BuildChunkTreeFromLeaves(const std::vector<Digest48>& padded_leaves)
+{
+    if (padded_leaves.empty()) return {{EmptyFileRoot()}};
+    std::vector<std::vector<Digest48>> rows;
+    rows.push_back(padded_leaves);
+    while (rows.back().size() > 1) {
+        const auto& r = rows.back();
+        if (r.size() % 2 != 0) {
+            return {};
+        }
+        std::vector<Digest48> next;
+        next.reserve(r.size() / 2);
+        for (size_t i = 0; i < r.size(); i += 2) {
+            next.push_back(ChunkNode(r[i], r[i + 1]));
+        }
+        rows.push_back(std::move(next));
+    }
+    return rows;
+}
+
 std::vector<Digest48> PieceProof(const std::vector<std::vector<Digest48>>& rows, uint64_t index)
 {
     std::vector<Digest48> result;
@@ -161,6 +184,51 @@ ModelStore::ModelStore(fs::path root, uint64_t quota_bytes) : m_root(std::move(r
     m_quota.max_bytes = quota_bytes;
     fs::create_directories(m_root / "artifacts");
     fs::create_directories(m_root / "tmp");
+    RecountUsed();
+}
+
+void ModelStore::RecountUsed()
+{
+    m_quota.used_bytes = 0;
+    const fs::path arts = m_root / "artifacts";
+    if (!fs::exists(arts)) return;
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(arts, ec),
+         end = std::filesystem::recursive_directory_iterator();
+         it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || ec) continue;
+        const std::string name = fs::PathToString(it->path().filename());
+        if (name.size() >= 6 && name.compare(name.size() - 6, 6, ".piece") == 0) {
+            const auto sz = std::filesystem::file_size(it->path(), ec);
+            if (!ec) m_quota.used_bytes += sz;
+        }
+    }
+}
+
+bool ModelStore::RemoveArtifact(const Digest48& artifact, std::string& err)
+{
+    const fs::path dir = ArtifactDir(m_root, artifact);
+    if (!fs::exists(dir)) return true;
+    std::error_code ec;
+    uint64_t drop = 0;
+    for (auto it = std::filesystem::recursive_directory_iterator(dir, ec),
+         end = std::filesystem::recursive_directory_iterator();
+         it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || ec) continue;
+        const std::string name = fs::PathToString(it->path().filename());
+        if (name.size() >= 6 && name.compare(name.size() - 6, 6, ".piece") == 0) {
+            const auto sz = std::filesystem::file_size(it->path(), ec);
+            if (!ec) drop += sz;
+        }
+    }
+    std::filesystem::remove_all(dir, ec);
+    if (ec) {
+        err = "artifact remove failed";
+        return false;
+    }
+    if (m_quota.used_bytes >= drop) m_quota.used_bytes -= drop;
+    else m_quota.used_bytes = 0;
+    return true;
 }
 
 bool ModelStore::PutVerifiedPiece(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
@@ -170,13 +238,21 @@ bool ModelStore::PutVerifiedPiece(const Digest48& artifact, uint32_t file_index,
         err = "corrupt chunk";
         return false;
     }
-    if (m_quota.max_bytes && m_quota.used_bytes + bytes.size() > m_quota.max_bytes) {
-        err = "disk quota";
-        return false;
-    }
     const fs::path dir = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str();
     fs::create_directories(dir);
     const fs::path final_path = dir / (std::to_string(piece_index) + ".piece").c_str();
+    if (fs::exists(final_path)) {
+        return true;
+    }
+    if (!m_quota.max_bytes) {
+        err = "payload storage is 0 until -modelstorage / -modelcache allocates a quota";
+        return false;
+    }
+    if (m_quota.used_bytes + bytes.size() > m_quota.max_bytes) {
+        err = "disk quota";
+        return false;
+    }
+    fs::create_directories(m_root / "tmp");
     const fs::path tmp = m_root / "tmp" / (artifact.Hex() + "-" + std::to_string(file_index) + "-" + std::to_string(piece_index) + ".tmp").c_str();
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
@@ -230,6 +306,93 @@ bool ModelStore::Unpin(const Digest48& model_id)
 void ModelStore::EvictUnpinned()
 {
     // Pinned models are never deleted here. Unpinned LRU is a follow-up journal.
+}
+
+bool ModelStore::SavePieceIndex(const Digest48& artifact, uint32_t file_index, const PieceIndex& idx, std::string& err)
+{
+    if (idx.leaves.empty()) {
+        err = "empty leaf index";
+        return false;
+    }
+    const fs::path dir = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str();
+    fs::create_directories(dir);
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("file_size", idx.file_size);
+    obj.pushKV("pieces_root", idx.pieces_root.Hex());
+    UniValue leaves(UniValue::VARR);
+    for (const auto& leaf : idx.leaves) leaves.push_back(leaf.Hex());
+    obj.pushKV("leaves", leaves);
+    const fs::path final_path = dir / "index.json";
+    const fs::path tmp = m_root / "tmp" / (artifact.Hex() + "-" + std::to_string(file_index) + "-index.tmp").c_str();
+    fs::create_directories(tmp.parent_path());
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out) {
+            err = "index tmp write failed";
+            return false;
+        }
+        out << obj.write(2, 0) << "\n";
+        out.flush();
+        if (!out) {
+            err = "index tmp write failed";
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, final_path, ec);
+    if (ec) {
+        err = "index rename failed";
+        return false;
+    }
+    return true;
+}
+
+bool ModelStore::LoadPieceIndex(const Digest48& artifact, uint32_t file_index, PieceIndex& idx, std::string& err) const
+{
+    idx = {};
+    const fs::path path = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str() / "index.json";
+    std::ifstream in(path);
+    if (!in) {
+        err = "missing piece index";
+        return false;
+    }
+    std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    UniValue obj;
+    if (!obj.read(raw) || !obj.isObject()) {
+        err = "piece index json";
+        return false;
+    }
+    idx.file_size = obj["file_size"].getInt<uint64_t>();
+    if (!Digest48::FromHex(obj["pieces_root"].get_str(), idx.pieces_root, err)) return false;
+    for (const auto& leaf : obj["leaves"].getValues()) {
+        Digest48 d;
+        if (!Digest48::FromHex(leaf.get_str(), d, err)) return false;
+        idx.leaves.push_back(d);
+    }
+    return true;
+}
+
+bool ModelStore::RenameArtifact(const Digest48& from, const Digest48& to, std::string& err)
+{
+    if (from == to) return true;
+    const fs::path src = ArtifactDir(m_root, from);
+    const fs::path dst = ArtifactDir(m_root, to);
+    std::error_code ec;
+    if (!fs::exists(src)) {
+        err = "staging artifact missing";
+        return false;
+    }
+    if (fs::exists(dst)) {
+        err = "destination artifact exists";
+        return false;
+    }
+    fs::create_directories(dst.parent_path());
+    fs::rename(src, dst, ec);
+    if (ec) {
+        err = "artifact rename failed";
+        return false;
+    }
+    return true;
 }
 
 } // namespace modelnet
