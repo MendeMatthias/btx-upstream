@@ -68,9 +68,19 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop = nullptr);
 
 bool CallUnixRpc(const fs::path& socket_path, const std::string& method, const UniValue& params, UniValue& result, std::string& err);
 
+/** Filled by RetrieveFreeFromPeer; atomics so getmodeljob can read a running job. */
+struct RetrieveProgress {
+    std::atomic<uint64_t> bytes_committed{0};
+    std::atomic<uint64_t> pieces_committed{0};
+    std::atomic<uint32_t> file_index{0};
+    std::atomic<uint32_t> piece_index{0};
+    std::atomic<int> inflight{0};
+    std::atomic<int> peer_retries{0};
+};
+
 bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& host, uint16_t port,
                            const Digest48& model_id, std::string& err, std::atomic<bool>* stop = nullptr,
-                           const fs::path& pinfile = {});
+                           const fs::path& pinfile = {}, RetrieveProgress* progress = nullptr);
 
 } // namespace modelnet
 

@@ -12,6 +12,7 @@
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/crypto.h>
+#include <openssl/err.h>
 
 #include <cstdlib>
 
@@ -95,8 +96,12 @@ std::string OpensslBin()
 
 void SetPq1SocketOpts(int fd, bool nonblock)
 {
-    int mss = 800;
-    setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss, sizeof(mss));
+    // TLS records stay 512 bytes (PMTU hygiene). Do not clamp TCP MSS:
+    // MSS 800 packed one record per packet and capped WAN granite at
+    // ~0.2 MB/s. Let the path carry several 512-byte records per segment.
+    int buf = 1 << 20;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof(buf));
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
     // TLS records are capped at 512 bytes. Disable path-MTU "don't
     // fragment" so a 512-byte record is not dropped on a smaller path.
     // Linux: IP_PMTUDISC_DONT. Darwin has no IP_MTU_DISCOVER; clear
@@ -179,7 +184,15 @@ static bool SslWantWait(SSL* ssl, int rc, int fd, int timeout_ms, std::atomic<bo
         err = "tls closed";
         return false;
     }
-    err = "tls io";
+    const int saved = errno;
+    char sslbuf[256] = {};
+    const unsigned long es = ERR_get_error();
+    if (es != 0) ERR_error_string_n(es, sslbuf, sizeof(sslbuf));
+    err = std::string("tls io ssl_error=") + std::to_string(w) + " errno=" + std::to_string(saved);
+    if (sslbuf[0]) {
+        err += " ";
+        err += sslbuf;
+    }
     return false;
 }
 
@@ -207,8 +220,13 @@ bool SslHandshake(void* ssl_void, int fd, bool accept, int timeout_ms, std::atom
 bool SslWriteAll(void* ssl_void, int fd, const std::string& data, int timeout_ms, std::atomic<bool>* stop, std::string& err)
 {
     auto* ssl = static_cast<SSL*>(ssl_void);
-    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
+    // Keep max_send_fragment=512 from handshake. Do not enable PARTIAL_WRITE:
+    // that made SSL_write return after one 512-byte record (thousands of
+    // syscalls per 4 MiB piece). Without it OpenSSL emits many records into
+    // the socket buffer and retries the same pointer on WANT_WRITE.
+    SSL_clear_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
     SSL_clear_mode(ssl, SSL_MODE_AUTO_RETRY);
+    SSL_set_max_send_fragment(ssl, 512);
     size_t off = 0;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (off < data.size()) {
@@ -231,24 +249,35 @@ bool SslWriteAll(void* ssl_void, int fd, const std::string& data, int timeout_ms
     return true;
 }
 
-std::string SslReadHttp(void* ssl_void, int fd, size_t cap, int timeout_ms, std::atomic<bool>* stop)
+std::string SslReadHttp(void* ssl_void, int fd, size_t cap, int timeout_ms, std::atomic<bool>* stop, std::string* err)
 {
     auto* ssl = static_cast<SSL*>(ssl_void);
-    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
     SSL_clear_mode(ssl, SSL_MODE_AUTO_RETRY);
     std::string out;
     char buf[4096];
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    auto set_err = [&](const std::string& e) {
+        if (err && err->empty()) *err = e;
+    };
     while (out.size() < cap) {
-        if (stop && stop->load()) break;
+        if (stop && stop->load()) {
+            set_err("stopped");
+            break;
+        }
         auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
-        if (left <= 0) break;
+        if (left <= 0) {
+            set_err("timeout");
+            break;
+        }
         const int n = SSL_read(ssl, buf, sizeof(buf));
         if (n > 0) {
             out.append(buf, static_cast<size_t>(n));
             const auto pos = out.find("\r\n\r\n");
             if (pos == std::string::npos) {
-                if (out.size() > PQ1_HTTP_HEADER_CAP) break;
+                if (out.size() > PQ1_HTTP_HEADER_CAP) {
+                    set_err("http headers too large");
+                    break;
+                }
                 continue;
             }
             size_t clen = 0;
@@ -260,11 +289,46 @@ std::string SslReadHttp(void* ssl_void, int fd, size_t cap, int timeout_ms, std:
             if (out.size() >= pos + 4 + clen) break;
             continue;
         }
-        if (n == 0) break;
-        std::string err;
-        if (!SslWantWait(ssl, n, fd, static_cast<int>(left), stop, err)) break;
+        if (n == 0) {
+            set_err("tls closed");
+            break;
+        }
+        std::string werr;
+        if (!SslWantWait(ssl, n, fd, static_cast<int>(left), stop, werr)) {
+            set_err(werr.empty() ? "tls io" : werr);
+            break;
+        }
     }
     return out;
+}
+
+bool IsTransientPq1Error(const std::string& err)
+{
+    if (err.empty()) return true;
+    if (err.find("cancelled") != std::string::npos) return false;
+    if (err == "stopped") return false;
+    if (err.find("not strict PQ1") != std::string::npos) return false;
+    if (err.find("pin mismatch") != std::string::npos) return false;
+    if (err.find("missing FreeGrant") != std::string::npos) return false;
+    static const char* kNeedles[] = {
+        "tls io",
+        "tls closed",
+        "timeout",
+        "truncated http",
+        "connect failed",
+        "handshake",
+        "socket closed",
+        "poll",
+        "outbound connection ceiling",
+        "piece fetch failed",
+        "write failed",
+        "write timeout",
+        "http headers too large",
+    };
+    for (const char* n : kNeedles) {
+        if (err.find(n) != std::string::npos) return true;
+    }
+    return false;
 }
 
 bool ExtractPeerTransportPin(void* ssl_void, Digest48& out, std::string& err)

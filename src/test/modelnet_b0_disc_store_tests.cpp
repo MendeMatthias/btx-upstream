@@ -267,18 +267,21 @@ BOOST_AUTO_TEST_CASE(disc_06_stale_record_eviction)
 
 BOOST_AUTO_TEST_CASE(disc_07_sybil_bounds)
 {
-    BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_INBOUND_PER_NETGROUP, 2);
+    BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_INBOUND_PER_NETGROUP, 8);
     BOOST_CHECK_EQUAL(modelnet::PQ1_UNAUTH_HANDSHAKE_LIMIT, 4);
     BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_INBOUND, 16);
     BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_OUTBOUND, 8);
+    BOOST_CHECK_LE(modelnet::PQ1_INFLIGHT_PIECES, modelnet::PQ1_MAX_INBOUND_PER_NETGROUP);
 
     const uint32_t ng = 0xD15C0007u;
     modelnet::ConnLimits lim;
-    BOOST_CHECK(lim.TryInbound(ng));
-    BOOST_CHECK(lim.TryInbound(ng));
+    for (int i = 0; i < modelnet::PQ1_MAX_INBOUND_PER_NETGROUP; ++i) {
+        BOOST_CHECK(lim.TryInbound(ng));
+    }
     BOOST_CHECK(!lim.TryInbound(ng));
-    lim.ReleaseInbound(ng);
-    lim.ReleaseInbound(ng);
+    for (int i = 0; i < modelnet::PQ1_MAX_INBOUND_PER_NETGROUP; ++i) {
+        lim.ReleaseInbound(ng);
+    }
 
     modelnet::ClearUnauth(ng);
     for (int i = 0; i < modelnet::PQ1_UNAUTH_HANDSHAKE_LIMIT; ++i) {

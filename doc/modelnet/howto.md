@@ -67,6 +67,11 @@ the live attestor helper.
 ### Fail-fast rule
 
 - `getmodeljob` status `failed` → print the error and **exit** (no remaining timeout).
+  While `status=running`, `last_err` / `peer_retries` / `bytes_committed` may
+  show a transient `tls io`; that is resume, not a FAIL.
+- Prefer loopback or LAN to the seeder (`127.0.0.1:29448` when fetcher and
+  seeder are the same host). Hairpin through a public hostname is not the
+  retrieve test.
 - Helper process gone or log `unknown argument` / `fail-closed` → **exit** (do not wait for the socket).
 - Handshake/grant errors surface as `hello failed`, `missing FreeGrant`,
   `piece HTTP 403 … expired` (client then refreshes the 600s FreeGrant).

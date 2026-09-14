@@ -291,6 +291,15 @@ bool ModelStore::GetPiece(const Digest48& artifact, uint32_t file_index, uint32_
     return true;
 }
 
+bool ModelStore::HasPiece(const Digest48& artifact, uint32_t file_index, uint32_t piece_index) const
+{
+    const fs::path path = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str() /
+                           (std::to_string(piece_index) + ".piece").c_str();
+    std::error_code ec;
+    const auto sz = std::filesystem::file_size(path, ec);
+    return !ec && sz > 0;
+}
+
 bool ModelStore::Pin(const Digest48& model_id, std::string& err)
 {
     (void)err;

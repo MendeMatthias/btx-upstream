@@ -485,6 +485,7 @@ BOOST_AUTO_TEST_CASE(v11_getmodel_job_rpc)
     BOOST_CHECK_EQUAL(result["schema_version"].getInt<int>(), 2);
     BOOST_REQUIRE(result.exists("jobs"));
     BOOST_CHECK(result["jobs"].isArray());
+    BOOST_CHECK(result.exists("used_bytes"));
 
     rpc.pushKV("method", "cancelmodeljob");
     result = UniValue();

@@ -648,45 +648,43 @@ struct Pq1Session {
         addrinfo* res = nullptr;
         if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res) {
             err = "resolve failed";
+            Close();
             return false;
         }
         fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
         if (fd < 0) {
             freeaddrinfo(res);
             err = "socket";
+            Close();
             return false;
         }
         SetPq1SocketOpts(fd, true);
         const int cr = connect(fd, res->ai_addr, res->ai_addrlen);
         if (cr != 0 && errno != EINPROGRESS) {
-            close(fd);
-            fd = -1;
             freeaddrinfo(res);
             err = "connect failed";
+            Close();
             return false;
         }
         if (!WaitFd(fd, true, PQ1_HANDSHAKE_MS, stop, err)) {
-            close(fd);
-            fd = -1;
             freeaddrinfo(res);
+            Close();
             return false;
         }
         int soerr = 0;
         socklen_t slen = sizeof(soerr);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen);
         if (soerr != 0) {
-            close(fd);
-            fd = -1;
             freeaddrinfo(res);
             err = "connect failed";
+            Close();
             return false;
         }
         freeaddrinfo(res);
         ssl = SSL_new(static_cast<SSL_CTX*>(ctx.SslCtx()));
         if (!ssl) {
-            close(fd);
-            fd = -1;
             err = "SSL_new";
+            Close();
             return false;
         }
         SSL_set_fd(ssl, fd);
@@ -743,8 +741,12 @@ struct Pq1Session {
             return false;
         }
         const size_t cap = req.path.find("/pieces/") != std::string::npos ? MAX_PIECE_HTTP : MAX_RPC_BODY + 8192;
-        const std::string raw = SslReadHttp(ssl, fd, cap, wto, stop);
+        std::string rerr;
+        const std::string raw = SslReadHttp(ssl, fd, cap, wto, stop, &rerr);
         if (!ParseHttpResponse(raw, resp, err)) {
+            if (err.empty() || err == "truncated http") {
+                if (!rerr.empty()) err = rerr;
+            }
             Close();
             return false;
         }
@@ -1526,6 +1528,10 @@ struct RetrieveJob {
     std::string status{"queued"};
     UniValue result;
     std::string err;
+    std::string last_peer;
+    std::string last_err;
+    mutable std::mutex mu;
+    RetrieveProgress progress;
     std::atomic<bool> cancel{false};
     std::thread worker;
 
@@ -1556,6 +1562,17 @@ UniValue RetrieveJobJson(const RetrieveJob& j)
     o.pushKV("status", j.status);
     if (j.result.isObject() && !j.result.getKeys().empty()) o.pushKV("result", j.result);
     if (!j.err.empty()) o.pushKV("error", j.err);
+    o.pushKV("bytes_committed", j.progress.bytes_committed.load());
+    o.pushKV("pieces_committed", j.progress.pieces_committed.load());
+    o.pushKV("file_index", static_cast<int>(j.progress.file_index.load()));
+    o.pushKV("piece_index", static_cast<int>(j.progress.piece_index.load()));
+    o.pushKV("inflight", j.progress.inflight.load());
+    o.pushKV("peer_retries", j.progress.peer_retries.load());
+    {
+        std::lock_guard<std::mutex> lock(j.mu);
+        if (!j.last_peer.empty()) o.pushKV("last_peer", j.last_peer);
+        if (!j.last_err.empty()) o.pushKV("last_err", j.last_err);
+    }
     return o;
 }
 
@@ -1590,6 +1607,8 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
         const fs::path pinfile = cat.Store().Root().parent_path() / "tls" / "pins.json";
         std::set<std::string> failed_peers;
         std::string last_err;
+        int transient_streak = 0;
+        uint64_t last_bytes = 0;
         while (true) {
             if (job->cancel.load()) {
                 failed("cancelled");
@@ -1606,6 +1625,10 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                 failed(last_err.empty() ? "retrieve failed" : last_err);
                 return;
             }
+            {
+                std::lock_guard<std::mutex> lock(job->mu);
+                job->last_peer = peer;
+            }
             std::string host;
             uint16_t port = 0;
             if (!SplitHostPort(peer, host, port)) {
@@ -1615,7 +1638,7 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
             }
             std::string rerr;
             try {
-                if (RetrieveFreeFromPeer(cat, pq, host, port, model_id, rerr, &job->cancel, pinfile)) {
+                if (RetrieveFreeFromPeer(cat, pq, host, port, model_id, rerr, &job->cancel, pinfile, &job->progress)) {
                     std::string seed_err;
                     cat.ApplyDemandSeed(model_id, seed_err);
                     CatalogEntry got;
@@ -1628,6 +1651,7 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                     r.pushKV("model_id", model_id.Hex());
                     r.pushKV("failed_contacts", static_cast<int>(failed_peers.size()));
                     r.pushKV("last_peer", peer);
+                    r.pushKV("peer_retries", job->progress.peer_retries.load());
                     job->result = std::move(r);
                     job->status = "done";
                     return;
@@ -1638,7 +1662,34 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                 rerr = "retrieve exception";
             }
             last_err = rerr.empty() ? "retrieve failed" : rerr;
+            {
+                std::lock_guard<std::mutex> lock(job->mu);
+                job->last_err = last_err;
+            }
+            const uint64_t now_bytes = job->progress.bytes_committed.load();
+            const bool progressed = now_bytes > last_bytes;
+            last_bytes = now_bytes;
+            if (IsTransientPq1Error(last_err) && transient_streak < PQ1_PEER_TRANSIENT_TRIES) {
+                job->progress.peer_retries.fetch_add(1);
+                ++transient_streak;
+                if (!progressed) {
+                    int backoff = PQ1_PEER_RETRY_MS << std::min(transient_streak, 4);
+                    if (backoff > 15000) backoff = 15000;
+                    for (int slept = 0; slept < backoff; slept += 250) {
+                        if (job->cancel.load()) {
+                            failed("cancelled");
+                            return;
+                        }
+                        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                    }
+                } else {
+                    transient_streak = 0;
+                }
+                continue;
+            }
+            last_err = rerr.empty() ? "retrieve failed" : rerr;
             failed_peers.insert(peer);
+            transient_streak = 0;
         }
     });
     return job->id;
@@ -1694,6 +1745,9 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("capabilities", CapabilitiesObject());
         result.pushKV("http_workers", PQ1_HTTP_WORKERS);
         result.pushKV("http_queue", PQ1_HTTP_QUEUE);
+        result.pushKV("inflight_pieces", PQ1_INFLIGHT_PIECES);
+        result.pushKV("inbound_per_netgroup", PQ1_MAX_INBOUND_PER_NETGROUP);
+        result.pushKV("transfer_timeout_ms", PQ1_TRANSFER_MS);
         result.pushKV("inbound_connections", GlobalConnLimits().Inbound());
         result.pushKV("outbound_connections", GlobalConnLimits().Outbound());
         result.pushKV("peer_pin", "TOFU tls_spki_hash D384(BTX/TransportKey/v2, DER_SPKI)");
@@ -2096,6 +2150,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         }
         result.pushKV("jobs", arr);
         result.pushKV("job_count", static_cast<int>(arr.size()));
+        result.pushKV("used_bytes", cat.UsedBytes());
         return true;
     }
     if (method == "createmodelrelease") {
@@ -2601,7 +2656,8 @@ bool LoadPq1Identity(Pq1Context& pq, const fs::path& modeldir, std::string& err)
 }
 
 bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& host, uint16_t port,
-                          const Digest48& model_id, std::string& err, std::atomic<bool>* stop, const fs::path& pinfile)
+                          const Digest48& model_id, std::string& err, std::atomic<bool>* stop, const fs::path& pinfile,
+                          RetrieveProgress* progress)
 {
     auto init_sess = [&](Pq1Session& sess) -> bool {
         sess.stop = stop;
@@ -2636,6 +2692,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
     std::vector<std::pair<std::string, std::string>> grant_headers;
     std::mutex grant_mu;
     auto issue_grant = [&](Pq1Session& s, uint32_t file_index, std::string& gerr) -> bool {
+        std::lock_guard<std::mutex> lock(grant_mu);
         NativeRequest grant_req;
         NativeResponse grant_resp;
         grant_req.method = "POST";
@@ -2658,7 +2715,6 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
             gerr = "missing FreeGrant";
             return false;
         }
-        std::lock_guard<std::mutex> lock(grant_mu);
         grant_headers.clear();
         grant_headers.emplace_back("X-BTX-Grant-Payload", gj["payload_hex"].get_str());
         grant_headers.emplace_back("X-BTX-Grant-Sig", gj["sig_hex"].get_str());
@@ -2765,6 +2821,11 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
         return false;
     };
 
+    if (progress) {
+        progress->bytes_committed.store(cat.UsedBytes());
+        progress->pieces_committed.store(0);
+    }
+
     uint32_t file_index = 0;
     for (const auto& f : man["files"].getValues()) {
         const uint64_t size = f["size"].getInt<uint64_t>();
@@ -2772,61 +2833,99 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
         if (!Digest48::FromHex(f["pieces_root"].get_str(), pieces_root, err)) return false;
         if (!Digest48::FromHex(f["sha384"].get_str(), sha, err)) return false;
         const uint64_t n = size == 0 ? 0 : (size + PIECE_SIZE - 1) / PIECE_SIZE;
+        if (progress) progress->file_index.store(file_index);
         if (!issue_grant(sess, file_index, err)) return false;
         sess.Close();
-        if (!init_sess(sess)) return false;
         std::vector<Digest48> leaves(n);
-        Pq1Session sess2;
-        if (n > 1) {
-            sess2.stop = stop;
-            sess2.pinfile = pinfile;
-            sess2.Connect(pq, host, port, err);
-        }
-        for (uint64_t i = 0; i < n; i += 2) {
+        std::vector<uint64_t> missing;
+        missing.reserve(n);
+        for (uint64_t i = 0; i < n; ++i) {
             if (stop && stop->load()) {
                 err = "stopped";
                 return false;
             }
-            std::vector<unsigned char> raw0, raw1;
-            std::vector<Digest48> proof0, proof1;
-            uint64_t hs0 = size, hs1 = size;
-            Digest48 hr0 = pieces_root, hr1 = pieces_root;
-            std::string e0, e1;
-            bool ok1 = true;
-            std::thread t;
-            if (i + 1 < n && sess2.ssl) {
-                t = std::thread([&] {
-                    try {
-                        ok1 = fetch_one(sess2, file_index, i + 1, size, pieces_root, raw1, proof1, hs1, hr1, e1);
-                    } catch (const std::exception& ex) {
-                        ok1 = false;
-                        e1 = ex.what();
-                    } catch (...) {
-                        ok1 = false;
-                        e1 = "piece thread exception";
-                    }
-                });
+            std::vector<unsigned char> raw;
+            std::string skip_err;
+            if (cat.Store().HasPiece(artifact, file_index, static_cast<uint32_t>(i)) &&
+                cat.Store().GetPiece(artifact, file_index, static_cast<uint32_t>(i), raw, skip_err)) {
+                leaves[i] = ChunkLeaf(i, raw);
+                if (progress) {
+                    progress->piece_index.store(static_cast<uint32_t>(i));
+                    progress->pieces_committed.fetch_add(1);
+                    progress->bytes_committed.store(cat.UsedBytes());
+                }
+            } else {
+                missing.push_back(i);
             }
-            if (!fetch_one(sess, file_index, i, size, pieces_root, raw0, proof0, hs0, hr0, e0)) {
-                if (t.joinable()) t.join();
-                err = e0;
+        }
+        if (!missing.empty()) {
+            std::vector<std::unique_ptr<Pq1Session>> pool;
+            for (int k = 0; k < PQ1_INFLIGHT_PIECES; ++k) {
+                auto s = std::make_unique<Pq1Session>();
+                s->stop = stop;
+                s->pinfile = pinfile;
+                std::string cerr;
+                if (s->Connect(pq, host, port, cerr)) {
+                    pool.push_back(std::move(s));
+                } else if (pool.empty()) {
+                    if (k + 1 >= 3) {
+                        err = cerr.empty() ? "connect failed" : cerr;
+                        return false;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if (pool.empty()) {
+                err = err.empty() ? "connect failed" : err;
                 return false;
             }
-            leaves[i] = ChunkLeaf(i, raw0);
-            if (t.joinable()) {
-                t.join();
-                if (!ok1) {
-                    err = e1;
-                    return false;
+            if (progress) progress->inflight.store(static_cast<int>(pool.size()));
+            std::atomic<size_t> next{0};
+            std::atomic<bool> fail{false};
+            std::mutex err_mu;
+            auto worker = [&](Pq1Session& s) {
+                while (!fail.load()) {
+                    const size_t slot = next.fetch_add(1);
+                    if (slot >= missing.size()) return;
+                    const uint64_t i = missing[slot];
+                    std::vector<unsigned char> raw;
+                    std::vector<Digest48> proof;
+                    uint64_t hs = size;
+                    Digest48 hr = pieces_root;
+                    std::string local_err;
+                    try {
+                        if (!fetch_one(s, file_index, i, size, pieces_root, raw, proof, hs, hr, local_err)) {
+                            std::lock_guard<std::mutex> lock(err_mu);
+                            if (!fail.exchange(true)) err = local_err.empty() ? "piece fetch failed" : local_err;
+                            return;
+                        }
+                    } catch (const std::exception& ex) {
+                        std::lock_guard<std::mutex> lock(err_mu);
+                        if (!fail.exchange(true)) err = std::string("retrieve exception: ") + ex.what();
+                        return;
+                    } catch (...) {
+                        std::lock_guard<std::mutex> lock(err_mu);
+                        if (!fail.exchange(true)) err = "piece thread exception";
+                        return;
+                    }
+                    leaves[i] = ChunkLeaf(i, raw);
+                    if (progress) {
+                        progress->piece_index.store(static_cast<uint32_t>(i));
+                        progress->pieces_committed.fetch_add(1);
+                        progress->bytes_committed.store(cat.UsedBytes());
+                    }
                 }
-                leaves[i + 1] = ChunkLeaf(i + 1, raw1);
-            } else if (i + 1 < n) {
-                if (!fetch_one(sess, file_index, i + 1, size, pieces_root, raw1, proof1, hs1, hr1, e1)) {
-                    err = e1;
-                    return false;
-                }
-                leaves[i + 1] = ChunkLeaf(i + 1, raw1);
+            };
+            std::vector<std::thread> threads;
+            for (size_t k = 1; k < pool.size(); ++k) {
+                Pq1Session* ps = pool[k].get();
+                threads.emplace_back([worker, ps] { worker(*ps); });
             }
+            worker(*pool[0]);
+            for (auto& t : threads) t.join();
+            if (progress) progress->inflight.store(0);
+            if (fail.load()) return false;
         }
         if (size > 0) {
             size_t width = 1;

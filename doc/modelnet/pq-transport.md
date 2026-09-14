@@ -31,6 +31,16 @@ when the host provides 3.5.5 with the same algorithms.
 The SSL_CTX pins `MLKEM768` only. Tests inspect negotiated group, version,
 and ciphersuite and reject a hybrid peer.
 
-TLS record size is bounded (512-byte send fragments, clamped MSS) so a
-4 MiB piece cannot stall behind a WAN PMTU blackhole. That is transport
-hygiene, not a change of suite.
+TLS record size is bounded (512-byte send fragments) so a 4 MiB piece
+cannot stall behind a WAN PMTU blackhole. TCP MSS follows the path: the
+helper does **not** clamp `TCP_MAXSEG` to 800 (that packed one record per
+packet and capped a real granite retrieve at ~0.2 MB/s). `SSL_write`
+emits many 512-byte records into the socket buffer; it does not
+PARTIAL_WRITE-step 512 bytes per syscall.
+
+One IPv4 buyer may open `PQ1_INFLIGHT_PIECES` (8) piece sessions. The
+seeder `PQ1_MAX_INBOUND_PER_NETGROUP` matches that so a single WAN IP is
+not fail-closed at 2 connections. Unauth handshake flood is still 4
+failures / 60s. Piece transfer timeout is 600s so a slow 4 MiB piece is
+retried, not abandoned. Transient `tls io` / timeout does **not**
+blacklist the only seeder; committed pieces stay on disk.

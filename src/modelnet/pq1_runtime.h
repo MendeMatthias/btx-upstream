@@ -21,14 +21,18 @@ constexpr int PQ1_HTTP_WORKERS = 8;
 constexpr int PQ1_HTTP_QUEUE = 32;
 constexpr int PQ1_MAX_INBOUND = 16;
 constexpr int PQ1_MAX_OUTBOUND = 8;
-constexpr int PQ1_MAX_INBOUND_PER_NETGROUP = 2;
-constexpr int PQ1_INFLIGHT_PIECES = 2;
+/** One IPv4 buyer must be able to pipeline PQ1_INFLIGHT_PIECES. Still << MAX_INBOUND. */
+constexpr int PQ1_MAX_INBOUND_PER_NETGROUP = 8;
+constexpr int PQ1_INFLIGHT_PIECES = 8;
 constexpr int PQ1_HANDSHAKE_MS = 10000;
 constexpr int PQ1_IDLE_MS = 30000;
-constexpr int PQ1_TRANSFER_MS = 120000;
+/** 4 MiB piece on a slow WAN; 120s fail-closed the granite fresh-buyer. */
+constexpr int PQ1_TRANSFER_MS = 600000;
 constexpr int PQ1_UNAUTH_HANDSHAKE_LIMIT = 4;
 constexpr int PQ1_UNAUTH_WINDOW_S = 60;
 constexpr int PQ1_PIECE_RETRIES = 8;
+constexpr int PQ1_PEER_TRANSIENT_TRIES = 1024;
+constexpr int PQ1_PEER_RETRY_MS = 1000;
 constexpr uint64_t PQ1_RECONNECT_BYTES = 8ULL << 30;
 /** Grant headers carry ML-DSA-44 hex; 16 KiB is too small for a typed FreeGrant GET. */
 constexpr size_t PQ1_HTTP_HEADER_CAP = 64 * 1024;
@@ -39,7 +43,9 @@ bool WaitFd(int fd, bool want_write, int timeout_ms, std::atomic<bool>* stop, st
 
 bool SslHandshake(void* ssl, int fd, bool accept, int timeout_ms, std::atomic<bool>* stop, std::string& err);
 bool SslWriteAll(void* ssl, int fd, const std::string& data, int timeout_ms, std::atomic<bool>* stop, std::string& err);
-std::string SslReadHttp(void* ssl, int fd, size_t cap, int timeout_ms, std::atomic<bool>* stop);
+std::string SslReadHttp(void* ssl, int fd, size_t cap, int timeout_ms, std::atomic<bool>* stop, std::string* err = nullptr);
+/** WAN RST / timeout / truncated HTTP: retry the same seeder. Pin mismatch is not transient. */
+bool IsTransientPq1Error(const std::string& err);
 
 bool ExtractPeerTransportPin(void* ssl, Digest48& out, std::string& err);
 bool CheckOrStorePin(const fs::path& pinfile, const std::string& endpoint, const Digest48& pin, std::string& err);

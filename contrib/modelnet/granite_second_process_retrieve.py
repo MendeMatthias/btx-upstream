@@ -61,6 +61,14 @@ def wait_helper(proc, timeout=30):
     raise SystemExit(f"second-process helper did not start: {last}\n{extra}")
 
 
+def helper_alive():
+    try:
+        rpc("getmodelnetworkinfo", [], 5)
+        return True
+    except Exception:
+        return False
+
+
 def poll_retrieve(got, timeout):
     status = got.get("status")
     if status in ("retrieved", "local"):
@@ -78,8 +86,32 @@ def poll_retrieve(got, timeout):
         if arr:
             job = arr[0]
             st = job.get("status")
-            used = sum(p.stat().st_size for p in DIR.rglob("*") if p.is_file())
-            print("job", st, "elapsed", int(time.time() - t0), "bytes_on_disk", used, flush=True)
+            used = jobs.get("used_bytes")
+            if used is None:
+                used = sum(p.stat().st_size for p in DIR.rglob("*") if p.is_file())
+            print(
+                "job",
+                st,
+                "elapsed",
+                int(time.time() - t0),
+                "used_bytes",
+                used,
+                "bytes_committed",
+                job.get("bytes_committed"),
+                "pieces",
+                job.get("pieces_committed"),
+                "file",
+                job.get("file_index"),
+                "piece",
+                job.get("piece_index"),
+                "inflight",
+                job.get("inflight"),
+                "retries",
+                job.get("peer_retries"),
+                "last_err",
+                job.get("last_err") or job.get("error"),
+                flush=True,
+            )
             if st == "failed":
                 raise SystemExit(f"retrieve failed: {job}")
             if st == "cancelled":
@@ -96,10 +128,11 @@ def poll_retrieve(got, timeout):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default=os.environ.get("SEEDER", ""), help="host:port of a non-production seeder")
-    ap.add_argument("--uri", default=os.environ.get("URI", DEFAULT_URI))
+    ap.add_argument("--host", default=os.environ.get("SEEDER") or "", help="host:port of a non-production seeder")
+    ap.add_argument("--uri", default=os.environ.get("URI") or DEFAULT_URI)
     ap.add_argument("--timeout", type=float, default=float(os.environ.get("WAN_TIMEOUT_S", "14400")))
     ap.add_argument("--keep", action="store_true", help="leave the second-process helper running")
+    ap.add_argument("--attach", action="store_true", help="reuse a live helper on this datadir (resume)")
     args = ap.parse_args()
     if not args.host:
         raise SystemExit("set --host or SEEDER=host:port (non-production helper)")
@@ -117,11 +150,33 @@ def main():
         "-modelstorage=80GiB",
         f"-modelrpcsocket={SOCK}",
     ]
-    proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, env=env)
+    proc = None
+    if helper_alive():
+        if not args.attach:
+            raise SystemExit(f"helper already running at {SOCK}; pass --attach to resume or stop it first")
+        print("attach existing helper", SOCK, flush=True)
+    else:
+        proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, env=env)
     try:
-        info = wait_helper(proc)
+        if proc is not None:
+            info = wait_helper(proc)
+        else:
+            info = rpc("getmodelnetworkinfo", [], 10)
         prop = info.get("propagation") or {}
-        print("pq1", info.get("pq1_ready"), info.get("openssl"), "demand", prop.get("demand_propagation"), flush=True)
+        print(
+            "pq1",
+            info.get("pq1_ready"),
+            info.get("openssl"),
+            "inflight",
+            info.get("inflight_pieces"),
+            "inbound_per_netgroup",
+            info.get("inbound_per_netgroup"),
+            "transfer_ms",
+            info.get("transfer_timeout_ms"),
+            "demand",
+            prop.get("demand_propagation"),
+            flush=True,
+        )
         if not prop.get("demand_propagation"):
             raise SystemExit(f"default demand_propagation false: {prop}")
         if prop.get("seed_upon_download_opt_in"):
@@ -147,7 +202,7 @@ def main():
         print("SECOND_PROCESS_RETRIEVE PASS bytes", models[0].get("bytes"), "seeded", models[0].get("seeded"))
         return 0
     finally:
-        if not args.keep:
+        if proc is not None and not args.keep:
             proc.terminate()
             try:
                 proc.wait(timeout=15)

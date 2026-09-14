@@ -159,11 +159,13 @@ BOOST_AUTO_TEST_CASE(disc_01_08_cpu_router_hidden_stale_sybil_fresh)
 
     modelnet::ConnLimits lim;
     const uint32_t ng = 0xB0D15C07u;
-    BOOST_CHECK(lim.TryInbound(ng));
-    BOOST_CHECK(lim.TryInbound(ng));
-    BOOST_CHECK(!lim.TryInbound(ng)); // per-netgroup 2
-    lim.ReleaseInbound(ng);
-    lim.ReleaseInbound(ng);
+    for (int i = 0; i < modelnet::PQ1_MAX_INBOUND_PER_NETGROUP; ++i) {
+        BOOST_CHECK(lim.TryInbound(ng));
+    }
+    BOOST_CHECK(!lim.TryInbound(ng));
+    for (int i = 0; i < modelnet::PQ1_MAX_INBOUND_PER_NETGROUP; ++i) {
+        lim.ReleaseInbound(ng);
+    }
 
     modelnet::BootstrapLimiter boot{int64_t{1} << 20};
     BOOST_CHECK(boot.Allow("svc", "ng1", 1024));
@@ -198,6 +200,8 @@ BOOST_AUTO_TEST_CASE(store_01_08_resume_corrupt_mismatch_paths_quota_gc)
     art.data[0] = 0x5A;
     const auto leaf = modelnet::ChunkLeaf(0, file);
     BOOST_REQUIRE(store.PutVerifiedPiece(art, 0, 0, file, leaf, err));
+    BOOST_CHECK(store.HasPiece(art, 0, 0));
+    BOOST_CHECK(!store.HasPiece(art, 0, 1));
     std::vector<unsigned char> got;
     BOOST_REQUIRE(store.GetPiece(art, 0, 0, got, err));
     BOOST_CHECK(got == file);
@@ -334,7 +338,7 @@ BOOST_AUTO_TEST_CASE(gpu_01_06_isolation_library)
     // GPU-03: catalog is never under wallet/; GPU-04 finite handshake/idle bounds.
     BOOST_CHECK(fs::PathToString(tmp).find("wallet") == std::string::npos);
     BOOST_CHECK_EQUAL(modelnet::PQ1_HANDSHAKE_MS, 10000);
-    BOOST_CHECK_EQUAL(modelnet::PQ1_TRANSFER_MS, 120000);
+    BOOST_CHECK_EQUAL(modelnet::PQ1_TRANSFER_MS, 600000);
 
     // GPU-05/06: in-process qualification does not throw; result is not a consensus hash.
     BOOST_CHECK(std::string{modelnet::QualResultName(q)} != "RUNTIME_OBSERVED");
@@ -401,7 +405,16 @@ BOOST_AUTO_TEST_CASE(iso_01_08_http_flood_helper_bounds)
     BOOST_CHECK_EQUAL(modelnet::PQ1_HTTP_QUEUE, 32);
     BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_INBOUND, 16);
     BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_OUTBOUND, 8);
-    BOOST_CHECK_EQUAL(modelnet::PQ1_INFLIGHT_PIECES, 2);
+    BOOST_CHECK_EQUAL(modelnet::PQ1_INFLIGHT_PIECES, 8);
+    BOOST_CHECK_LE(modelnet::PQ1_INFLIGHT_PIECES, modelnet::PQ1_MAX_OUTBOUND);
+    BOOST_CHECK_LE(modelnet::PQ1_INFLIGHT_PIECES, modelnet::PQ1_MAX_INBOUND_PER_NETGROUP);
+
+    BOOST_CHECK(modelnet::IsTransientPq1Error("tls io ssl_error=5 errno=104"));
+    BOOST_CHECK(modelnet::IsTransientPq1Error("timeout"));
+    BOOST_CHECK(modelnet::IsTransientPq1Error("truncated http"));
+    BOOST_CHECK(!modelnet::IsTransientPq1Error("missing FreeGrant"));
+    BOOST_CHECK(!modelnet::IsTransientPq1Error("cancelled"));
+    BOOST_CHECK(!modelnet::IsTransientPq1Error("pin mismatch"));
 
     const uint32_t ng = 0x15015008u;
     modelnet::ClearUnauth(ng);

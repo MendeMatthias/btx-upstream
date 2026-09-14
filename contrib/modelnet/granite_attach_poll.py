@@ -54,8 +54,29 @@ def main() -> int:
         if arr:
             job = arr[0]
             st = job.get("status")
-            used = sum(p.stat().st_size for p in sock.parent.rglob("*") if p.is_file())
-            print("job", st, "elapsed", int(time.time() - t0), "bytes_on_disk", used, flush=True)
+            print(
+                "job",
+                st,
+                "elapsed",
+                int(time.time() - t0),
+                "used_bytes",
+                jobs.get("used_bytes"),
+                "bytes_committed",
+                job.get("bytes_committed"),
+                "pieces",
+                job.get("pieces_committed"),
+                "file",
+                job.get("file_index"),
+                "piece",
+                job.get("piece_index"),
+                "inflight",
+                job.get("inflight"),
+                "retries",
+                job.get("peer_retries"),
+                "last_err",
+                job.get("last_err") or job.get("error"),
+                flush=True,
+            )
             if st == "failed":
                 raise SystemExit("retrieve failed: %s" % job)
             if st == "cancelled":

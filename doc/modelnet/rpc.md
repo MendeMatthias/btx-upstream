@@ -23,7 +23,7 @@ profile, no `btxd`).
 | `getmodelpolicy` / `setmodelpolicy` | Free-first + propagation (`seed`, `preserve_rare`); non-zero automatic spend and `auto_pay` are refused |
 | `addmodelnode` / `getmodelpeers` | Model-plane contacts, not AddrMan |
 | `exportmodelcontacts` / `importmodelcontacts` / `exportmodelpeers` / `importmodelpeers` / `importmodeltrust` | Public endpoints; download cannot modify trust |
-| `getmodeljob` / `cancelmodeljob` | Stub job list (`coverage: incomplete`) |
+| `getmodeljob` / `cancelmodeljob` | Job list with `status`, `bytes_committed`, `pieces_committed`, `file_index`, `piece_index`, `inflight`, `peer_retries`, `last_err`, catalog `used_bytes` |
 | `listmodelidentities` / `createmodelidentity` | Identity-only ML-DSA keys; never wallet keys |
 | `listmodelrules` / `setmodelrule` / `removemodelrule` | Model ACL; never BanMan |
 | `joinmodelcircle` / `leavemodelcircle` / `subscribemodelcollection` / `subscribemodelpolicy` | Local community policy; no on-chain membership |
