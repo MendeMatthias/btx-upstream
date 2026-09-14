@@ -564,4 +564,25 @@ BOOST_AUTO_TEST_CASE(store_08_gc_pins_prevent_eviction)
     BOOST_CHECK(!cat.GetVerifiedPiece(unpinned.artifact_id, 0, 0, bytes, proof, file_size, err));
 }
 
+BOOST_AUTO_TEST_CASE(store_verified_piece_cache_stable_proofs)
+{
+    const fs::path tmp = m_path_root / "store-piece-tree-cache";
+    modelnet::ModelCatalog cat{tmp, 1 << 20};
+    const auto imported = ImportTiny(cat, tmp / "src", 0xC0, /*pin=*/true);
+    std::string err;
+    std::vector<unsigned char> first_bytes, second_bytes;
+    std::vector<modelnet::Digest48> first_proof, second_proof;
+    uint64_t first_size = 0, second_size = 0;
+    BOOST_REQUIRE(cat.GetVerifiedPiece(imported.artifact_id, 0, 0, first_bytes, first_proof, first_size, err));
+    BOOST_REQUIRE(cat.GetVerifiedPiece(imported.artifact_id, 0, 0, second_bytes, second_proof, second_size, err));
+    // Second call must match first: Merkle cache must not change bytes, proof, or size.
+    BOOST_CHECK(first_bytes == second_bytes);
+    BOOST_REQUIRE_EQUAL(first_proof.size(), second_proof.size());
+    BOOST_CHECK(first_proof == second_proof);
+    BOOST_CHECK_EQUAL(first_size, second_size);
+    BOOST_CHECK_EQUAL(first_size, imported.core.files[0].size);
+    BOOST_CHECK(modelnet::VerifyPiece(imported.core.files[0].pieces_root, first_size, 0, first_bytes, first_proof));
+    BOOST_CHECK(modelnet::VerifyPiece(imported.core.files[0].pieces_root, second_size, 0, second_bytes, second_proof));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

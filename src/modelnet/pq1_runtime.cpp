@@ -310,6 +310,12 @@ bool IsTransientPq1Error(const std::string& err)
     if (err.find("not strict PQ1") != std::string::npos) return false;
     if (err.find("pin mismatch") != std::string::npos) return false;
     if (err.find("missing FreeGrant") != std::string::npos) return false;
+    // Peer HTTP bodies are not transport faults. "piece HTTP 404 … timeout"
+    // must not unlock a 1024-attempt retry storm.
+    if (err.find("piece HTTP") != std::string::npos) return false;
+    if (err.find("ENTITLEMENT") != std::string::npos) return false;
+    if (err.find("grant refresh") != std::string::npos) return false;
+    if (err.find("disk quota") != std::string::npos) return false;
     static const char* kNeedles[] = {
         "tls io",
         "tls closed",
@@ -324,6 +330,7 @@ bool IsTransientPq1Error(const std::string& err)
         "write failed",
         "write timeout",
         "http headers too large",
+        "resolve failed",
     };
     for (const char* n : kNeedles) {
         if (err.find(n) != std::string::npos) return true;

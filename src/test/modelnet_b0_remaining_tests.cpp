@@ -412,9 +412,11 @@ BOOST_AUTO_TEST_CASE(iso_01_08_http_flood_helper_bounds)
     BOOST_CHECK(modelnet::IsTransientPq1Error("tls io ssl_error=5 errno=104"));
     BOOST_CHECK(modelnet::IsTransientPq1Error("timeout"));
     BOOST_CHECK(modelnet::IsTransientPq1Error("truncated http"));
+    BOOST_CHECK(modelnet::IsTransientPq1Error("resolve failed"));
     BOOST_CHECK(!modelnet::IsTransientPq1Error("missing FreeGrant"));
     BOOST_CHECK(!modelnet::IsTransientPq1Error("cancelled"));
     BOOST_CHECK(!modelnet::IsTransientPq1Error("pin mismatch"));
+    BOOST_CHECK(!modelnet::IsTransientPq1Error("piece HTTP 404 {\"error\":\"timeout\"}"));
 
     const uint32_t ng = 0x15015008u;
     modelnet::ClearUnauth(ng);

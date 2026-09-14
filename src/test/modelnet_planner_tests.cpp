@@ -20,10 +20,12 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
 #include <fstream>
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(modelnet_planner_tests, BasicTestingSetup)
@@ -485,7 +487,10 @@ BOOST_AUTO_TEST_CASE(v11_getmodel_job_rpc)
     BOOST_CHECK_EQUAL(result["schema_version"].getInt<int>(), 2);
     BOOST_REQUIRE(result.exists("jobs"));
     BOOST_CHECK(result["jobs"].isArray());
-    BOOST_CHECK(result.exists("used_bytes"));
+    BOOST_CHECK_EQUAL(result["jobs"].size(), 0);
+    BOOST_REQUIRE(result.exists("used_bytes"));
+    BOOST_CHECK(result["used_bytes"].isNum());
+    BOOST_CHECK_EQUAL(result["used_bytes"].getInt<int64_t>(), static_cast<int64_t>(cat.UsedBytes()));
 
     rpc.pushKV("method", "cancelmodeljob");
     result = UniValue();
@@ -493,6 +498,25 @@ BOOST_AUTO_TEST_CASE(v11_getmodel_job_rpc)
     err.clear();
     BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, rpc, result, code, err));
     BOOST_CHECK(result.isObject());
+}
+
+BOOST_AUTO_TEST_CASE(retrieve_job_is_newer)
+{
+    // Later created_ms wins regardless of job_id.
+    BOOST_CHECK(modelnet::RetrieveJobIsNewer(300, "aa", 200, "zz"));
+    BOOST_CHECK(!modelnet::RetrieveJobIsNewer(100, "zz", 200, "aa"));
+    // Equal timestamps: larger job_id wins.
+    BOOST_CHECK(modelnet::RetrieveJobIsNewer(5, "b", 5, "a"));
+    BOOST_CHECK(!modelnet::RetrieveJobIsNewer(5, "a", 5, "b"));
+    BOOST_CHECK(modelnet::RetrieveJobIsNewer(5, "job-10", 5, "job-09"));
+    std::vector<std::pair<int64_t, std::string>> recs{{100, "aa"}, {300, "bb"}, {200, "cc"}, {300, "zz"}};
+    std::sort(recs.begin(), recs.end(), [](const auto& a, const auto& b) {
+        return modelnet::RetrieveJobIsNewer(a.first, a.second, b.first, b.second);
+    });
+    BOOST_CHECK_EQUAL(recs[0].second, "zz");
+    BOOST_CHECK_EQUAL(recs[1].second, "bb");
+    BOOST_CHECK_EQUAL(recs[2].second, "cc");
+    BOOST_CHECK_EQUAL(recs[3].second, "aa");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

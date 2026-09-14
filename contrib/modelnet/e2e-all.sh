@@ -69,6 +69,7 @@ echo
 echo "E2E_ALL PASS (local sequential). Prefer concurrent:"
 echo "  contrib/modelnet/e2e-parallel-a.sh && contrib/modelnet/e2e-parallel-b.sh"
 echo "Two-host: contrib/modelnet/e2e-regtest-two-host.sh"
+echo "Three-host: contrib/modelnet/e2e-regtest-three-host.sh"
 echo "Cross-host inspect: contrib/modelnet/e2e-cross-host-inspect.sh"
 echo "CUDA on a dedicated workstation: CUDA_HOST=... contrib/modelnet/cuda-isolated-e2e.sh"
 exit 0

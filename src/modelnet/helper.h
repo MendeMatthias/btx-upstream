@@ -76,7 +76,17 @@ struct RetrieveProgress {
     std::atomic<uint32_t> piece_index{0};
     std::atomic<int> inflight{0};
     std::atomic<int> peer_retries{0};
+    /** Unix epoch ms; updated only when bytes_committed changes. */
+    std::atomic<uint64_t> last_commit_ms{0};
 };
+
+/** Newest-first: higher created_ms wins; equal timestamps sort by job_id descending. */
+inline bool RetrieveJobIsNewer(int64_t created_a, const std::string& id_a,
+                               int64_t created_b, const std::string& id_b)
+{
+    if (created_a != created_b) return created_a > created_b;
+    return id_a > id_b;
+}
 
 bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& host, uint16_t port,
                            const Digest48& model_id, std::string& err, std::atomic<bool>* stop = nullptr,

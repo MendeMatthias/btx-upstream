@@ -73,24 +73,109 @@ def wait_unix(
     raise SystemExit(f"helper not ready in {timeout}s last={last}\n{log_tail(log)}")
 
 
+def pick_job(raw: Any, job_id: Optional[str] = None) -> dict:
+    """Select one getmodeljob entry.
+
+    Honor job_id when set. Otherwise prefer a running job so a stale
+    failed jobs[0] (helper stores jobs in std::map / lex order) cannot
+    mask the live retrieve. Newest running = last running in the array.
+    """
+    arr: list = []
+    if isinstance(raw, dict):
+        arr = raw.get("jobs") or []
+        if not arr and raw.get("status"):
+            if job_id and raw.get("job_id") and str(raw.get("job_id")) != str(job_id):
+                return {}
+            return raw
+    elif isinstance(raw, list):
+        arr = raw
+    if not arr:
+        return {}
+    if job_id:
+        want = str(job_id)
+        for j in arr:
+            if isinstance(j, dict) and str(j.get("job_id")) == want:
+                return j
+        return {}
+    running = [j for j in arr if isinstance(j, dict) and j.get("status") == "running"]
+    if running:
+        running.sort(
+            key=lambda j: (int(j.get("created_ms") or 0), str(j.get("job_id") or "")),
+            reverse=True,
+        )
+        return running[0]
+    done = [j for j in arr if isinstance(j, dict) and j.get("status") == "done"]
+    if done:
+        done.sort(
+            key=lambda j: (int(j.get("created_ms") or 0), str(j.get("job_id") or "")),
+            reverse=True,
+        )
+        return done[0]
+    last = arr[-1]
+    return last if isinstance(last, dict) else {}
+
+
+class BytesStallTracker:
+    """Fail-fast when bytes_committed is present and frozen while status=running."""
+
+    def __init__(self, stall_s: float = 120.0):
+        self.stall_s = float(stall_s)
+        self._seen = False
+        self._last: Any = None
+        self._t = time.time()
+
+    def observe(self, job: dict) -> None:
+        if self.stall_s <= 0 or not isinstance(job, dict):
+            return
+        if job.get("status") != "running":
+            return
+        inflight = job.get("inflight")
+        try:
+            inflight_n = int(inflight) if inflight is not None else -1
+        except (TypeError, ValueError):
+            inflight_n = -1
+        # inflight==0 is typically VerifyFileDigest at a shard boundary, not a stall.
+        if inflight_n == 0:
+            self._seen = True
+            self._last = job.get("bytes_committed")
+            self._t = time.time()
+            return
+        if "bytes_committed" not in job:
+            return
+        bc = job.get("bytes_committed")
+        now = time.time()
+        if not self._seen or bc != self._last:
+            self._seen = True
+            self._last = bc
+            self._t = now
+            return
+        if now - self._t >= self.stall_s:
+            raise SystemExit(
+                f"getmodeljob stalled: bytes_committed={bc} unchanged for {self.stall_s}s "
+                f"while status=running: {job}"
+            )
+
+
 def poll_job(
     fetch: Callable[[], Any],
     *,
     timeout: float,
     interval: float = 0.2,
     progress: Optional[Callable[[Any], None]] = None,
+    stall_s: float = 120.0,
+    job_id: Optional[str] = None,
 ) -> dict:
-    """Poll getmodeljob. status=failed/cancelled exits immediately (no remaining timeout)."""
+    """Poll getmodeljob. status=failed/cancelled exits immediately (no remaining timeout).
+
+    If bytes_committed is present and unchanged for stall_s (default 120)
+    while status=running, fail-fast. last_err while running is resume, not FAIL.
+    """
     t0 = time.time()
     job: dict = {}
+    stall = BytesStallTracker(stall_s)
     while time.time() - t0 < timeout:
         raw = fetch()
-        if isinstance(raw, dict):
-            arr = raw.get("jobs")
-            if arr:
-                job = arr[0]
-            elif raw.get("status"):
-                job = raw
+        job = pick_job(raw, job_id=job_id)
         if job:
             st = job.get("status")
             if progress:
@@ -101,5 +186,6 @@ def poll_job(
                 raise SystemExit(f"retrieve cancelled: {job}")
             if st == "done":
                 return job
+            stall.observe(job)
         time.sleep(interval)
     raise SystemExit(f"getmodeljob timeout: {job}")

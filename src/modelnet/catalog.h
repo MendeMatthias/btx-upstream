@@ -14,8 +14,10 @@
 #include <univalue.h>
 #include <util/fs.h>
 
+#include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace modelnet {
@@ -41,6 +43,20 @@ class ModelCatalog {
     std::vector<CatalogEntry> m_models;
     std::vector<std::string> m_peers;
     PreservationPolicy m_policy;
+
+    /** Merkle cache for GetVerifiedPiece. rows[0] is the power-of-two padded leaves.
+     *  Keyed by (artifact, file_index); the stored pieces_root must match or the slot is ignored. */
+    struct CachedPieceTree {
+        Digest48 pieces_root;
+        uint64_t file_size{0};
+        std::vector<Digest48> leaves;
+        std::vector<std::vector<Digest48>> rows;
+    };
+    using PieceTreeKey = std::pair<Digest48, uint32_t>;
+    mutable std::mutex m_piece_tree_mu;
+    mutable std::map<PieceTreeKey, CachedPieceTree> m_piece_trees;
+    void DropPieceTreeCache(const Digest48& artifact) const;
+    void DropPieceTreeCache(const Digest48& artifact, uint32_t file_index) const;
 
     bool PersistLocked(std::string& err);
     bool LoadLocked(std::string& err);

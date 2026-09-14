@@ -16,7 +16,6 @@ inference is removed from the roadmap (v1.1 D01).
 - Streaming import, 4 MiB verified pieces, free-first retrieve
 - Demand-seed default once a storage budget is allocated (D11); unsolicited fetch remains opt-in
 - Default automatic spend **0**; paid RPCs honestly `NOT_IMPLEMENTED`
-- Default automatic spend **0**; paid RPCs honestly `NOT_IMPLEMENTED`
 - HTLC reuse of 0.34.6 `htlc_sha256` / `buildhtlcclaim` / `buildhtlcrefund`
 
 ## What did not change

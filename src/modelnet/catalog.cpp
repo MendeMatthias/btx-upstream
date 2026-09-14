@@ -319,6 +319,7 @@ bool ModelCatalog::EnforceQuota(uint64_t need_bytes, std::string& err)
         if (m_store.UsedBytes() + need_bytes <= cap) break;
         if (it.pinned) continue;
         if (!m_store.RemoveArtifact(it.artifact_id, err)) return false;
+        DropPieceTreeCache(it.artifact_id);
         m_models.erase(std::remove_if(m_models.begin(), m_models.end(), [&](const CatalogEntry& m) {
             return m.model_id == it.model_id;
         }), m_models.end());
@@ -508,6 +509,7 @@ bool ModelCatalog::ImportPath(const std::string& path, bool pin, CatalogEntry& o
     if (!EncodeArtifactCore(ac, aenc, err)) return false;
     const Digest48 artifact_id = ArtifactCoreId(aenc);
     if (!m_store.RenameArtifact(staging, artifact_id, err)) return false;
+    DropPieceTreeCache(staging);
 
     out = {};
     out.model_id = model_id;
@@ -643,22 +645,71 @@ bool ModelCatalog::FindExact(ResourceKind kind, const Digest48& digest, CatalogE
     return false;
 }
 
+void ModelCatalog::DropPieceTreeCache(const Digest48& artifact) const
+{
+    std::lock_guard<std::mutex> lock(m_piece_tree_mu);
+    auto it = m_piece_trees.lower_bound(PieceTreeKey{artifact, 0});
+    while (it != m_piece_trees.end() && it->first.first == artifact) {
+        it = m_piece_trees.erase(it);
+    }
+}
+
+void ModelCatalog::DropPieceTreeCache(const Digest48& artifact, uint32_t file_index) const
+{
+    std::lock_guard<std::mutex> lock(m_piece_tree_mu);
+    m_piece_trees.erase(PieceTreeKey{artifact, file_index});
+}
+
 bool ModelCatalog::GetVerifiedPiece(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
                                       std::vector<unsigned char>& bytes, std::vector<Digest48>& proof,
                                       uint64_t& file_size, std::string& err) const
 {
+    Digest48 pieces_root;
+    std::vector<Digest48> cached_proof;
+    bool have_tree = false;
+    {
+        std::lock_guard<std::mutex> lock(m_piece_tree_mu);
+        const auto it = m_piece_trees.find(PieceTreeKey{artifact, file_index});
+        if (it != m_piece_trees.end() && !it->second.rows.empty() &&
+            piece_index < it->second.rows.front().size()) {
+            pieces_root = it->second.pieces_root;
+            file_size = it->second.file_size;
+            cached_proof = PieceProof(it->second.rows, piece_index);
+            have_tree = true;
+        }
+    }
+    if (have_tree) {
+        if (!m_store.GetPiece(artifact, file_index, piece_index, bytes, err)) return false;
+        proof = std::move(cached_proof);
+        if (VerifyPiece(pieces_root, file_size, piece_index, bytes, proof)) {
+            return true;
+        }
+        DropPieceTreeCache(artifact, file_index);
+        err.clear();
+    }
+
     PieceIndex idx;
     if (!m_store.LoadPieceIndex(artifact, file_index, idx, err)) return false;
     file_size = idx.file_size;
-    const auto rows = BuildChunkTreeFromLeaves(idx.leaves);
+    auto rows = BuildChunkTreeFromLeaves(idx.leaves);
     if (rows.empty()) {
         err = "chunk tree";
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_piece_tree_mu);
+        CachedPieceTree entry;
+        entry.pieces_root = idx.pieces_root;
+        entry.file_size = idx.file_size;
+        entry.leaves = std::move(idx.leaves);
+        entry.rows = rows;
+        m_piece_trees[PieceTreeKey{artifact, file_index}] = std::move(entry);
     }
     if (!m_store.GetPiece(artifact, file_index, piece_index, bytes, err)) return false;
     proof = PieceProof(rows, piece_index);
     if (!VerifyPiece(idx.pieces_root, file_size, piece_index, bytes, proof)) {
         err = "local piece proof failed";
+        DropPieceTreeCache(artifact, file_index);
         return false;
     }
     return true;
@@ -673,7 +724,15 @@ bool ModelCatalog::PutFetchedPiece(const Digest48& artifact, uint32_t file_index
         return false;
     }
     const Digest48 leaf = ChunkLeaf(piece_index, bytes);
-    return m_store.PutVerifiedPiece(artifact, file_index, piece_index, bytes, leaf, err);
+    if (!m_store.PutVerifiedPiece(artifact, file_index, piece_index, bytes, leaf, err)) return false;
+    {
+        std::lock_guard<std::mutex> lock(m_piece_tree_mu);
+        const auto it = m_piece_trees.find(PieceTreeKey{artifact, file_index});
+        if (it != m_piece_trees.end() && it->second.pieces_root != pieces_root) {
+            m_piece_trees.erase(it);
+        }
+    }
+    return true;
 }
 
 void ModelCatalog::AddPeer(const std::string& endpoint)

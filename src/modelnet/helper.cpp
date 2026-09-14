@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -94,6 +95,66 @@ std::string JsonError(const std::string& code, const std::string& message)
     o.pushKV("error_code", code);
     o.pushKV("message", message);
     return o.write();
+}
+
+int64_t NowEpochMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+void NoteRetrieveBytes(RetrieveProgress* progress, uint64_t bytes)
+{
+    if (!progress) return;
+    const uint64_t prev = progress->bytes_committed.exchange(bytes);
+    if (bytes != prev) {
+        progress->last_commit_ms.store(static_cast<uint64_t>(NowEpochMs()));
+    }
+}
+
+/** Single-quote for std::system. Unquoted $BTX_OPENSSL must not reach the shell. */
+std::string QuoteShellArg(const std::string& arg)
+{
+    std::string out = "'";
+    for (char c : arg) {
+        if (c == '\'') out += "'\"'\"'";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+
+int AddrConnectPreference(const sockaddr* sa)
+{
+    if (!sa) return 3;
+    if (sa->sa_family == AF_INET) {
+        const uint32_t a = ntohl(reinterpret_cast<const sockaddr_in*>(sa)->sin_addr.s_addr);
+        if ((a & 0xff000000u) == 0x7f000000u) return 0; // 127.0.0.0/8
+        if ((a & 0xff000000u) == 0x0a000000u) return 1; // 10.0.0.0/8
+        if ((a & 0xfff00000u) == 0xac100000u) return 1; // 172.16.0.0/12
+        if ((a & 0xffff0000u) == 0xc0a80000u) return 1; // 192.168.0.0/16
+        return 2;
+    }
+    if (sa->sa_family == AF_INET6) {
+        const auto* sin6 = reinterpret_cast<const sockaddr_in6*>(sa);
+        const uint8_t* b = sin6->sin6_addr.s6_addr;
+        static const uint8_t loop[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+        if (std::memcmp(b, loop, 16) == 0) return 0;
+        if ((b[0] & 0xfe) == 0xfc) return 1; // fc00::/7 ULA
+        bool mapped = true;
+        for (int i = 0; i < 10; ++i) {
+            if (b[i] != 0) mapped = false;
+        }
+        if (mapped && b[10] == 0xff && b[11] == 0xff) {
+            sockaddr_in v4{};
+            v4.sin_family = AF_INET;
+            std::memcpy(&v4.sin_addr, b + 12, 4);
+            return AddrConnectPreference(reinterpret_cast<const sockaddr*>(&v4));
+        }
+        return 2;
+    }
+    return 3;
 }
 
 bool SplitHostPort(const std::string& in, std::string& host, uint16_t& port)
@@ -609,7 +670,7 @@ struct Pq1Session {
 
     ~Pq1Session() { Close(); }
 
-    void Close()
+    void CloseTransport()
     {
         if (ssl) {
             SSL_shutdown(ssl);
@@ -621,6 +682,11 @@ struct Pq1Session {
             fd = -1;
         }
         transferred = 0;
+    }
+
+    void Close()
+    {
+        CloseTransport();
         if (outbound_held) {
             GlobalConnLimits().ReleaseOutbound();
             outbound_held = false;
@@ -644,74 +710,112 @@ struct Pq1Session {
         outbound_held = true;
         addrinfo hints{};
         hints.ai_socktype = SOCK_STREAM;
-        hints.ai_family = AF_INET;
+        hints.ai_family = AF_UNSPEC;
         addrinfo* res = nullptr;
         if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0 || !res) {
             err = "resolve failed";
             Close();
             return false;
         }
-        fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-        if (fd < 0) {
-            freeaddrinfo(res);
-            err = "socket";
-            Close();
-            return false;
-        }
-        SetPq1SocketOpts(fd, true);
-        const int cr = connect(fd, res->ai_addr, res->ai_addrlen);
-        if (cr != 0 && errno != EINPROGRESS) {
-            freeaddrinfo(res);
-            err = "connect failed";
-            Close();
-            return false;
-        }
-        if (!WaitFd(fd, true, PQ1_HANDSHAKE_MS, stop, err)) {
-            freeaddrinfo(res);
-            Close();
-            return false;
-        }
-        int soerr = 0;
-        socklen_t slen = sizeof(soerr);
-        getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen);
-        if (soerr != 0) {
-            freeaddrinfo(res);
-            err = "connect failed";
-            Close();
-            return false;
+        struct Candidate {
+            int family{AF_UNSPEC};
+            int socktype{0};
+            int protocol{0};
+            sockaddr_storage ss{};
+            socklen_t len{0};
+            int pref{3};
+        };
+        std::vector<Candidate> cands;
+        for (addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
+            if (!ai->ai_addr) continue;
+            if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) continue;
+            if (ai->ai_addrlen == 0 || ai->ai_addrlen > sizeof(sockaddr_storage)) continue;
+            Candidate c;
+            c.family = ai->ai_family;
+            c.socktype = ai->ai_socktype;
+            c.protocol = ai->ai_protocol;
+            c.len = ai->ai_addrlen;
+            std::memcpy(&c.ss, ai->ai_addr, ai->ai_addrlen);
+            c.pref = AddrConnectPreference(ai->ai_addr);
+            cands.push_back(c);
         }
         freeaddrinfo(res);
-        ssl = SSL_new(static_cast<SSL_CTX*>(ctx.SslCtx()));
-        if (!ssl) {
-            err = "SSL_new";
+        if (cands.empty()) {
+            err = "resolve failed";
             Close();
             return false;
         }
-        SSL_set_fd(ssl, fd);
-        SSL_set_connect_state(ssl);
-        if (!SslHandshake(ssl, fd, /*accept=*/false, PQ1_HANDSHAKE_MS, stop, err)) {
-            err = err.empty() ? "PQ1 handshake failed" : err;
-            Close();
-            return false;
-        }
-        NegotiatedPq1 n;
-        InspectNegotiated(ssl, n);
-        if (!IsStrictPq1(n)) {
-            err = "negotiated parameters are not strict PQ1";
-            Close();
-            return false;
-        }
-        Digest48 pin;
-        if (!ExtractPeerTransportPin(ssl, pin, err)) {
-            Close();
-            return false;
-        }
+        std::stable_sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
+            return a.pref < b.pref;
+        });
+
         const std::string endpoint = host + ":" + std::to_string(port);
-        if (!pinfile.empty() && !CheckOrStorePin(pinfile, endpoint, pin, err)) {
-            Close();
-            return false;
+        std::string last_try_err = "connect failed";
+        for (const auto& c : cands) {
+            if (stop && stop->load()) {
+                err = "stopped";
+                Close();
+                return false;
+            }
+            CloseTransport();
+            fd = ::socket(c.family, c.socktype, c.protocol);
+            if (fd < 0) {
+                last_try_err = "socket";
+                continue;
+            }
+            SetPq1SocketOpts(fd, true);
+            const int cr = connect(fd, reinterpret_cast<const sockaddr*>(&c.ss), c.len);
+            if (cr != 0 && errno != EINPROGRESS) {
+                last_try_err = "connect failed";
+                continue;
+            }
+            std::string werr;
+            if (!WaitFd(fd, true, PQ1_HANDSHAKE_MS, stop, werr)) {
+                last_try_err = werr.empty() ? "connect failed" : werr;
+                continue;
+            }
+            int soerr = 0;
+            socklen_t slen = sizeof(soerr);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &slen);
+            if (soerr != 0) {
+                last_try_err = "connect failed";
+                continue;
+            }
+            ssl = SSL_new(static_cast<SSL_CTX*>(ctx.SslCtx()));
+            if (!ssl) {
+                err = "SSL_new";
+                Close();
+                return false;
+            }
+            SSL_set_fd(ssl, fd);
+            SSL_set_connect_state(ssl);
+            std::string herr;
+            if (!SslHandshake(ssl, fd, /*accept=*/false, PQ1_HANDSHAKE_MS, stop, herr)) {
+                last_try_err = herr.empty() ? "PQ1 handshake failed" : herr;
+                continue;
+            }
+            NegotiatedPq1 n;
+            InspectNegotiated(ssl, n);
+            if (!IsStrictPq1(n)) {
+                last_try_err = "negotiated parameters are not strict PQ1";
+                continue;
+            }
+            Digest48 pin;
+            std::string pinerr;
+            if (!ExtractPeerTransportPin(ssl, pin, pinerr)) {
+                last_try_err = pinerr.empty() ? "no peer certificate" : pinerr;
+                continue;
+            }
+            if (!pinfile.empty() && !CheckOrStorePin(pinfile, endpoint, pin, pinerr)) {
+                err = pinerr.empty() ? "peer cert pin mismatch (TOFU)" : pinerr;
+                Close();
+                return false;
+            }
+            return true;
         }
-        return true;
+        err = last_try_err;
+        Close();
+        return false;
     }
 
     bool Ensure(std::string& err)
@@ -1523,8 +1627,11 @@ std::vector<std::string> AdvertisedNativeHttpPaths()
 
 namespace {
 
+constexpr size_t kKeepTerminalRetrieveJobs = 8;
+
 struct RetrieveJob {
     std::string id;
+    int64_t created_ms{0};
     std::string status{"queued"};
     UniValue result;
     std::string err;
@@ -1535,7 +1642,11 @@ struct RetrieveJob {
     std::atomic<bool> cancel{false};
     std::thread worker;
 
-    RetrieveJob() = default;
+    RetrieveJob()
+        : created_ms(NowEpochMs())
+    {
+        progress.last_commit_ms.store(static_cast<uint64_t>(created_ms));
+    }
     RetrieveJob(const RetrieveJob&) = delete;
     RetrieveJob& operator=(const RetrieveJob&) = delete;
     ~RetrieveJob()
@@ -1555,24 +1666,76 @@ std::string NewRetrieveJobId()
     return HexStr(Span<const unsigned char>{b, sizeof(b)});
 }
 
+/** Drop oldest done/failed jobs, keeping the newest kKeepTerminalRetrieveJobs. Caller holds g_retrieve_mu. */
+void PruneRetrieveJobsLocked()
+{
+    struct Item {
+        std::string id;
+        int64_t created_ms{0};
+        std::shared_ptr<RetrieveJob> job;
+    };
+    std::vector<Item> terminal;
+    for (auto& kv : g_retrieve_jobs) {
+        std::string st;
+        {
+            std::lock_guard<std::mutex> lock(kv.second->mu);
+            st = kv.second->status;
+        }
+        if (st == "done" || st == "failed") {
+            terminal.push_back({kv.first, kv.second->created_ms, kv.second});
+        }
+    }
+    if (terminal.size() <= kKeepTerminalRetrieveJobs) return;
+    std::sort(terminal.begin(), terminal.end(), [](const Item& a, const Item& b) {
+        return RetrieveJobIsNewer(a.created_ms, a.id, b.created_ms, b.id);
+    });
+    for (size_t i = kKeepTerminalRetrieveJobs; i < terminal.size(); ++i) {
+        g_retrieve_jobs.erase(terminal[i].id);
+    }
+}
+
 UniValue RetrieveJobJson(const RetrieveJob& j)
 {
+    std::string id, status, err, last_peer, last_err;
+    UniValue result;
+    int64_t created_ms = 0;
+    {
+        std::lock_guard<std::mutex> lock(j.mu);
+        id = j.id;
+        status = j.status;
+        err = j.err;
+        last_peer = j.last_peer;
+        last_err = j.last_err;
+        result = j.result;
+        created_ms = j.created_ms;
+    }
+    const uint64_t bytes = j.progress.bytes_committed.load();
+    const uint64_t last_commit = j.progress.last_commit_ms.load();
+    const int64_t now_ms = NowEpochMs();
+    const int64_t elapsed = now_ms > created_ms ? now_ms - created_ms : 0;
+    int64_t stalled = 0;
+    if (last_commit > 0 && now_ms > static_cast<int64_t>(last_commit)) {
+        stalled = now_ms - static_cast<int64_t>(last_commit);
+    }
+
     UniValue o(UniValue::VOBJ);
-    o.pushKV("job_id", j.id);
-    o.pushKV("status", j.status);
-    if (j.result.isObject() && !j.result.getKeys().empty()) o.pushKV("result", j.result);
-    if (!j.err.empty()) o.pushKV("error", j.err);
-    o.pushKV("bytes_committed", j.progress.bytes_committed.load());
+    o.pushKV("job_id", id);
+    o.pushKV("status", status);
+    o.pushKV("created_ms", created_ms);
+    if (result.isObject() && !result.getKeys().empty()) o.pushKV("result", result);
+    if (!err.empty()) o.pushKV("error", err);
+    o.pushKV("bytes_committed", bytes);
     o.pushKV("pieces_committed", j.progress.pieces_committed.load());
     o.pushKV("file_index", static_cast<int>(j.progress.file_index.load()));
     o.pushKV("piece_index", static_cast<int>(j.progress.piece_index.load()));
     o.pushKV("inflight", j.progress.inflight.load());
     o.pushKV("peer_retries", j.progress.peer_retries.load());
-    {
-        std::lock_guard<std::mutex> lock(j.mu);
-        if (!j.last_peer.empty()) o.pushKV("last_peer", j.last_peer);
-        if (!j.last_err.empty()) o.pushKV("last_err", j.last_err);
+    o.pushKV("stalled_for_ms", stalled);
+    if (elapsed > 0) {
+        o.pushKV("bytes_per_sec", (bytes * 1000ULL) / static_cast<uint64_t>(elapsed));
     }
+    if (!last_peer.empty()) o.pushKV("last_peer", last_peer);
+    if (!last_err.empty()) o.pushKV("last_err", last_err);
     return o;
 }
 
@@ -1581,21 +1744,26 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
     (void)stop;
     auto job = std::make_shared<RetrieveJob>();
     job->id = NewRetrieveJobId();
-    job->status = "running";
+    {
+        std::lock_guard<std::mutex> lock(job->mu);
+        job->status = "running";
+    }
     {
         std::lock_guard<std::mutex> lock(g_retrieve_mu);
         g_retrieve_jobs[job->id] = job;
+        PruneRetrieveJobsLocked();
     }
     // DISC-05: re-read catalog peers after a contact dies. Committed pieces
     // stay on disk; RetrieveFreeFromPeer skips them via GetPiece.
     job->worker = std::thread([job, &cat, model_id]() {
         auto failed = [&](const std::string& e) {
-            job->err = e;
-            job->status = "failed";
             UniValue r(UniValue::VOBJ);
             r.pushKV("schema_version", 2);
             r.pushKV("status", "failed");
             r.pushKV("error", e);
+            std::lock_guard<std::mutex> lock(job->mu);
+            job->err = e;
+            job->status = "failed";
             job->result = std::move(r);
         };
         Pq1Context pq;
@@ -1609,6 +1777,13 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
         std::string last_err;
         int transient_streak = 0;
         uint64_t last_bytes = 0;
+        auto remaining_unfailed = [&]() -> size_t {
+            size_t n = 0;
+            for (const auto& p : cat.Peers()) {
+                if (failed_peers.count(p) == 0) ++n;
+            }
+            return n;
+        };
         while (true) {
             if (job->cancel.load()) {
                 failed("cancelled");
@@ -1652,6 +1827,7 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                     r.pushKV("failed_contacts", static_cast<int>(failed_peers.size()));
                     r.pushKV("last_peer", peer);
                     r.pushKV("peer_retries", job->progress.peer_retries.load());
+                    std::lock_guard<std::mutex> lock(job->mu);
                     job->result = std::move(r);
                     job->status = "done";
                     return;
@@ -1666,10 +1842,16 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                 std::lock_guard<std::mutex> lock(job->mu);
                 job->last_err = last_err;
             }
+            if (job->cancel.load() || last_err == "stopped" || last_err.find("cancelled") != std::string::npos) {
+                failed(last_err == "stopped" ? last_err : "cancelled");
+                return;
+            }
             const uint64_t now_bytes = job->progress.bytes_committed.load();
             const bool progressed = now_bytes > last_bytes;
             last_bytes = now_bytes;
-            if (IsTransientPq1Error(last_err) && transient_streak < PQ1_PEER_TRANSIENT_TRIES) {
+            const bool transient = IsTransientPq1Error(last_err);
+            const bool last_remaining = remaining_unfailed() <= 1;
+            if (transient && (transient_streak < PQ1_PEER_TRANSIENT_TRIES || last_remaining)) {
                 job->progress.peer_retries.fetch_add(1);
                 ++transient_streak;
                 if (!progressed) {
@@ -1687,7 +1869,6 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                 }
                 continue;
             }
-            last_err = rerr.empty() ? "retrieve failed" : rerr;
             failed_peers.insert(peer);
             transient_streak = 0;
         }
@@ -2129,25 +2310,36 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         std::string want;
         if (params.isArray() && params.size() > 0 && Arg(0).isStr()) want = Arg(0).get_str();
         UniValue arr(UniValue::VARR);
-        std::lock_guard<std::mutex> lock(g_retrieve_mu);
-        if (method == "cancelmodeljob" && !want.empty()) {
-            const auto it = g_retrieve_jobs.find(want);
-            if (it != g_retrieve_jobs.end()) {
-                it->second->cancel.store(true);
-                if (it->second->status == "running" || it->second->status == "queued") {
-                    it->second->status = "cancelled";
+        std::vector<std::shared_ptr<RetrieveJob>> listed;
+        {
+            std::lock_guard<std::mutex> lock(g_retrieve_mu);
+            if (method == "cancelmodeljob" && !want.empty()) {
+                const auto it = g_retrieve_jobs.find(want);
+                if (it != g_retrieve_jobs.end()) {
+                    it->second->cancel.store(true);
+                    {
+                        std::lock_guard<std::mutex> jlock(it->second->mu);
+                        if (it->second->status == "running" || it->second->status == "queued") {
+                            it->second->status = "cancelled";
+                        }
+                    }
+                    result.pushKV("cancelled", true);
+                    result.pushKV("job_id", want);
+                } else {
+                    result.pushKV("cancelled", false);
+                    result.pushKV("job_id", want);
                 }
-                result.pushKV("cancelled", true);
-                result.pushKV("job_id", want);
-            } else {
-                result.pushKV("cancelled", false);
-                result.pushKV("job_id", want);
+            }
+            PruneRetrieveJobsLocked();
+            for (auto& kv : g_retrieve_jobs) {
+                if (!want.empty() && kv.first != want) continue;
+                listed.push_back(kv.second);
             }
         }
-        for (auto& kv : g_retrieve_jobs) {
-            if (!want.empty() && kv.first != want) continue;
-            arr.push_back(RetrieveJobJson(*kv.second));
-        }
+        std::sort(listed.begin(), listed.end(), [](const std::shared_ptr<RetrieveJob>& a, const std::shared_ptr<RetrieveJob>& b) {
+            return RetrieveJobIsNewer(a->created_ms, a->id, b->created_ms, b->id);
+        });
+        for (const auto& j : listed) arr.push_back(RetrieveJobJson(*j));
         result.pushKV("jobs", arr);
         result.pushKV("job_count", static_cast<int>(arr.size()));
         result.pushKV("used_bytes", cat.UsedBytes());
@@ -2634,8 +2826,8 @@ bool EnsureMlDsaTlsFiles(const fs::path& cert, const fs::path& key, std::string&
     if (fs::exists(cert) && fs::exists(key)) return true;
     fs::create_directories(cert.parent_path());
     const std::string cmd = strprintf(
-        "%s req -x509 -new -newkey mldsa44 -keyout '%s' -out '%s' -nodes -subj '/CN=btx-modeld' -days 3650 >/dev/null 2>&1",
-        OpensslBin(), fs::PathToString(key), fs::PathToString(cert));
+        "%s req -x509 -new -newkey mldsa44 -keyout %s -out %s -nodes -subj '/CN=btx-modeld' -days 3650 >/dev/null 2>&1",
+        QuoteShellArg(OpensslBin()), QuoteShellArg(fs::PathToString(key)), QuoteShellArg(fs::PathToString(cert)));
     const int rc = std::system(cmd.c_str());
     if (rc != 0 || !fs::exists(cert) || !fs::exists(key)) {
         err = "openssl mldsa44 certificate generation failed";
@@ -2688,6 +2880,19 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
     }
     Digest48 artifact;
     if (!Digest48::FromHex(man["artifact_id"].get_str(), artifact, err)) return false;
+    if (!man.exists("files") || !man["files"].isArray()) {
+        err = "manifest files";
+        return false;
+    }
+    uint64_t total = 0;
+    for (const auto& f : man["files"].getValues()) {
+        if (!f.isObject() || !f.exists("size")) {
+            err = "manifest file size";
+            return false;
+        }
+        total += f["size"].getInt<uint64_t>();
+    }
+    if (!cat.EnforceQuota(total, err)) return false;
 
     std::vector<std::pair<std::string, std::string>> grant_headers;
     std::mutex grant_mu;
@@ -2822,7 +3027,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
     };
 
     if (progress) {
-        progress->bytes_committed.store(cat.UsedBytes());
+        NoteRetrieveBytes(progress, cat.UsedBytes());
         progress->pieces_committed.store(0);
     }
 
@@ -2852,7 +3057,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                 if (progress) {
                     progress->piece_index.store(static_cast<uint32_t>(i));
                     progress->pieces_committed.fetch_add(1);
-                    progress->bytes_committed.store(cat.UsedBytes());
+                    NoteRetrieveBytes(progress, cat.UsedBytes());
                 }
             } else {
                 missing.push_back(i);
@@ -2913,7 +3118,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                     if (progress) {
                         progress->piece_index.store(static_cast<uint32_t>(i));
                         progress->pieces_committed.fetch_add(1);
-                        progress->bytes_committed.store(cat.UsedBytes());
+                        NoteRetrieveBytes(progress, cat.UsedBytes());
                     }
                 }
             };

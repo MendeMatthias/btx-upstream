@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from failfast import BytesStallTracker, pick_job
 
 EXPECT_BYTES = 13888336427
 
@@ -42,20 +46,30 @@ def main() -> int:
     ap.add_argument("--sock", required=True)
     ap.add_argument("--timeout", type=float, default=28800)
     ap.add_argument("--expect-bytes", type=int, default=EXPECT_BYTES)
+    ap.add_argument("--job-id", default=os.environ.get("JOB_ID") or "", help="poll this job_id; else newest running")
+    ap.add_argument(
+        "--stall-s",
+        type=float,
+        default=float(os.environ.get("POLL_JOB_STALL_S", "120")),
+        help="fail-fast if bytes_committed is frozen while running (0 disables)",
+    )
     args = ap.parse_args()
     sock = Path(args.sock)
     if not sock.exists():
         raise SystemExit("missing helper socket %s" % sock)
+    job_id = args.job_id or None
+    stall = BytesStallTracker(args.stall_s)
     t0 = time.time()
     job = {}
     while time.time() - t0 < args.timeout:
-        jobs = rpc(sock, "getmodeljob", [], 120)
-        arr = jobs.get("jobs") or []
-        if arr:
-            job = arr[0]
+        params = [job_id] if job_id else []
+        jobs = rpc(sock, "getmodeljob", params, 120)
+        job = pick_job(jobs, job_id=job_id)
+        if job:
             st = job.get("status")
             print(
                 "job",
+                job.get("job_id") or "",
                 st,
                 "elapsed",
                 int(time.time() - t0),
@@ -83,6 +97,7 @@ def main() -> int:
                 raise SystemExit("retrieve cancelled: %s" % job)
             if st == "done":
                 break
+            stall.observe(job)
         time.sleep(2)
     else:
         raise SystemExit("getmodeljob timeout: %s" % job)
@@ -102,6 +117,7 @@ def main() -> int:
         "seeded": m.get("seeded"),
         "content_admission": m.get("content_admission"),
         "elapsed_poll_s": int(time.time() - t0),
+        "job_id": job.get("job_id"),
     }))
     return 0
 

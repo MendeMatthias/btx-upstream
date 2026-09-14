@@ -54,7 +54,8 @@ bundled `lib/`.
 | Granite FIT vs ExactReplay | `contrib/modelnet/e2e-cuda-granite-fit.sh` | Isolated worker: 13.8 GiB would FIT; live ExactReplay reserve is not starved |
 | One-node regtest + helper | `python3 test/functional/feature_modelnet_helper.py --configfile=build-gcc13/test/config.ini --timeout-factor=1` | `btxd -regtest` + unix helper; import demand-seeds; EXPLICIT_PAID is WALLET_REQUIRED |
 | HTLC (0.34.6 reuse) | **Direct file**, ASCII tmpdir (do **not** use `test_runner.py` cache): `mkdir -p /tmp/btx-htlc/atomicswap && python3 test/functional/wallet_htlc_atomicswap.py --descriptors --configfile=build-gcc13/test/config.ini --tmpdir=/tmp/btx-htlc/atomicswap --timeout-factor=1` | SCRIPT-03/09/11 claim mined + preimage on-chain; wrong preimage refused; refund after locktime. Same pattern: `wallet_modelnet_funding.py` |
-| Two-host isolated regtest | `contrib/modelnet/e2e-regtest-two-host.sh` | Second-process `btxd -regtest` + `btx-modeld`; production PIDs untouched |
+| Two-host isolated regtest | `contrib/modelnet/e2e-regtest-two-host.sh` | Second-process `btxd -regtest` + `btx-modeld`; production PIDs untouched; binaries via `SEEDER_BTXD` / `FETCHER_BTXD` / `SEEDER_MODELD` / `FETCHER_MODELD` / `SEEDER_DIR` / `FETCHER_DIR` |
+| Three-host isolated regtest | `contrib/modelnet/e2e-regtest-three-host.sh` | Same plus a third isolated client (`THIRD_HOST`); both clients `getmodel` the tiny URI via a tunnel and demand-seed; `THIRD_PROD_PIDS` checked if set |
 | Two WAN seeders | `contrib/modelnet/e2e-two-wan.sh` | STORE-01: fetcher next to two seeders (same OpenSSL); resume `local` |
 | Two-node WAN (tiny / granite) | `BTX_WAN_E2E=1 SEEDER=host:port contrib/modelnet/e2e-two-node-demand.sh` | Real PQ1 upload/download. Fetcher **must not** pass `-modelseed=auto` or `seedmodel` |
 | Introducer death | `contrib/modelnet/e2e-disc-failure.sh` | DISC-04 no official names; DISC-05 same job fails over after introducer RST (helper ignores SIGPIPE) |
@@ -67,15 +68,18 @@ the live attestor helper.
 ### Fail-fast rule
 
 - `getmodeljob` status `failed` → print the error and **exit** (no remaining timeout).
-  While `status=running`, `last_err` / `peer_retries` / `bytes_committed` may
-  show a transient `tls io`; that is resume, not a FAIL.
+  While `status=running`, `last_err` is resume (transient PQ1: `tls io`,
+  `timeout`, `connect failed`, …), not a FAIL. Do not treat `last_err` /
+  `peer_retries` alone as terminal. `bytes_committed` may move across those
+  retries. If `bytes_committed` is present and unchanged for 120s while
+  `status=running`, fail-fast (`failfast.poll_job` `stall_s`).
 - Prefer loopback or LAN to the seeder (`127.0.0.1:29448` when fetcher and
   seeder are the same host). Hairpin through a public hostname is not the
   retrieve test.
 - Helper process gone or log `unknown argument` / `fail-closed` → **exit** (do not wait for the socket).
 - Handshake/grant errors surface as `hello failed`, `missing FreeGrant`,
   `piece HTTP 403 … expired` (client then refreshes the 600s FreeGrant).
-- Production `btxd.real` PIDs are checked before and after two-host scripts.
+- Production `btxd.real` PIDs are checked before and after two- and three-host scripts.
 
 ## Benchmarks (re-run, do not guess)
 
@@ -137,14 +141,30 @@ and does not expose it to the network.
 If `status=running`, poll `getmodeljob`. On WAN this is async. Loopback
 smoke: `python3 contrib/modelnet/two_helper_retrieve.py build-gcc13/bin`.
 
-### 3. Two machines (isolated, not production)
+### 3. Two or three machines (isolated, not production)
+
+SSH aliases and paths are env-only (`SEEDER_HOST`, `FETCHER_HOST`,
+`THIRD_HOST`). Do not bind the granite seeder port (`29448`); isolated
+helpers use `REGTEST_MODELD_PORT` (default `29449`).
 
 ```bash
-contrib/modelnet/e2e-regtest-two-host.sh
+SEEDER_HOST=... FETCHER_HOST=... \
+  SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... \
+  SEEDER_BTXD=... SEEDER_MODELD=... SEEDER_DIR=... \
+  FETCHER_BTXD=... FETCHER_MODELD=... FETCHER_DIR=... \
+  contrib/modelnet/e2e-regtest-two-host.sh
+
+SEEDER_HOST=... FETCHER_HOST=... THIRD_HOST=... \
+  SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... THIRD_PROD_PIDS=... \
+  SEEDER_BTXD=... SEEDER_MODELD=... SEEDER_DIR=... \
+  FETCHER_BTXD=... FETCHER_MODELD=... FETCHER_DIR=... \
+  THIRD_BTXD=... THIRD_MODELD=... THIRD_DIR=... \
+  contrib/modelnet/e2e-regtest-three-host.sh
 ```
 
 Starts **new** `btxd -regtest` datadirs and **new** helpers. Production
-`btxd.real` stays up. Fetcher command line has no `-modelseed=auto`.
+`btxd.real` stays up. Fetcher/third command lines have no `-modelseed=auto`.
+`THIRD_PROD_PIDS` is optional (checked only if set).
 
 ### 4. Large model (granite-scale)
 

@@ -15,6 +15,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from failfast import BytesStallTracker, pick_job
+
 DEFAULT_URI = "btx://pqc0whmrlv2emtc8eknxja6l6ffdj5mta0nj9msfsdkrz6qg0de448gm0a3kcctd92p9ekje2c97wd5glyrdl"
 ROOT = Path(os.environ.get("BTX_MODELD_ROOT", str(Path.home() / ".local/opt/btx-0.34.7-rc-modeld")))
 BIN = ROOT / "bin"
@@ -80,17 +83,18 @@ def poll_retrieve(got, timeout):
         raise SystemExit(f"async getmodel missing job_id: {got}")
     t0 = time.time()
     job = {}
+    stall = BytesStallTracker(float(os.environ.get("POLL_JOB_STALL_S", "120")))
     while time.time() - t0 < timeout:
         jobs = rpc("getmodeljob", [job_id], 120)
-        arr = jobs.get("jobs") or []
-        if arr:
-            job = arr[0]
+        job = pick_job(jobs, job_id=job_id)
+        if job:
             st = job.get("status")
             used = jobs.get("used_bytes")
             if used is None:
                 used = sum(p.stat().st_size for p in DIR.rglob("*") if p.is_file())
             print(
                 "job",
+                job.get("job_id") or job_id,
                 st,
                 "elapsed",
                 int(time.time() - t0),
@@ -118,6 +122,7 @@ def poll_retrieve(got, timeout):
                 raise SystemExit(f"retrieve cancelled: {job}")
             if st == "done":
                 break
+            stall.observe(job)
         time.sleep(0.5)
     else:
         raise SystemExit(f"getmodeljob timeout: {job}")
@@ -133,6 +138,7 @@ def main():
     ap.add_argument("--timeout", type=float, default=float(os.environ.get("WAN_TIMEOUT_S", "14400")))
     ap.add_argument("--keep", action="store_true", help="leave the second-process helper running")
     ap.add_argument("--attach", action="store_true", help="reuse a live helper on this datadir (resume)")
+    ap.add_argument("--job-id", default=os.environ.get("JOB_ID") or "", help="poll this job_id instead of jobs[0]")
     args = ap.parse_args()
     if not args.host:
         raise SystemExit("set --host or SEEDER=host:port (non-production helper)")
@@ -182,9 +188,13 @@ def main():
         if prop.get("seed_upon_download_opt_in"):
             raise SystemExit(f"seed_upon_download still opt-in: {prop}")
         rpc("addmodelnode", [args.host], 10)
-        print("retrieve start", args.uri, "via", args.host, flush=True)
         t0 = time.time()
-        got = rpc("getmodel", [args.uri, "FREE_ONLY"], 60)
+        if args.job_id:
+            print("poll job_id", args.job_id, "via", args.host, flush=True)
+            got = {"status": "running", "async": True, "job_id": args.job_id}
+        else:
+            print("retrieve start", args.uri, "via", args.host, flush=True)
+            got = rpc("getmodel", [args.uri, "FREE_ONLY"], 60)
         result = poll_retrieve(got, args.timeout)
         elapsed = int(time.time() - t0)
         listed = rpc("listmodels", [], 30)
