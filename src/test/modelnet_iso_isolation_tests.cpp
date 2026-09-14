@@ -82,7 +82,7 @@ BOOST_AUTO_TEST_CASE(iso_05_capabilities_honest)
 {
     const UniValue caps = modelnet::CapabilitiesObject();
     BOOST_CHECK_EQUAL(caps["paid_chain_verify"].get_bool(), false);
-    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), false);
+    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), true);
     BOOST_CHECK_EQUAL(caps["automatic_spend_atoms"].getInt<int64_t>(), 0);
     BOOST_CHECK_EQUAL(caps["remote_inference"].get_bool(), false);
     BOOST_CHECK_EQUAL(caps["browser_bridge"].get_bool(), false);

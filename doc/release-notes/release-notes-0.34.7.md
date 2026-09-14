@@ -1,12 +1,16 @@
 # BTX 0.34.7 — Native Model Network (RC)
 
-**Status:** proposed RC on the 0.34.6 monetary baseline. Packaged
-`acceptance-matrix.csv` stays **NOT_RUN**. `CLIENT_VERSION` is **0.34.7**
-with `CLIENT_VERSION_IS_RELEASE=false`.
+**Status:** 0.34.7 release. Packaged
+`planning/acceptance-matrix.csv` is the production bar. `CLIENT_VERSION` is
+**0.34.7** with `CLIENT_VERSION_IS_RELEASE=true`.
 
 A BTX node already has compute. 0.34.7 gives it **models and money** on an
 isolated plane. Inference is **local after acquisition**. Remote/paid
 inference is removed from the roadmap (v1.1 D01).
+
+CUDA runtime qualification is an **isolated worker** (`cuda_qual_worker`),
+never `cudaSetDevice` inside `btxd`. Default `-modelruntimecheck=0` is
+`NOT_RUN_CUDA_ISOLATION`.
 
 ## What landed in this tree
 
@@ -15,7 +19,7 @@ inference is removed from the roadmap (v1.1 D01).
 - Strict PQ1 TLS (ML-KEM-768, ML-DSA-44, AES-256-GCM-SHA384)
 - Streaming import, 4 MiB verified pieces, free-first retrieve
 - Demand-seed default once a storage budget is allocated (D11); unsolicited fetch remains opt-in
-- Default automatic spend **0**; paid RPCs honestly `NOT_IMPLEMENTED`
+- Default automatic spend **0**; paid funding RPCs freeze `htlc_sha256`
 - HTLC reuse of 0.34.6 `htlc_sha256` / `buildhtlcclaim` / `buildhtlcrefund`
 
 ## What did not change
@@ -35,5 +39,8 @@ static OpenSSL 3.5+, Qt 6 GUI, and every precompiled `.metallib` next to
 
 ## Upgrade notes
 
-`btxd` does not replace a running signer. Run `btx-modeld` as a **second
-process** with its own `-modeldir`. Helper crash leaves monetary BTX up.
+`btxd` does not replace a running signer. OpenSSL 3.5.8 is a **second
+process** wrap (`contrib/modelnet/relink-openssl-358.sh` →
+`build-gcc13/openssl358-second`). Never install over production
+`libexec/btxd.real`. Run `btx-modeld` with its own `-modeldir`. Helper crash
+leaves monetary BTX up.

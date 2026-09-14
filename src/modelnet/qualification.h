@@ -38,9 +38,12 @@ struct QualReport {
 
 /**
  * Optional CUDA runtime observation. Defaults match `-modelruntimecheck=0` and
- * `-modelgpu` unset: no libcuda, no cudaSetDevice, no kernel, no sharing of the
- * validator/mining GPU. Catalog `cuda_qualification=false` stays honest because
- * QualifyFile never calls this and this API's defaults never run CUDA.
+ * `-modelgpu` unset: no libcuda, no cudaSetDevice in btxd, no kernel, no sharing
+ * of the validator/mining GPU. When runtime_check is set and
+ * BTX_CUDA_QUAL_WORKER (or PATH cuda_qual_worker) exists, QualifyRuntime
+ * posix_spawns that isolated worker with --gpu=N and optional
+ * --allow-shared-gpu from BTX_ALLOW_SHARED_GPU. Catalog cuda_qualification=false
+ * stays honest because QualifyFile never calls this and default opts never run CUDA.
  */
 struct QualRuntimeOpts {
     /** `-modelgpu`. Unset means none; never inherit the validator GPU. */
@@ -61,6 +64,7 @@ QualResult QualifyFile(const std::string& path, QualReport& report);
 /**
  * Structure check, then optional runtime. Default opts return NOT_RUN_CUDA_ISOLATION
  * without loading libcuda. Pickle / .pt / Python are rejected and never executed.
+ * CUDA kernels run only in an isolated worker process, never via cudaSetDevice in btxd.
  */
 QualResult QualifyRuntime(const std::string& path, const QualRuntimeOpts& opts, QualReport& report);
 

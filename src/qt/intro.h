@@ -48,6 +48,10 @@ public:
     QString getModelStorageArg() const;
     bool getDemandSeedChecked() const;
     bool getPreserveRareChecked() const;
+    bool getInstallOsHandlerChecked() const;
+    bool getInstallOsHandlerSystemChecked() const;
+    /** Run install-os-handler.sh (user-local, or --system if the system-wide box is checked). Never SIGKILL. */
+    bool installOsHandler() const;
 
     /**
      * Determine data directory. Let the user choose if the current one doesn't exist.

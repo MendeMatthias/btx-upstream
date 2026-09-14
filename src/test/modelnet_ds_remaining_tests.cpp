@@ -495,7 +495,8 @@ BOOST_AUTO_TEST_CASE(v11_uri_13_not_a_spending_or_payment_input)
     BOOST_CHECK(!result.exists("address"));
     BOOST_CHECK(!result.exists("amount"));
 
-    // The helper exposes no wallet signing/spending RPC for model objects.
+    // A resource URI is still not a spending input: claim/sign without a
+    // frozen HTLC template fail closed (invalid params), never auto-spend.
     UniValue claim(UniValue::VOBJ);
     claim.pushKV("method", "buildmodelhtlcclaim");
     claim.pushKV("params", UniValue(UniValue::VARR));
@@ -503,7 +504,8 @@ BOOST_AUTO_TEST_CASE(v11_uri_13_not_a_spending_or_payment_input)
     std::string claim_code;
     err.clear();
     BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, claim, claim_result, claim_code, err));
-    BOOST_CHECK_EQUAL(claim_code, "NOT_IMPLEMENTED");
+    BOOST_CHECK(claim_code != "NOT_IMPLEMENTED");
+    BOOST_CHECK_EQUAL(claim_code, "INVALID_PARAMETER");
 
     UniValue sign(UniValue::VOBJ);
     sign.pushKV("method", "signmodelfunding");
@@ -512,7 +514,8 @@ BOOST_AUTO_TEST_CASE(v11_uri_13_not_a_spending_or_payment_input)
     std::string sign_code;
     err.clear();
     BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, sign, sign_result, sign_code, err));
-    BOOST_CHECK_EQUAL(sign_code, "NOT_IMPLEMENTED");
+    BOOST_CHECK(sign_code != "NOT_IMPLEMENTED");
+    BOOST_CHECK_EQUAL(sign_code, "INVALID_PARAMETER");
 }
 
 BOOST_AUTO_TEST_CASE(v11_uri_15_typed_hash_domain)
@@ -1345,7 +1348,7 @@ BOOST_AUTO_TEST_CASE(v11_local_03_unsupported_no_remote_inference)
 {
     const UniValue caps = modelnet::CapabilitiesObject();
     BOOST_CHECK_EQUAL(caps["remote_inference"].get_bool(), false);
-    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), false);
+    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), true);
 
     // An unsafe/unsupported model produces an explicit static result.
     const std::vector<unsigned char> pickle{0x80, 0x04, 0x01};
@@ -1473,7 +1476,7 @@ BOOST_AUTO_TEST_CASE(v11_doc_03_inference_removed)
     // there is no inference endpoint.
     const UniValue caps = modelnet::CapabilitiesObject();
     BOOST_CHECK_EQUAL(caps["remote_inference"].get_bool(), false);
-    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), false);
+    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), true);
     BOOST_CHECK(caps["http"].isArray());
     for (const auto& entry : caps["http"].getValues()) {
         const std::string s = entry.get_str();

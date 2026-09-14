@@ -442,27 +442,29 @@ class ModelNetHelperTest(BitcoinTestFramework):
         if banned_after != banned_before:
             raise AssertionError(f"model ACL wrote BanMan: {banned_before} -> {banned_after}")
 
-        self.log.info("getmodel EXPLICIT_PAID must be WALLET_REQUIRED")
-        paid_hit = False
+        self.log.info("getmodel EXPLICIT_PAID journals a quote; automatic spend stays 0")
         paid_last = None
+        paid_ok = False
         for mode_arg in ("EXPLICIT_PAID", GETMODEL_EXPLICIT_PAID_OBJ):
             try:
                 paid_last = self._rpc(node, "getmodel", uri, mode_arg)
             except JSONRPCException as exc:
                 paid_last = exc
-                if self._wallet_in_exc(exc):
-                    paid_hit = True
-                    self.log.info("getmodel paid path WALLET: %s", exc)
-                    break
                 err = exc.error if isinstance(exc.error, dict) else {}
                 if err.get("code") in (-3, -8, -32602):
                     continue
                 raise
-        if not paid_hit:
-            raise AssertionError(
-                "getmodel EXPLICIT_PAID must return JSONRPCException containing WALLET, "
-                f"got {paid_last}"
-            )
+            if not isinstance(paid_last, dict):
+                continue
+            if paid_last.get("automatic_spend_atoms", paid_last.get("automatic_spend", 1)) not in (0, "0"):
+                raise AssertionError(f"EXPLICIT_PAID auto-spend: {paid_last}")
+            if "quote" not in paid_last:
+                raise AssertionError(f"EXPLICIT_PAID missing quote: {paid_last}")
+            paid_ok = True
+            self.log.info("getmodel EXPLICIT_PAID quote: %s", paid_last.get("plan"))
+            break
+        if not paid_ok:
+            raise AssertionError(f"getmodel EXPLICIT_PAID must return a quote, got {paid_last}")
 
         got_free = self._rpc(node, "getmodel", uri, "FREE_ONLY")
         if not isinstance(got_free, dict):

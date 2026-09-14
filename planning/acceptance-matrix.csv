@@ -1,0 +1,229 @@
+# Packaged 0.34.7 production acceptance matrix.
+# Columns: id,group,status,evidence
+# PASS only where this tree has a Boost test or an executed e2e script.
+# Capabilities bits are not PASS. GPU live kernel requires cuda-isolated-e2e.sh.
+id,group,status,evidence
+URI-01,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_01_all_nine_kinds_preserve_digest
+URI-02,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_02_exact_length_contract; src/test/modelnet_uri_resolve_tests.cpp uri_truncated_payload_rejected
+URI-03,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_03_bech32m_only; src/test/modelnet_uri_resolve_tests.cpp uri_wrong_hrp_rejected
+URI-04,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_04_single_symbol_mutations
+URI-05,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_05_unknown_version_or_kind_rejected
+URI-06,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_06_nonzero_residual_padding_rejected
+URI-07,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_07_case_rules; src/test/modelnet_uri_resolve_tests.cpp uri_mixed_case_bech32_rejected
+URI-08,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_08_hostile_inputs_rejected; src/test/modelnet_uri_resolve_tests.cpp uri_query_and_fragment_rejected
+URI-09,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_09_paths_rejected
+URI-10,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_10_explicit_local_forms; src/test/modelnet_uri_resolve_tests.cpp uri_decode_token_vs_uri
+URI-11,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_11_authority_not_dns
+URI-12,URI,PASS,contrib/modelnet/e2e-os-handler.sh user-local plus pkexec then sudo --system (BTX_SYSTEM_DESKTOP scratch); src/qt/intro.cpp installOsHandler; src/test/modelnet_b0_remaining_tests.cpp uri_12_btx_open_preview_binary_present
+URI-13,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_13_not_a_spending_or_payment_input
+URI-14,URI,NOT_RUN,no short-display/copy helper; Qt cancelled
+URI-15,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_15_typed_hash_domain; src/test/modelnet_uri_resolve_tests.cpp decode_object_matches_decode_resource
+RESOLVE-01,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_01_cpu_only_cache
+RESOLVE-02,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_02_local_cache_hit; src/test/modelnet_uri_resolve_tests.cpp resolve_incomplete_local_catalog
+RESOLVE-03,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_03_independent_router_no_domain; src/test/modelnet_resolve_bounds_tests.cpp; contrib/modelnet/e2e-resolve-8-4.sh
+RESOLVE-04,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_04_router_removal_direct_transfer; contrib/modelnet/e2e-resolve-8-4.sh
+RESOLVE-05,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_05_exact_record_root
+RESOLVE-06,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_06_typed_identity_lookup
+RESOLVE-07,RESOLVE,PASS,src/test/modelnet_resolve_bounds_tests.cpp resolve_eight_router_four_query_and_independent; contrib/modelnet/e2e-resolve-8-4.sh
+RESOLVE-08,RESOLVE,PASS,src/test/modelnet_resolve_bounds_tests.cpp resolve_negative_ttl_never_does_not_exist
+RESOLVE-09,RESOLVE,PASS,src/test/modelnet_resolve_bounds_tests.cpp resolve_http_no_artifact_relabel
+RESOLVE-10,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_10_monetary_endpoints_hidden
+FREE-01,FREE,PASS,src/test/modelnet_free_remaining_tests.cpp v11_free_01; src/test/modelnet_ds_remaining_tests.cpp v11_free_01_identity_only_no_wallet
+FREE-02,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_02
+FREE-03,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_03
+FREE-04,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_04
+FREE-05,FREE,PASS,src/test/modelnet_free_remaining_tests.cpp v11_free_05; src/test/modelnet_ds_remaining_tests.cpp v11_free_05_zero_price_no_balance
+FREE-06,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_06
+FREE-07,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_07
+FREE-08,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_08
+FREE-09,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_09
+FREE-10,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_10
+FREE-11,FREE,PASS,src/test/modelnet_free_remaining_tests.cpp v11_free_11
+FREE-12,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_12
+FREE-13,FREE,PASS,src/test/modelnet_planner_tests.cpp v11_free_13
+FREE-14,FREE,PASS,src/test/modelnet_free_remaining_tests.cpp v11_free_14; src/test/modelnet_ds_remaining_tests.cpp v11_free_14_exposure_and_fee_ceiling
+FREE-15,FREE,PASS,src/test/modelnet_free_remaining_tests.cpp v11_free_15; src/test/modelnet_ds_remaining_tests.cpp v11_free_15_release_not_substituted
+RECIP-01,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_needed_verified_free_only
+RECIP-02,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_paid_unsolicited_corrupt_no_credit
+RECIP-03,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_no_duplicate_piece_credit
+RECIP-04,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_seven_day_decay_28_day_horizon
+RECIP-05,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_weight_bounded_1_to_4
+RECIP-06,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_rarity_multiplier_cap_2
+RECIP-07,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_lane_20_60_20_congestion; contrib/modelnet/e2e-nat-congested.sh
+RECIP-08,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_unused_lanes_lend; contrib/modelnet/e2e-nat-congested.sh
+RECIP-09,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_per_key_churn_within_aggregate
+RECIP-10,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_nat_newcomer_ordinary_free; contrib/modelnet/e2e-nat-congested.sh
+RECIP-11,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_giveback_stops_no_fake_demand
+RECIP-12,RECIP,PASS,src/test/modelnet_v11_negative_tests.cpp recip_score_never_touches_banman_addrman
+IDENT-01,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_store_without_wallet
+IDENT-02,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_spending_address_not_research_id
+IDENT-03,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_provider_id_byte_identical
+IDENT-04,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_delegation_bound_to_service_key
+IDENT-05,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_delegation_depth_expiry_scopes
+IDENT-06,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_service_key_cannot_spend_or_root
+IDENT-07,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_revocation_scoped
+IDENT-08,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_rotation_does_not_clone_credit
+IDENT-09,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_backup_vs_public_export
+IDENT-10,IDENT,PASS,src/test/modelnet_v11_negative_tests.cpp ident_no_arbitrary_digest_wallet_sign
+ACL-01,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_invalid_crypto_rejected_despite_allow
+ACL-02,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_hard_ceiling_despite_preferred
+ACL-03,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_local_deny_wins
+ACL-04,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_quarantine_not_cleared_by_trust_bundle
+ACL-05,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_exact_exception_explained
+ACL-06,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_subscribed_warning_not_deny
+ACL-07,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_no_monetary_noban_or_addr
+ACL-08,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_complaint_never_writes_banman
+ACL-09,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_corrupt_piece_source_not_relay
+ACL-10,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_age_balance_not_trust
+ACL-11,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_expiry_vs_revocation_tombstone
+ACL-12,ACL,PASS,src/test/modelnet_v11_negative_tests.cpp acl_public_error_hides_private
+COMM-01,COMM,PASS,src/test/modelnet_v11_negative_tests.cpp comm_collection_sorted_unique_512
+COMM-02,COMM,PASS,src/test/modelnet_v11_negative_tests.cpp comm_collection_cannot_qualify_or_load_code
+COMM-03,COMM,PASS,src/test/modelnet_v11_negative_tests.cpp comm_alias_key_from_root_and_slug
+COMM-04,COMM,PASS,src/test/modelnet_v11_negative_tests.cpp comm_alias_sequence_conflict_freeze
+COMM-05,COMM,PASS,src/test/modelnet_v11_negative_tests.cpp comm_alias_never_chains
+COMM-06,COMM,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_comm_06_follow_does_not_raise_budget; src/test/modelnet_v11_remaining_tests.cpp comm_follow_collection_quota_not_raised
+COMM-07,COMM,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_comm_07_no_onchain_membership; src/test/modelnet_v11_remaining_tests.cpp comm_circle_no_onchain_membership
+COMM-08,COMM,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_comm_08_preservation_local_limits; src/test/modelnet_v11_remaining_tests.cpp comm_preserve_obeys_pins_and_quota
+COMM-09,COMM,PASS,src/test/modelnet_v11_remaining_tests.cpp comm_preserve_rare_at_most_one; comm_preserve_rare_jitter
+COMM-10,COMM,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_comm_10_third_party_no_credit; src/test/modelnet_v11_remaining_tests.cpp comm_third_party_receipt_no_credit
+BRIDGE-01,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_01_link_only_full_uri; src/test/modelnet_bridge_tests.cpp link_only_html_landing
+BRIDGE-02,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_02_no_https_fallback_disclosed; src/test/modelnet_bridge_tests.cpp native_pq_failure_does_not_set_native_fallback
+BRIDGE-03,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_03_upstream_pq1
+BRIDGE-04,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_04_token_longer_than_dns_label; src/test/modelnet_bridge_tests.cpp overlong_hostname_token_rejected
+BRIDGE-05,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_05_42_43_split_exact (library split; not public DNS)
+BRIDGE-06,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_06_certificate_depth; src/test/modelnet_bridge_tests.cpp wildcard_cert_depth_is_zero; contrib/modelnet/e2e-webpki-tls.sh (local CA)
+BRIDGE-07,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_07_no_implicit_download; src/test/modelnet_bridge_tests.cpp public_download_default_false_never_fetches
+BRIDGE-08,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_08_wallet_private_unreachable; src/test/modelnet_bridge_tests.cpp get_wallet_403_post_sign_405_dump_403
+BRIDGE-09,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_09_no_arbitrary_proxy; src/test/modelnet_bridge_tests.cpp rejects_http_file_and_arbitrary_ips
+BRIDGE-10,BRIDGE,PASS,src/test/modelnet_bridge_tests.cpp byte_range_maps_to_pieces_json_only
+BRIDGE-11,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_11_json_only_isolation; src/test/modelnet_bridge_tests.cpp cache_key_uses_full_canonical_uri
+BRIDGE-12,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_12_browser_not_native_pq; src/test/modelnet_bridge_tests.cpp body_never_claims_pq_end_to_end_true
+BRIDGE-optional-chrome,BRIDGE,PASS,contrib/modelnet/e2e-bridge-optional.sh (local CA + Chrome host-resolver-rules; not public WebPKI)
+BRIDGE-operator-dns,BRIDGE,PASS,contrib/modelnet/e2e-public-webpki-kit.sh live getent/dig of PUBLIC_BRIDGE_HOST plus 42/43 split query; src/test/modelnet_bridge_tests.cpp dns_split_42_43_labels_and_join
+BRIDGE-public-ca,BRIDGE,PASS,contrib/modelnet/e2e-webpki-tls.sh and e2e-public-webpki-kit.sh system-trust TLS to PUBLIC_WEBPKI_HOST
+LOCAL-01,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_01_open_uri_preview_only; src/test/modelnet_v11_remaining_tests.cpp local_open_uri_preview_only
+LOCAL-02,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_02_export_verified_path
+LOCAL-03,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_03_unsupported_no_remote_inference; src/test/modelnet_v11_remaining_tests.cpp local_pickle_rejected_no_remote_inference
+LOCAL-04,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_04_models_before_finance
+LOCAL-05,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_05_storage_consent; src/test/modelnet_v11_remaining_tests.cpp local_payload_storage_zero_refused
+MIG-01,MIG,PASS,src/test/modelnet_mig_doc_tests.cpp mig_exportmodelpath_never_starts_runtime
+MIG-02,MIG,PASS,src/test/modelnet_mig_doc_tests.cpp mig_02_b0_hello_and_cores_unchanged
+MIG-03,MIG,PASS,src/test/modelnet_mig_doc_tests.cpp mig_exportmodelpath_never_starts_runtime
+MIG-04,MIG,PASS,src/test/modelnet_mig_doc_tests.cpp mig_identities_json_not_wallet_dump
+MIG-05,MIG,PASS,src/test/modelnet_mig_doc_tests.cpp mig_seed_preserve_flags_persist
+DOC-01,DOC,PASS,src/test/modelnet_mig_doc_tests.cpp doc_01_b0_markdown_sha384_matches_cited; contrib/modelnet/validate-doc-examples.sh
+DOC-02,DOC,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_doc_02_documented_vectors_identical; contrib/modelnet/dependency-lock.md
+DOC-03,DOC,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_doc_03_inference_removed; src/test/modelnet_mig_doc_tests.cpp doc_capabilities_match_disclosure; doc/modelnet/recovery.md
+DOC-04,DOC,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_doc_04_bridge_scoped_optional; src/test/modelnet_mig_doc_tests.cpp doc_native_fallback_never_true
+ISO-01,ISO,PASS,src/test/modelnet_iso_isolation_tests.cpp iso_01_every_native_http_path_requires_pq1; src/test/modelnet_b0_remaining_tests.cpp iso_01_08_http_flood_helper_bounds
+ISO-02,ISO,PASS,src/test/modelnet_iso_isolation_tests.cpp iso_02_model_work_yields_to_consensus; iso_02_qualify_runtime_default_no_cuda
+ISO-03,ISO,PASS,src/test/modelnet_v11_remaining_tests.cpp iso_qualify_runtime_default_not_run (runtime_check=0 => NOT_RUN_CUDA_ISOLATION)
+ISO-04,ISO,PASS,src/test/modelnet_v11_remaining_tests.cpp iso_helper_missing_capabilities_listed
+ISO-05,ISO,PASS,src/test/modelnet_iso_isolation_tests.cpp iso_05_capabilities_honest
+ISO-06,ISO,PASS,src/test/modelnet_iso_isolation_tests.cpp iso_06_http_worker_and_tls_bounds
+ISO-07,ISO,PASS,src/test/modelnet_b0_remaining_tests.cpp iso_01_08_http_flood_helper_bounds
+ISO-08,ISO,PASS,src/test/modelnet_b0_remaining_tests.cpp iso_01_08_http_flood_helper_bounds
+BASE-03,BASE,PASS,src/test/modelnet_b0_remaining_tests.cpp base_03_capabilities_monetary_isolation
+WIRE-01,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+WIRE-02,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+WIRE-03,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+WIRE-04,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+WIRE-05,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+WIRE-06,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+WIRE-07,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+WIRE-08,WIRE,PASS,src/test/modelnet_b0_remaining_tests.cpp wire_01_08_sendmodels_and_getmdpeers
+DISC-01,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_01_cpu_router_introduces_hosts
+DISC-02,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_02_sendmodels_not_useful_address
+DISC-03,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_03_hidden_monetary_endpoints
+DISC-04,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_04_independent_bootstrap; contrib/modelnet/e2e-disc-failure.sh
+DISC-05,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_05_router_loss_hosts_remain; contrib/modelnet/e2e-disc-failure.sh
+DISC-06,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_06_stale_record_eviction
+DISC-07,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_07_sybil_bounds
+DISC-08,DISC,PASS,src/test/modelnet_b0_disc_store_tests.cpp disc_08_fresh_datadir_empty_peers
+STORE-01,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_01_multi_source_resume; contrib/modelnet/e2e-two-wan.sh; contrib/modelnet/e2e-nat-congested.sh
+STORE-02,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_02_corrupt_piece_rejected
+STORE-03,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_03_whole_file_hash_mismatch
+STORE-04,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_04_metainfo_must_agree
+STORE-05,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_05_disk_exhaustion_preserves
+STORE-06,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_06_unsafe_paths_rejected
+STORE-07,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_07_crash_recovery_committed_pieces
+STORE-08,STORE,PASS,src/test/modelnet_b0_disc_store_tests.cpp store_08_gc_pins_prevent_eviction
+MODEL-01,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-02,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-03,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-04,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-05,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-06,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-07,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-08,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-09,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+MODEL-10,MODEL,PASS,src/test/modelnet_b0_remaining_tests.cpp model_01_10_adversarial_safetensors_gguf_pickle_encrypted
+PAY-01,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_01_quote_json_zero_cannot_make_paid_free
+PAY-02,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_02_quote_mutation_requires_reapproval
+PAY-03,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_03_10_duplicate_txid_and_range
+PAY-04,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_04_08_buyer_bind_and_durable_journal
+PAY-05,PAY,NOT_RUN,no dedicated Boost case name (pay_pool_tests covers PAY-01..04/06..08/10)
+PAY-06,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_06_eta_includes_fees
+PAY-07,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_07_helper_cannot_sign_or_verify_chain
+PAY-08,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_04_08_buyer_bind_and_durable_journal
+PAY-09,PAY,NOT_RUN,no dedicated Boost case name (pay_pool_tests covers PAY-01..04/06..08/10)
+PAY-10,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_03_10_duplicate_txid_and_range
+POOL-01,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_01_exact_target_freeze
+POOL-02,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_02_all_outputs_match_frozen_template
+POOL-03,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_03_changed_round_invalidates_fingerprint
+POOL-04,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_04_missing_participant
+POOL-05,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_05_double_used_input
+POOL-06,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_06_refund_ownership_in_fingerprint
+POOL-07,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_07_wrong_key_hash160
+POOL-08,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_08_10_12_campaign_key_valid_not_useful
+POOL-09,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_09_refund_race_window
+POOL-10,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_08_10_12_campaign_key_valid_not_useful
+POOL-11,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_08_10_12_campaign_key_valid_not_useful (campaigns.json reload)
+POOL-12,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_08_10_12_campaign_key_valid_not_useful
+POOL-13,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_13_amount_and_exposure_caps
+POOL-14,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_14_helper_funding_requires_params; src/test/modelnet_funding_tests.cpp helper_prepare_sign_submit_claim_refund_implemented
+PQ-01,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh
+PQ-02,PQ,PASS,src/test/modelnet_tests.cpp pq1_rejects_hybrid_peer
+PQ-03,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-04,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-05,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-06,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-07,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-08,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-09,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-10,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-11,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-12,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-13,PQ,PASS,src/test/modelnet_tests.cpp pq1_handshake_mlkem768; contrib/modelnet/e2e-two-helper-pq1.sh (PQ1 suite)
+PQ-14,PQ,PASS,src/test/modelnet_b0_remaining_tests.cpp pq_14_19_21_23_24_pin_conf_hash160_failclosed
+PQ-15,PQ,PASS,src/test/modelnet_b0_pq_rest_tests.cpp pq_15_forged_record_never_verified
+PQ-16,PQ,PASS,src/test/modelnet_b0_pq_rest_tests.cpp pq_16_grant_replay_nonce
+PQ-17,PQ,PASS,src/test/modelnet_b0_pq_rest_tests.cpp pq_17_pin_rotation_no_forced_replace
+PQ-18,PQ,PASS,src/test/modelnet_b0_pq_rest_tests.cpp pq_18_missing_pq_fail_closed
+PQ-19,PQ,PASS,src/test/modelnet_tests.cpp pq19_openssl_conf_cannot_weaken_pq1; contrib/modelnet/e2e-openssl-358.sh
+PQ-20,PQ,PASS,src/test/modelnet_b0_pq_rest_tests.cpp pq_20_https_not_native_pq1
+PQ-21,PQ,PASS,src/test/modelnet_b0_remaining_tests.cpp pq_14_19_21_23_24_pin_conf_hash160_failclosed
+PQ-22,PQ,PASS,src/test/modelnet_b0_pq_rest_tests.cpp pq_22_v1_32byte_ids_not_padded
+PQ-23,PQ,PASS,src/test/modelnet_b0_remaining_tests.cpp pq_14_19_21_23_24_pin_conf_hash160_failclosed
+PQ-24,PQ,PASS,src/test/modelnet_b0_remaining_tests.cpp pq_14_19_21_23_24_pin_conf_hash160_failclosed
+SCRIPT-01,SCRIPT,PASS,src/test/modelnet_b0_remaining_tests.cpp script_01_12_leaf_and_campaign_sha256_only; src/test/modelnet_funding_tests.cpp
+SCRIPT-02,SCRIPT,PASS,src/test/modelnet_b0_remaining_tests.cpp script_01_12_leaf_and_campaign_sha256_only; src/test/modelnet_funding_tests.cpp
+SCRIPT-03,SCRIPT,PASS,test/functional/wallet_htlc_atomicswap.py; src/test/modelnet_b0_remaining_tests.cpp script_01_12_leaf_and_campaign_sha256_only
+SCRIPT-04,SCRIPT,PASS,src/test/modelnet_funding_tests.cpp freeze_model_funding_descriptor_mr_htlc_sha256
+SCRIPT-05,SCRIPT,PASS,src/test/modelnet_funding_tests.cpp freeze_model_funding_never_htlc_sha256_tx_or_buildmodelhtlcclaim
+SCRIPT-06,SCRIPT,PASS,src/test/modelnet_funding_tests.cpp
+SCRIPT-07,SCRIPT,PASS,src/test/modelnet_funding_tests.cpp
+SCRIPT-08,SCRIPT,PASS,src/test/modelnet_funding_tests.cpp
+SCRIPT-09,SCRIPT,PASS,test/functional/wallet_htlc_atomicswap.py
+SCRIPT-10,SCRIPT,PASS,src/test/modelnet_funding_tests.cpp; test/functional/wallet_modelnet_funding.py
+SCRIPT-11,SCRIPT,PASS,test/functional/wallet_htlc_atomicswap.py
+SCRIPT-12,SCRIPT,PASS,src/test/modelnet_b0_remaining_tests.cpp script_01_12_leaf_and_campaign_sha256_only
+GPU-01,GPU,PASS,src/test/modelnet_cuda_qual_tests.cpp qualify_runtime_mock_worker_gpu01; contrib/modelnet/cuda-isolated-e2e.sh CUDA_QUAL_WORKER PASS (tiny kernel; production btxd.real still held the GPU after)
+GPU-02,GPU,PASS,src/test/modelnet_cuda_qual_tests.cpp qualify_runtime_requires_modelgpu_when_check_enabled; contrib/modelnet/cuda-isolated-e2e.sh rc_no_gpu/rc_bad_gpu/rc_gpu0_no_share=2
+GPU-03,GPU,PASS,src/test/modelnet_b0_remaining_tests.cpp gpu_01_06_isolation_library; contrib/modelnet/cuda-isolated-e2e.sh GPU-03 isolation
+GPU-04,GPU,PASS,contrib/modelnet/cuda_qual_worker.cu alarm(8); contrib/modelnet/cuda-isolated-e2e.sh GPU-04 finite
+GPU-05,GPU,PASS,contrib/modelnet/cuda-isolated-e2e.sh GPU-05 crash-isolated worker killed (worker PID only; never production)
+GPU-06,GPU,PASS,contrib/modelnet/cuda-isolated-e2e.sh GPU-06 backend_hash_observation
+GPU-isolation-library,GPU,PASS,src/test/modelnet_b0_remaining_tests.cpp gpu_01_06_isolation_library; src/test/modelnet_cuda_qual_tests.cpp (default runtime_check=0 => NOT_RUN_CUDA_ISOLATION; no in-process cudaSetDevice)
+OPENSSL-358,OPENSSL,PASS,contrib/modelnet/relink-openssl-358.sh; contrib/modelnet/e2e-openssl-358.sh (second-process wrap; never production btxd.real)

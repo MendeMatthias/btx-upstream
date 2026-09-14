@@ -68,17 +68,6 @@ UniValue LocalNetworkInfo()
     return r;
 }
 
-UniValue ModelHtlcPointer(const std::string& use)
-{
-    UniValue r(UniValue::VOBJ);
-    r.pushKV("schema_version", 2);
-    r.pushKV("implemented", false);
-    r.pushKV("use", use);
-    r.pushKV("htlc", "htlc_sha256");
-    r.pushKV("note", "HASH160 htlc_tx is recovery-only. Use 0.34.6 " + use + ".");
-    return r;
-}
-
 #ifdef ENABLE_WALLET
 std::shared_ptr<wallet::CWallet> WalletForModelFunding(const JSONRPCRequest& request)
 {
@@ -341,12 +330,12 @@ static RPCHelpMan getmodelrelease()
 
 static RPCHelpMan claimmodelrelease()
 {
-    return ProxyOrLocal("claimmodelrelease", "Pointer to 0.34.6 buildhtlcclaim. No buildmodelhtlcclaim.\n", {});
+    return ProxyOrLocal("claimmodelrelease", "Local campaign pointer; monetary claim is buildmodelhtlcclaim (0.34.6 htlc_sha256).\n", {});
 }
 
 static RPCHelpMan refundmodelrelease()
 {
-    return ProxyOrLocal("refundmodelrelease", "Pointer to 0.34.6 buildhtlcrefund. HASH160 htlc_tx is recovery-only.\n", {});
+    return ProxyOrLocal("refundmodelrelease", "Local campaign pointer; monetary refund is buildmodelhtlcrefund (0.34.6 htlc_sha256). HASH160 htlc_tx is recovery-only.\n", {});
 }
 
 static RPCHelpMan decoderesourceuri()
@@ -852,42 +841,43 @@ static RPCHelpMan exportmodelrecovery()
 
 static RPCHelpMan buildmodelhtlcclaim()
 {
-    return RPCHelpMan{
-        "buildmodelhtlcclaim",
-        "Not implemented. Use 0.34.6 buildhtlcclaim. HASH160 htlc_tx is recovery-only.\n",
-        {},
-        RPCResult{RPCResult::Type::OBJ, "", "", {
-            {RPCResult::Type::NUM, "schema_version", "2"},
-            {RPCResult::Type::BOOL, "implemented", "false"},
-            {RPCResult::Type::STR, "use", "buildhtlcclaim"},
-        }},
-        RPCExamples{HelpExampleCli("buildmodelhtlcclaim", "")},
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
-            (void)self;
-            (void)request;
-            return ModelHtlcPointer("buildhtlcclaim");
-        },
-    };
+    return ProxyOrLocal("buildmodelhtlcclaim",
+                        "Build an unsigned 0.34.6 htlc_sha256 claim (SHA-256 preimage). HASH160 htlc_tx is recovery-only.\n"
+                        "The helper never holds wallet keys: complete=false until the tx is signed.\n",
+                        {
+                            {"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "Claim terms", {
+                                {"descriptor", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "mr(htlc_sha256(...),refund(...))"},
+                                {"preimage", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "SHA-256 preimage hex"},
+                                {"prevout", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "Funding outpoint", {
+                                    {"txid", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Funding txid"},
+                                    {"vout", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "Output index"},
+                                }},
+                                {"destination", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Claim destination address"},
+                                {"destination_script", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Claim scriptPubKey hex"},
+                                {"amount_atoms", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "HTLC output value"},
+                                {"fee_atoms", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "Absolute fee"},
+                            }},
+                        });
 }
 
 static RPCHelpMan buildmodelhtlcrefund()
 {
-    return RPCHelpMan{
-        "buildmodelhtlcrefund",
-        "Not implemented. Use 0.34.6 buildhtlcrefund.\n",
-        {},
-        RPCResult{RPCResult::Type::OBJ, "", "", {
-            {RPCResult::Type::NUM, "schema_version", "2"},
-            {RPCResult::Type::BOOL, "implemented", "false"},
-            {RPCResult::Type::STR, "use", "buildhtlcrefund"},
-        }},
-        RPCExamples{HelpExampleCli("buildmodelhtlcrefund", "")},
-        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
-            (void)self;
-            (void)request;
-            return ModelHtlcPointer("buildhtlcrefund");
-        },
-    };
+    return ProxyOrLocal("buildmodelhtlcrefund",
+                        "Build an unsigned 0.34.6 htlc_sha256 refund (CLTV). HASH160 htlc_tx is recovery-only.\n",
+                        {
+                            {"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "Refund terms", {
+                                {"descriptor", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "mr(htlc_sha256(...),refund(...))"},
+                                {"refund_height", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "CLTV height"},
+                                {"prevout", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "Funding outpoint", {
+                                    {"txid", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Funding txid"},
+                                    {"vout", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "Output index"},
+                                }},
+                                {"destination", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Refund destination address"},
+                                {"destination_script", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Refund scriptPubKey hex"},
+                                {"amount_atoms", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "HTLC output value"},
+                                {"fee_atoms", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "Absolute fee"},
+                            }},
+                        });
 }
 
 void RegisterModelNetRPCCommands(CRPCTable& t)

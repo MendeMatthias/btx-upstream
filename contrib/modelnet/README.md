@@ -11,7 +11,7 @@ service. It holds:
 | `e2e-all.sh` | Fail-fast local process suite (units + loopback e2e) |
 | `e2e-regtest-two-host.sh` | Isolated `btxd -regtest` + helpers on two hosts (`SEEDER_BTXD` / `FETCHER_BTXD` / `SEEDER_MODELD` / `FETCHER_MODELD` / `SEEDER_DIR` / `FETCHER_DIR`) |
 | `e2e-regtest-three-host.sh` | Same plus `THIRD_HOST` client via tunnel; demand-seed; `THIRD_PROD_PIDS` if set |
-| `e2e-public-webpki-kit.sh` | D09 public-CA operator kit (CSR + local CA proof) |
+| `e2e-public-webpki-kit.sh` | Live public DNS 42/43 (getent/dig) + system WebPKI TLS |
 | `e2e-two-node-demand.sh` | WAN retrieve; demand-seed default (no seedmodel) |
 | `run-modeld.sh` | Launch helper with bundled OpenSSL 3.5 when present |
 | `granite_*` | Optional large-fixture scripts; not a usefulness claim |

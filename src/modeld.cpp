@@ -8,6 +8,8 @@
 #include <modelnet/transport_pq.h>
 #include <util/translation.h>
 
+#include <openssl/crypto.h>
+
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
@@ -55,6 +57,7 @@ static void Usage()
         "  -modelseednode=<host:port>  alias of -modelpeer\n"
         "  -modelrelay            CPU-only discovery relay (no GPU, no wallet)\n"
         "  -modelhost             serve seeded artifacts over PQ1\n"
+        "  -version              print helper and OpenSSL versions and exit\n"
         "  -help                 print this message\n";
 }
 
@@ -72,6 +75,10 @@ int main(int argc, char* argv[])
         };
         if (a == "-help" || a == "-h" || a == "--help") {
             Usage();
+            return 0;
+        }
+        if (a == "-version" || a == "--version") {
+            std::cout << "btx-modeld 0.34.7\n" << OpenSSL_version(OPENSSL_VERSION) << "\n";
             return 0;
         }
         if (a == "-modelrelay") cfg.relay = true;

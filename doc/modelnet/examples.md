@@ -2,7 +2,8 @@
 
 These commands are the in-tree examples. Run
 `contrib/modelnet/validate-doc-examples.sh` against `build-gcc13/bin`
-(or `BIN_DIR=...`) to prove they still execute. Packaged CSV stays **NOT_RUN**.
+(or `BIN_DIR=...`) to prove they still execute. Packaged
+`planning/acceptance-matrix.csv` is the bar.
 
 GUI / `btx-qt` examples are out of scope.
 

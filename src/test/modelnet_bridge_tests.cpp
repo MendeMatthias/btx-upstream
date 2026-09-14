@@ -423,6 +423,53 @@ BOOST_AUTO_TEST_CASE(wildcard_cert_depth_is_zero)
     BOOST_CHECK_EQUAL(obj["wildcard_dns_depth"].getInt<int>(), modelnet::BridgeTlsMaxWildcardDepth());
     BOOST_CHECK_EQUAL(obj["bind_default"].get_str(), "127.0.0.1");
     BOOST_CHECK(HasBoolCI(obj, "catalog_browser_bridge", false));
+
+    bool saw_csp = false;
+    bool saw_nosniff = false;
+    for (const auto& h : br.headers) {
+        if (h.first == "Content-Security-Policy" && h.second.find("default-src 'none'") != std::string::npos) {
+            saw_csp = true;
+        }
+        if (h.first == "X-Content-Type-Options" && h.second == "nosniff") saw_nosniff = true;
+    }
+    BOOST_CHECK(saw_csp);
+    BOOST_CHECK(saw_nosniff);
+}
+
+BOOST_AUTO_TEST_CASE(dns_split_42_43_labels_and_join)
+{
+    const std::string uri = FirstVectorUri();
+    const std::string token = uri.substr(6);
+    BOOST_REQUIRE_EQUAL(token.size(), 85U);
+    BOOST_CHECK(token.size() > 63U);
+
+    std::string left, right;
+    BOOST_REQUIRE(modelnet::DnsSplit42_43(token, left, right));
+    BOOST_CHECK_EQUAL(left.size(), 42U);
+    BOOST_CHECK_EQUAL(right.size(), 43U);
+    BOOST_CHECK_EQUAL(left + right, token);
+    BOOST_CHECK_LT(left.size(), 63U);
+    BOOST_CHECK_LE(right.size(), 63U);
+
+    const std::string host = modelnet::DnsSplitJoin(left, right, "split.example");
+    BOOST_CHECK_EQUAL(host, left + "." + right + ".split.example");
+
+    std::string left_uri, right_uri;
+    BOOST_REQUIRE(modelnet::DnsSplit42_43(uri, left_uri, right_uri));
+    BOOST_CHECK_EQUAL(left, left_uri);
+    BOOST_CHECK_EQUAL(right, right_uri);
+
+    std::string split_host, err;
+    BOOST_REQUIRE(modelnet::SplitBridgeHost(uri, "bridge.example.org", split_host, err));
+    BOOST_CHECK_EQUAL(split_host, modelnet::DnsSplitJoin(left, right, "bridge.example.org"));
+    BOOST_CHECK_EQUAL(modelnet::DnsSplitJoin(left, right, ".bridge.example.org."), split_host);
+
+    std::string bad_left, bad_right;
+    BOOST_CHECK(!modelnet::DnsSplit42_43(token + "x", bad_left, bad_right));
+    BOOST_CHECK(!modelnet::DnsSplit42_43(token.substr(0, 84), bad_left, bad_right));
+    BOOST_CHECK(!modelnet::DnsSplit42_43("", bad_left, bad_right));
+    BOOST_CHECK(modelnet::DnsSplitJoin(left, right, "").empty());
+    BOOST_CHECK(modelnet::DnsSplitJoin("short", right, "split.example").empty());
 }
 
 BOOST_AUTO_TEST_CASE(byte_range_maps_to_pieces_json_only)

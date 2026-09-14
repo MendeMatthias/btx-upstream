@@ -23,6 +23,7 @@ add_library(bitcoin_modelnet STATIC
   transport_pq.cpp
   bridge.cpp
   transfer.cpp
+  funding.cpp
   release.cpp
   qualification.cpp
   identity.cpp

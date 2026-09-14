@@ -3,7 +3,13 @@
 // file COPYING or https://opensource.org/license/mit/.
 
 #include <test/util/setup_common.h>
+#include <modelnet/catalog.h>
+#include <modelnet/crypto.h>
+#include <modelnet/helper.h>
 #include <modelnet/transfer.h>
+#include <span.h>
+#include <uint256.h>
+#include <univalue.h>
 #include <util/strencodings.h>
 #ifdef ENABLE_WALLET
 #include <core_io.h>
@@ -280,6 +286,157 @@ BOOST_AUTO_TEST_CASE(funding_unchanged_true_on_same_freeze)
     BOOST_CHECK_EQUAL(first.fingerprint, second.fingerprint);
     BOOST_CHECK(modelnet::FundingUnchanged(first, second, err));
     BOOST_CHECK(modelnet::FundingUnchanged(first, first, err));
+}
+
+BOOST_AUTO_TEST_CASE(helper_prepare_sign_submit_claim_refund_implemented)
+{
+    const fs::path tmp = m_args.GetDataDirBase() / "helper-funding";
+    modelnet::ModelCatalog cat{tmp, 1 << 20};
+    const modelnet::FrozenModelFunding sample = SampleFrozenFunding();
+    UniValue opts(UniValue::VOBJ);
+    opts.pushKV("key_hash", sample.key_hash_hex);
+    opts.pushKV("claimant", sample.claimant);
+    opts.pushKV("refund_pubkey", sample.refund_pubkey);
+    opts.pushKV("refund_height", static_cast<int>(sample.refund_height));
+    opts.pushKV("amount_atoms", sample.amount_atoms);
+    opts.pushKV("max_atoms", sample.max_atoms);
+    UniValue in0(UniValue::VOBJ);
+    in0.pushKV("txid", uint256::ONE.GetHex());
+    in0.pushKV("vout", 0);
+    in0.pushKV("amount_atoms", sample.amount_atoms + 1000);
+    UniValue inputs(UniValue::VARR);
+    inputs.push_back(in0);
+    opts.pushKV("inputs", inputs);
+    opts.pushKV("output_script", "51"); // OP_TRUE; skip descriptor expand
+    UniValue req(UniValue::VOBJ);
+    UniValue params(UniValue::VARR);
+    params.push_back(opts);
+    req.pushKV("method", "preparemodelfunding");
+    req.pushKV("params", params);
+    UniValue prepared;
+    std::string code, err;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, req, prepared, code, err), err);
+    BOOST_CHECK(prepared["implemented"].get_bool());
+    BOOST_CHECK_EQUAL(prepared["htlc"].get_str(), "htlc_sha256");
+    BOOST_CHECK(prepared["descriptor"].get_str().find("htlc_sha256(") != std::string::npos);
+    BOOST_CHECK(prepared["descriptor"].get_str().find("htlc_sha256_tx") == std::string::npos);
+    BOOST_CHECK(prepared.exists("unsigned_hex"));
+    BOOST_CHECK_EQUAL(prepared["automatic_spend"].getInt<int64_t>(), 0);
+
+    UniValue auto_pay(opts);
+    auto_pay.pushKV("auto_pay", true);
+    UniValue bad(UniValue::VOBJ);
+    UniValue badp(UniValue::VARR);
+    badp.push_back(auto_pay);
+    bad.pushKV("method", "preparemodelfunding");
+    bad.pushKV("params", badp);
+    UniValue badres;
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, bad, badres, code, err));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+
+    UniValue forbidden(opts);
+    forbidden.pushKV("htlc", "htlc_sha256_tx");
+    UniValue fp(UniValue::VARR);
+    fp.push_back(forbidden);
+    UniValue fr(UniValue::VOBJ);
+    fr.pushKV("method", "preparemodelfunding");
+    fr.pushKV("params", fp);
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, fr, badres, code, err));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+
+    UniValue sign(UniValue::VOBJ);
+    UniValue sp(UniValue::VARR);
+    sp.push_back(prepared["unsigned_hex"].get_str());
+    UniValue sopt(UniValue::VOBJ);
+    sopt.pushKV("unsigned_txid", prepared["unsigned_txid"].get_str());
+    sopt.pushKV("output_script", prepared["output_script"].get_str());
+    sopt.pushKV("amount_atoms", sample.amount_atoms);
+    sp.push_back(sopt);
+    sign.pushKV("method", "signmodelfunding");
+    sign.pushKV("params", sp);
+    UniValue signed_res;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, sign, signed_res, code, err), err);
+    BOOST_CHECK_EQUAL(signed_res["complete"].get_bool(), false);
+    BOOST_CHECK(signed_res["implemented"].get_bool());
+
+    UniValue submit(UniValue::VOBJ);
+    UniValue up(UniValue::VARR);
+    up.push_back(signed_res["hex"].get_str());
+    submit.pushKV("method", "submitmodelfunding");
+    submit.pushKV("params", up);
+    UniValue submitted;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, submit, submitted, code, err), err);
+    BOOST_CHECK(submitted["submitted"].get_bool());
+    BOOST_CHECK(!submitted["duplicate"].get_bool());
+    BOOST_CHECK(!submitted["broadcast"].get_bool());
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, submit, submitted, code, err), err);
+    BOOST_CHECK(submitted["duplicate"].get_bool());
+
+    unsigned char secret[32];
+    for (int i = 0; i < 32; ++i) secret[i] = static_cast<unsigned char>(i + 3);
+    const modelnet::Hash32 kh = modelnet::Sha256(Span<const unsigned char>{secret, 32});
+    UniValue claim_opts(UniValue::VOBJ);
+    claim_opts.pushKV("key_hash", kh.Hex());
+    claim_opts.pushKV("claimant", sample.claimant);
+    claim_opts.pushKV("refund_pubkey", sample.refund_pubkey);
+    claim_opts.pushKV("refund_height", static_cast<int>(sample.refund_height));
+    claim_opts.pushKV("preimage", HexStr(Span{secret, 32}));
+    UniValue prev(UniValue::VOBJ);
+    prev.pushKV("txid", uint256::ONE.GetHex());
+    prev.pushKV("vout", 0);
+    claim_opts.pushKV("prevout", prev);
+    claim_opts.pushKV("destination_script", "51");
+    claim_opts.pushKV("amount_atoms", 50000);
+    claim_opts.pushKV("fee_atoms", 1000);
+    UniValue claim(UniValue::VOBJ);
+    UniValue cp(UniValue::VARR);
+    cp.push_back(claim_opts);
+    claim.pushKV("method", "buildmodelhtlcclaim");
+    claim.pushKV("params", cp);
+    UniValue claimed;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, claim, claimed, code, err), err);
+    BOOST_CHECK(claimed["implemented"].get_bool());
+    BOOST_CHECK_EQUAL(claimed["complete"].get_bool(), false);
+    BOOST_CHECK_EQUAL(claimed["selected_path"].get_str(), "claim");
+    BOOST_CHECK(claimed.exists("hex"));
+
+    UniValue wrong = claim_opts;
+    wrong.pushKV("preimage", std::string(64, '0'));
+    UniValue wp(UniValue::VARR);
+    wp.push_back(wrong);
+    UniValue wreq(UniValue::VOBJ);
+    wreq.pushKV("method", "buildmodelhtlcclaim");
+    wreq.pushKV("params", wp);
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, wreq, badres, code, err));
+    BOOST_CHECK_EQUAL(code, "PREIMAGE_MISMATCH");
+
+    UniValue refund_opts(UniValue::VOBJ);
+    refund_opts.pushKV("key_hash", sample.key_hash_hex);
+    refund_opts.pushKV("claimant", sample.claimant);
+    refund_opts.pushKV("refund_pubkey", sample.refund_pubkey);
+    refund_opts.pushKV("refund_height", static_cast<int>(sample.refund_height));
+    refund_opts.pushKV("prevout", prev);
+    refund_opts.pushKV("destination_script", "51");
+    refund_opts.pushKV("amount_atoms", 50000);
+    UniValue refund(UniValue::VOBJ);
+    UniValue rp(UniValue::VARR);
+    rp.push_back(refund_opts);
+    refund.pushKV("method", "buildmodelhtlcrefund");
+    refund.pushKV("params", rp);
+    UniValue refunded;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, refund, refunded, code, err), err);
+    BOOST_CHECK(refunded["implemented"].get_bool());
+    BOOST_CHECK_EQUAL(refunded["selected_path"].get_str(), "refund");
+
+    UniValue exp(UniValue::VOBJ);
+    UniValue ep(UniValue::VARR);
+    ep.push_back(opts);
+    exp.pushKV("method", "exportmodelrecovery");
+    exp.pushKV("params", ep);
+    UniValue exported;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, exp, exported, code, err), err);
+    BOOST_CHECK_EQUAL(exported["secrets"].get_bool(), false);
+    BOOST_CHECK_EQUAL(exported["use_claim"].get_str(), "buildmodelhtlcclaim");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

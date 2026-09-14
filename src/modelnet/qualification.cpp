@@ -9,10 +9,19 @@
 #include <util/strencodings.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <set>
+#include <vector>
+
+#ifndef WIN32
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
+#endif
 
 namespace modelnet {
 
@@ -327,11 +336,100 @@ QualResult FinishNotRun(QualReport& report, QualResult result, std::string detai
     return result;
 }
 
+#ifndef WIN32
+std::string FindCudaQualWorker()
+{
+    if (const char* env = std::getenv("BTX_CUDA_QUAL_WORKER")) {
+        if (env[0] != '\0') {
+            if (::access(env, X_OK) == 0) return std::string{env};
+            return {};
+        }
+    }
+    const char* path_env = std::getenv("PATH");
+    if (!path_env) return {};
+    const std::string path{path_env};
+    size_t start = 0;
+    while (start <= path.size()) {
+        const size_t colon = path.find(':', start);
+        const std::string dir = path.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+        const std::string cand = (dir.empty() ? std::string{"."} : dir) + "/cuda_qual_worker";
+        if (::access(cand.c_str(), X_OK) == 0) return cand;
+        if (colon == std::string::npos) break;
+        start = colon + 1;
+    }
+    return {};
+}
+
+bool AllowSharedGpuFromEnv()
+{
+    const char* env = std::getenv("BTX_ALLOW_SHARED_GPU");
+    return env && env[0] != '\0' && std::strcmp(env, "0") != 0;
+}
+
+QualResult SpawnIsolatedCudaWorker(const std::string& worker, int gpu, QualReport& report)
+{
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        return FinishNotRun(report, QualResult::NOT_RUN_RESOURCE_LIMIT, "isolated CUDA worker: pipe failed");
+    }
+
+    posix_spawn_file_actions_t actions;
+    if (posix_spawn_file_actions_init(&actions) != 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return FinishNotRun(report, QualResult::NOT_RUN_RESOURCE_LIMIT, "isolated CUDA worker: spawn actions failed");
+    }
+    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, pipefd[0]);
+    posix_spawn_file_actions_addclose(&actions, pipefd[1]);
+
+    char gpu_arg[32];
+    std::snprintf(gpu_arg, sizeof(gpu_arg), "--gpu=%d", gpu);
+    char share_arg[] = "--allow-shared-gpu";
+    char* argv[5];
+    int argc_w = 0;
+    argv[argc_w++] = const_cast<char*>(worker.c_str());
+    argv[argc_w++] = gpu_arg;
+    if (AllowSharedGpuFromEnv()) {
+        argv[argc_w++] = share_arg;
+    }
+    argv[argc_w] = nullptr;
+
+    pid_t pid = 0;
+    const int rc_spawn = posix_spawn(&pid, worker.c_str(), &actions, nullptr, argv, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    close(pipefd[1]);
+    if (rc_spawn != 0) {
+        close(pipefd[0]);
+        return FinishNotRun(report, QualResult::NOT_RUN_RESOURCE_LIMIT, "isolated CUDA worker: posix_spawn failed");
+    }
+
+    std::string out;
+    char buf[512];
+    ssize_t nread = 0;
+    while ((nread = read(pipefd[0], buf, sizeof(buf))) > 0) {
+        out.append(buf, static_cast<size_t>(nread));
+    }
+    close(pipefd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    if (out.find("GPU-01 RUNTIME_OBSERVED") != std::string::npos) {
+        report.result = QualResult::RUNTIME_OBSERVED;
+        report.level = AdmissionLevel::RUNTIME_OBSERVED;
+        report.detail = out;
+        return QualResult::RUNTIME_OBSERVED;
+    }
+    return FinishNotRun(report, QualResult::NOT_RUN_RESOURCE_LIMIT,
+                        "isolated CUDA worker did not report GPU-01 RUNTIME_OBSERVED: " + out);
+}
+#endif
+
 #ifdef BTX_MODEL_CUDA_QUALIFY_COMPILE
-// Dedicated qualification worker only. Default btxd / test_btx do not define
-// this macro, so this stub is not compiled and libcuda is not required.
-// Even when compiled, this revision does not cudaSetDevice or launch a kernel:
-// a mis-set -modelgpu must never touch the live mining GPU from in-process code.
+// Dedicated in-process stub only. Default btxd / test_btx do not define this
+// macro. Even when compiled, this does not cudaSetDevice: QualifyRuntime
+// posix_spawns BTX_CUDA_QUAL_WORKER / PATH cuda_qual_worker instead.
 QualResult RunIsolatedCudaQualKernel(int gpu_index, QualReport& report)
 {
     (void)gpu_index;
@@ -352,7 +450,7 @@ QualResult QualifyRuntime(const std::string& path, const QualRuntimeOpts& opts, 
     if (!opts.runtime_check) {
         return FinishNotRun(report, QualResult::NOT_RUN_CUDA_ISOLATION,
                             "-modelruntimecheck=0 (default); CUDA runtime qualification not run; "
-                            "cuda_qualification remains false");
+                            "isolated worker not invoked");
     }
 
     if (!opts.gpu_index.has_value()) {
@@ -372,6 +470,13 @@ QualResult QualifyRuntime(const std::string& path, const QualRuntimeOpts& opts, 
                             "refusing validator/mining GPU (device 0 default, or BTX_VALIDATOR_GPU); "
                             "never cudaSetDevice on that index");
     }
+
+#ifndef WIN32
+    const std::string worker = FindCudaQualWorker();
+    if (!worker.empty()) {
+        return SpawnIsolatedCudaWorker(worker, gpu, report);
+    }
+#endif
 
 #ifdef BTX_MODEL_CUDA_QUALIFY_COMPILE
     return RunIsolatedCudaQualKernel(gpu, report);

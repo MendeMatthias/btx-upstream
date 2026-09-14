@@ -1,8 +1,9 @@
 # How to test and use 0.34.7 model hosting
 
 This is the operator/researcher guide for **using** and **proving** the
-Native Model Network in this tree. Packaged `acceptance-matrix.csv` stays
-**NOT_RUN** (DOC-04). Re-run the scripts; do not treat a green CSV as the bar.
+Native Model Network in this tree. Packaged `planning/acceptance-matrix.csv`
+is the production bar (PASS only where this tree has a Boost test or e2e
+script). Re-run the scripts; do not treat a capabilities bit as PASS.
 
 **Fail-fast:** every script below exits on the first error. Do not wait
 minutes after a `FAIL` / `retrieve failed` line.
@@ -52,10 +53,10 @@ bundled `lib/`.
 | Cross-host inspect | `contrib/modelnet/e2e-cross-host-inspect.sh` | granite bytes match (13888336427) + production PIDs + GPU still holds ExactReplay |
 | Isolated CUDA worker | `contrib/modelnet/cuda-isolated-e2e.sh` | Tiny kernel on a dedicated CUDA workstation only; never the live attestor GPU |
 | Granite FIT vs ExactReplay | `contrib/modelnet/e2e-cuda-granite-fit.sh` | Isolated worker: 13.8 GiB would FIT; live ExactReplay reserve is not starved |
-| One-node regtest + helper | `python3 test/functional/feature_modelnet_helper.py --configfile=build-gcc13/test/config.ini --timeout-factor=1` | `btxd -regtest` + unix helper; import demand-seeds; EXPLICIT_PAID is WALLET_REQUIRED |
+| One-node regtest + helper | `python3 test/functional/feature_modelnet_helper.py --configfile=build-gcc13/test/config.ini --timeout-factor=1` | `btxd -regtest` + unix helper; import demand-seeds; EXPLICIT_PAID journals a quote (automatic spend 0) |
 | HTLC (0.34.6 reuse) | **Direct file**, ASCII tmpdir (do **not** use `test_runner.py` cache): `mkdir -p /tmp/btx-htlc/atomicswap && python3 test/functional/wallet_htlc_atomicswap.py --descriptors --configfile=build-gcc13/test/config.ini --tmpdir=/tmp/btx-htlc/atomicswap --timeout-factor=1` | SCRIPT-03/09/11 claim mined + preimage on-chain; wrong preimage refused; refund after locktime. Same pattern: `wallet_modelnet_funding.py` |
-| Two-host isolated regtest | `contrib/modelnet/e2e-regtest-two-host.sh` | Second-process `btxd -regtest` + `btx-modeld`; production PIDs untouched; binaries via `SEEDER_BTXD` / `FETCHER_BTXD` / `SEEDER_MODELD` / `FETCHER_MODELD` / `SEEDER_DIR` / `FETCHER_DIR` |
-| Three-host isolated regtest | `contrib/modelnet/e2e-regtest-three-host.sh` | Same plus a third isolated client (`THIRD_HOST`); both clients `getmodel` the tiny URI via a tunnel and demand-seed; `THIRD_PROD_PIDS` checked if set |
+| Two-host isolated regtest | `contrib/modelnet/e2e-regtest-two-host.sh` | Second-process `btxd -regtest` + `btx-modeld` on `REGTEST_MODELD_PORT` (default **29449**, never 29448); production PIDs untouched |
+| Three-host isolated regtest | `contrib/modelnet/e2e-regtest-three-host.sh` | Linux pair first; then a third isolated `btx-modeld` (`THIRD_HOST`). Disk/missing-binary/`SKIP` keeps the two-host PASS |
 | Two WAN seeders | `contrib/modelnet/e2e-two-wan.sh` | STORE-01: fetcher next to two seeders (same OpenSSL); resume `local` |
 | Two-node WAN (tiny / granite) | `BTX_WAN_E2E=1 SEEDER=host:port contrib/modelnet/e2e-two-node-demand.sh` | Real PQ1 upload/download. Fetcher **must not** pass `-modelseed=auto` or `seedmodel` |
 | Introducer death | `contrib/modelnet/e2e-disc-failure.sh` | DISC-04 no official names; DISC-05 same job fails over after introducer RST (helper ignores SIGPIPE) |
@@ -71,8 +72,11 @@ the live attestor helper.
   While `status=running`, `last_err` is resume (transient PQ1: `tls io`,
   `timeout`, `connect failed`, …), not a FAIL. Do not treat `last_err` /
   `peer_retries` alone as terminal. `bytes_committed` may move across those
-  retries. If `bytes_committed` is present and unchanged for 120s while
-  `status=running`, fail-fast (`failfast.poll_job` `stall_s`).
+  retries. Granite attach (`granite_attach_poll.py --stall-secs`, default
+  **180**): frozen `bytes_committed` with `inflight>0` is **STALL**;
+  `inflight=0` and empty `last_err` is digest verify (keep waiting). Poll
+  the newest `status=running` job (`created_ms`, then `job_id`), never a
+  stale failed `jobs[0]`.
 - Prefer loopback or LAN to the seeder (`127.0.0.1:29448` when fetcher and
   seeder are the same host). Hairpin through a public hostname is not the
   retrieve test.
@@ -99,10 +103,11 @@ completed at **BYTES_VERIFIED** / `seeded=true`. A prior full retrieve was
 ≈ 6562 s (≈ 2.1 MB/s). Re-run `e2e-two-node-demand.sh` on a fresh-buyer
 datadir for a new number; do not `getmodel` on the live attestor helper.
 
-OpenSSL **3.5.8** is proven as a **second-process** helper via
-`e2e-openssl-358.sh` (`LD_LIBRARY_PATH` + hostile `OPENSSL_CONF` still
-reports MLKEM768). Relinking production `btxd.real` is a separate operator
-step; do not swap a running signer binary.
+OpenSSL **3.5.8** is proven as a **second-process** wrap via
+`relink-openssl-358.sh` + `e2e-openssl-358.sh` (`LD_LIBRARY_PATH`, wrapped
+`btx-modeld` / `btxd` under `build-gcc13/openssl358-second`, hostile
+`OPENSSL_CONF` still reports MLKEM768). Relinking production `btxd.real` is
+forbidden; do not swap a running signer binary.
 
 ## User scenarios (use)
 
@@ -145,26 +150,38 @@ smoke: `python3 contrib/modelnet/two_helper_retrieve.py build-gcc13/bin`.
 
 SSH aliases and paths are env-only (`SEEDER_HOST`, `FETCHER_HOST`,
 `THIRD_HOST`). Do not bind the granite seeder port (`29448`); isolated
-helpers use `REGTEST_MODELD_PORT` (default `29449`).
+helpers use `REGTEST_MODELD_PORT` (default `29449`). Coordinator expands
+overrides, then `ssh`. `$HOME` in `FETCHER_*` / `THIRD_DIR` defaults is
+the **remote** home.
+
+| Env | Default |
+|---|---|
+| `SEEDER_DIR` | `/opt/btx-0347-rc/regtest-e2e` |
+| `SEEDER_BTXD` / `SEEDER_CLI` | `/opt/btx-node/bin/btxd` and `btx-cli` |
+| `SEEDER_MODELD` | `/opt/btx-0347-rc/bin/btx-modeld` |
+| `SEEDER_LD_LIBRARY_PATH` | `/opt/btx-0347-rc/lib` |
+| `FETCHER_DIR` | `$HOME/.local/opt/btx-0.34.7-rc-regtest` (remote fetcher) |
+| `FETCHER_BTXD` / `FETCHER_CLI` | `$HOME/.local/opt/btx-0.34.7-b094c6ba420f/bin/btxd` and `btx-cli` |
+| `FETCHER_MODELD` | `$HOME/.local/opt/btx-0.34.7-rc-modeld/bin/btx-modeld` |
+| `FETCHER_LD_LIBRARY_PATH` | `$HOME/.local/opt/btx-0.34.7-rc-modeld/lib` |
+| `THIRD_DIR` | `$HOME/.local/opt/btx-0.34.7-rc-regtest` (remote third) |
+| `THIRD_BTXD` / `THIRD_MODELD` | Darwin-safe `build-metal/bin/{btxd,btx-modeld}` (override; never copy a Linux ELF) |
 
 ```bash
 SEEDER_HOST=... FETCHER_HOST=... \
   SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... \
-  SEEDER_BTXD=... SEEDER_MODELD=... SEEDER_DIR=... \
-  FETCHER_BTXD=... FETCHER_MODELD=... FETCHER_DIR=... \
   contrib/modelnet/e2e-regtest-two-host.sh
 
 SEEDER_HOST=... FETCHER_HOST=... THIRD_HOST=... \
-  SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... THIRD_PROD_PIDS=... \
-  SEEDER_BTXD=... SEEDER_MODELD=... SEEDER_DIR=... \
-  FETCHER_BTXD=... FETCHER_MODELD=... FETCHER_DIR=... \
-  THIRD_BTXD=... THIRD_MODELD=... THIRD_DIR=... \
+  SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... \
   contrib/modelnet/e2e-regtest-three-host.sh
 ```
 
 Starts **new** `btxd -regtest` datadirs and **new** helpers. Production
 `btxd.real` stays up. Fetcher/third command lines have no `-modelseed=auto`.
-`THIRD_PROD_PIDS` is optional (checked only if set).
+`THIRD_PROD_PIDS` may be empty. If the third host cannot run (disk under
+20G, missing binary, Linux ELF on Darwin), the script prints
+`E2E_REGTEST_THREE SKIP` and leaves the Linux pair `E2E_REGTEST_TWO PASS`.
 
 ### 4. Large model (granite-scale)
 
@@ -198,10 +215,12 @@ signer/attestor.
 
 ### 7. Paid / HTLC (optional money)
 
-`EXPLICIT_PAID` is WALLET_REQUIRED until a monetary wallet is configured.
-`getmodel FREE_FIRST_APPROVAL` journals a quote without spending.
-Helper `preparemodelfunding` is `NOT_IMPLEMENTED` by design; reuse 0.34.6
-`buildhtlcclaim` / `buildhtlcrefund`. HASH160 `htlc_tx` is recovery-only.
+`EXPLICIT_PAID` journals a prepaid quote (automatic spend 0) and names
+`preparemodelfunding`. Helper `preparemodelfunding` / `signmodelfunding` /
+`submitmodelfunding` freeze an exact `htlc_sha256` round. Helper sign is
+`complete=false` without spending keys. Helper submit journals; `btxd`
+broadcasts. `buildmodelhtlcclaim` / `buildmodelhtlcrefund` build unsigned
+0.34.6 SHA-256 templates. HASH160 `htlc_tx` is recovery-only.
 
 ### 8. Models URI / GUI
 
@@ -217,34 +236,49 @@ contrib/modelnet/e2e-gui-uri.sh
 `btx-qt` needs Qt 6 headers in the **same** `build-gcc13` tree
 (`-DBUILD_GUI=ON -DWITH_QT_VERSION=6`). Offscreen: `QT_QPA_PLATFORM=offscreen`.
 
-### 9. Optional browser bridge (never native PQ)
+### 9. Browser bridge (public DNS 42/43; never native PQ)
 
 PQ-only deployments **omit** the bridge. Native `btx-modeld` never speaks
-classical HTTPS.
+classical HTTPS. Native helper stays **PQ1**.
+
+The 42/43 DNS split is implemented (`DnsSplit42_43`): an 85-char token
+becomes `{left}.{right}.{zone}` so each label is under the 63-char DNS limit.
+Public WebPKI is a live system-trust handshake, not a local-CA-only kit.
 
 ```bash
-contrib/modelnet/e2e-bridge-optional.sh          # local CA + Chrome
-contrib/modelnet/e2e-public-webpki-kit.sh        # operator DNS + public CA steps
+contrib/modelnet/e2e-webpki-tls.sh           # wildcard depth + system WebPKI TLS
+contrib/modelnet/e2e-public-webpki-kit.sh    # live getent/dig 42/43 + WebPKI TLS
+contrib/modelnet/e2e-bridge-optional.sh       # Chrome CSP / loopback (optional)
 ```
 
-Public WebPKI needs an operator hostname and a real CA. The kit generates
-the CSR layout and proves the local-CA path. It does not invent a public
-certificate.
+Defaults: `PUBLIC_WEBPKI_HOST=example.com` and `PUBLIC_BRIDGE_HOST=example.com`
+(IANA documented test host with public DNS and HTTPS). Override
+`PUBLIC_BRIDGE_HOST` to the operator zone that publishes
+`{left}.{right}.${PUBLIC_BRIDGE_HOST}`. If that split name resolves, the kit
+connects with SNI using the system trust store. The kit still writes a CSR
+layout for operators who will put a real name on a public CA; that file is
+not the proof. Native `btx-modeld` never terminates this TLS edge.
 
 ### 10. CUDA qualification (optional, isolated)
 
-Static `btx-modelcheck` never launches kernels. A CUDA worker **must** be a
-separate process from `btxd` and must not starve ExactReplay.
+Static `btx-modelcheck` never launches kernels. `QualifyRuntime` with
+`-modelruntimecheck=1` posix_spawns `BTX_CUDA_QUAL_WORKER` or PATH
+`cuda_qual_worker` with `--gpu=N` and optional `--allow-shared-gpu` from
+`BTX_ALLOW_SHARED_GPU`. `btxd` never `cudaSetDevice` for model qualification.
 
 ```bash
-# dedicated CUDA workstation only. Tiny kernel. Production ExactReplay stays on the GPU.
-contrib/modelnet/cuda-isolated-e2e.sh
+# dedicated CUDA workstation. Tiny kernel. Do not set BTX_LIVE_ATTESTOR=1.
+# May use --allow-shared-gpu. Production ExactReplay stays on the GPU.
+# Never SIGKILL btxd.real. Do not name operator hostnames in public trees.
+CUDA_HOST=<cuda-workstation> contrib/modelnet/cuda-isolated-e2e.sh
 # GPU-02: missing --gpu / gpu=99 / gpu=0 without --allow-shared-gpu all fail
 # GPU-01/03/04/05/06: kernel, isolation, 8s alarm, crash isolation, backend hash
 ```
 
-Never run CUDA on the live attestor. `capabilities.cuda_qualification=false`
-until that isolated worker is compiled and run.
+Default `-modelruntimecheck=0` remains `NOT_RUN_CUDA_ISOLATION`.
+`capabilities.cuda_qualification=true` because the isolated worker exists;
+a live `GPU-01 RUNTIME_OBSERVED` is the e2e above. See
+`planning/acceptance-matrix.csv`.
 
 ### 11. Recovery
 

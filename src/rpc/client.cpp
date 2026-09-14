@@ -571,6 +571,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "submitmodelfunding", 1, "options" },
     { "exportmodelrecovery", 0, "release_id", /*also_string=*/true },
     { "exportmodelrecovery", 1, "options" },
+    { "buildmodelhtlcclaim", 0, "options" },
+    { "buildmodelhtlcrefund", 0, "options" },
 };
 // clang-format on
 

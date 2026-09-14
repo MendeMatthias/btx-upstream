@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>674</width>
-    <height>620</height>
+    <height>700</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -310,6 +310,32 @@
         </property>
         <property name="checked">
          <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="installOsHandler">
+        <property name="toolTip">
+         <string>Register btx:// with the OS via contrib/modelnet/install-os-handler.sh. User-local does not need sudo. System-wide uses pkexec (preferred) or sudo. The handler is btx-open, never a shell.</string>
+        </property>
+        <property name="text">
+         <string>Install btx:// OS handler (may prompt for sudo/pkexec)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="installOsHandlerSystem">
+        <property name="toolTip">
+         <string>Install /usr/share/applications/btx-open.desktop using pkexec (preferred) or sudo, then update-desktop-database. Leave unchecked for a user-local handler under ~/.local/share/applications.</string>
+        </property>
+        <property name="text">
+         <string>Install system-wide (pkexec/sudo)</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
         </property>
        </widget>
       </item>

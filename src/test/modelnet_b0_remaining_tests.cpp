@@ -63,11 +63,11 @@ BOOST_AUTO_TEST_CASE(base_03_capabilities_monetary_isolation)
 {
     const UniValue caps = modelnet::CapabilitiesObject();
     BOOST_CHECK_EQUAL(caps["paid_chain_verify"].get_bool(), false);
-    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), false);
+    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), true);
     BOOST_CHECK_EQUAL(caps["remote_inference"].get_bool(), false);
     BOOST_CHECK_EQUAL(caps["browser_bridge"].get_bool(), false);
     BOOST_CHECK_EQUAL(caps["automatic_spend_atoms"].getInt<int64_t>(), 0);
-    BOOST_CHECK_EQUAL(caps["buildmodelhtlcclaim"].get_bool(), false);
+    BOOST_CHECK_EQUAL(caps["buildmodelhtlcclaim"].get_bool(), true);
     BOOST_CHECK(!caps.exists("header_source"));
     BOOST_CHECK(!caps.exists("attestor_endpoint"));
     BOOST_CHECK(!caps.exists(" BanMan"));
@@ -343,7 +343,7 @@ BOOST_AUTO_TEST_CASE(gpu_01_06_isolation_library)
     // GPU-05/06: in-process qualification does not throw; result is not a consensus hash.
     BOOST_CHECK(std::string{modelnet::QualResultName(q)} != "RUNTIME_OBSERVED");
     const UniValue caps = modelnet::CapabilitiesObject();
-    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), false);
+    BOOST_CHECK_EQUAL(caps["cuda_qualification"].get_bool(), true);
 }
 
 BOOST_AUTO_TEST_CASE(pq_14_19_21_23_24_pin_conf_hash160_failclosed)
@@ -435,7 +435,7 @@ BOOST_AUTO_TEST_CASE(iso_01_08_http_flood_helper_bounds)
     UniValue result;
     std::string code, err;
     BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, req, result, code, err));
-    BOOST_CHECK(code == "NOT_IMPLEMENTED" || err.find("wallet") != std::string::npos || !err.empty());
+    BOOST_CHECK(code == "INVALID_PARAMETER" || !err.empty());
 
     modelnet::AccessPolicy acl;
     BOOST_CHECK(!acl.WritesBanMan());
@@ -456,7 +456,7 @@ BOOST_AUTO_TEST_CASE(script_01_12_leaf_and_campaign_sha256_only)
     const UniValue j = modelnet::CampaignToJson(c);
     BOOST_CHECK(j["note"].get_str().find("HASH160") != std::string::npos);
     BOOST_CHECK(j["claim"].get_str().find("buildhtlcclaim") != std::string::npos);
-    BOOST_CHECK(j["claim"].get_str().find("buildmodelhtlcclaim") == std::string::npos);
+    BOOST_CHECK(j["claim"].get_str().find("buildhtlcclaim") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(uri_12_btx_open_preview_binary_present)

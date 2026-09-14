@@ -64,4 +64,7 @@ print("BRIDGE_SMOKE range-ignored", body.get("canonical"))
 PY
 code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}/wallet" || true)
 [[ "$code" == "403" || "$code" == "404" ]]
+curl -sD /tmp/modelbridge-health.hdr -o /dev/null "http://127.0.0.1:${PORT}/health"
+grep -qi 'Content-Security-Policy: default-src '\''none' /tmp/modelbridge-health.hdr
+grep -qi 'X-Content-Type-Options: nosniff' /tmp/modelbridge-health.hdr
 echo "BRIDGE_SMOKE PASS"

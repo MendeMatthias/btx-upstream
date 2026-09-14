@@ -120,14 +120,14 @@ UniValue CapabilitiesObject()
     c.pushKV("pq1_http", true);
     c.pushKV("piece_wire", "application/octet-stream");
     c.pushKV("paid_retrieval", true);          // local quote journal + prepaid quote RPC
-    c.pushKV("paid_chain_verify", false);      // helper does not verify chain inclusion
+    c.pushKV("paid_chain_verify", false);      // helper journals submit; does not verify chain inclusion
     c.pushKV("paid_funding_rpc", true);        // prepare/sign/submit freeze exact htlc_sha256 round
     c.pushKV("signed_free_grant", true);
     c.pushKV("release_campaign_rpc", true);   // coordination only; not a spend
-    c.pushKV("buildmodelhtlcclaim", false);
+    c.pushKV("buildmodelhtlcclaim", true);
     c.pushKV("htlc_reuse", "0.34.6 htlc_sha256 / buildhtlcclaim / buildhtlcrefund");
     c.pushKV("remote_inference", false);
-    c.pushKV("cuda_qualification", false);  // static SafeTensors/GGUF; no kernels
+    c.pushKV("cuda_qualification", true);  // isolated posix worker; QualifyFile never cudaSetDevice
     c.pushKV("browser_bridge", false);        // optional separate process, not native PQ
     c.pushKV("automatic_spend_atoms", 0);
     c.pushKV("demand_seed_default", true);

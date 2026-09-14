@@ -120,13 +120,15 @@ listed_id = rpc("listmodelidentities", [])
 if not listed_id.get("identities"):
     raise SystemExit(f"listmodelidentities: {listed_id}")
 
-paid = None
-try:
-    paid = rpc("getmodel", [uri, "EXPLICIT_PAID"])
-    raise SystemExit(f"EXPLICIT_PAID must be WALLET_REQUIRED: {paid}")
-except RuntimeError as e:
-    if "WALLET_REQUIRED" not in str(e):
-        raise SystemExit(f"EXPLICIT_PAID: {e}")
+paid = rpc("getmodel", [uri, "EXPLICIT_PAID"])
+if not isinstance(paid, dict):
+    raise SystemExit(f"EXPLICIT_PAID: {paid}")
+if paid.get("automatic_spend_atoms", paid.get("automatic_spend", 1)) not in (0, "0"):
+    raise SystemExit(f"EXPLICIT_PAID must not auto-spend: {paid}")
+if "quote" not in paid:
+    raise SystemExit(f"EXPLICIT_PAID must journal a quote: {paid}")
+if paid.get("funding_rpc") != "preparemodelfunding":
+    raise SystemExit(f"EXPLICIT_PAID funding_rpc: {paid}")
 
 plan = rpc("getmodel", [uri, "FREE_FIRST_APPROVAL"])
 if not isinstance(plan, dict) or "quote" not in plan:
@@ -136,10 +138,10 @@ if not quotes_path.is_file():
     raise SystemExit(f"quote journal missing: {quotes_path}")
 try:
     rpc("preparemodelfunding", [""])
-    raise SystemExit("preparemodelfunding must stay NOT_IMPLEMENTED on the helper")
+    raise SystemExit("preparemodelfunding empty args must fail")
 except RuntimeError as e:
-    if "NOT_IMPLEMENTED" not in str(e):
-        raise SystemExit(f"preparemodelfunding: {e}")
+    if "NOT_IMPLEMENTED" in str(e):
+        raise SystemExit(f"preparemodelfunding still NOT_IMPLEMENTED: {e}")
 
 recip = rpc("getmodelreciprocity", [])
 if not isinstance(recip, dict):

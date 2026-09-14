@@ -1,20 +1,62 @@
 #!/usr/bin/env bash
 # Second-process OpenSSL 3.5.8 PQ1. Never swaps production btxd.real.
 # PQ-19: hostile OPENSSL_CONF cannot weaken PQ1. Fail-fast.
+# Completeness: wrapped btx-modeld -version (or ldd) + getmodelnetworkinfo on a
+# scratch unix socket proving libssl 3.5.8. Wrapped btxd -version only (no node).
 export LC_ALL=C
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [[ -z "${OPENSSL358_PREFIX:-}" && -d "$HOME/.local/opt/openssl-3.5.8" ]]; then
+  OPENSSL358_PREFIX="$HOME/.local/opt/openssl-3.5.8"
+fi
 PREFIX="${OPENSSL358_PREFIX:-$HOME/.local/opt/openssl-3.5.8}"
-BIN="$ROOT/build-gcc13/bin"
-SCRATCH="$ROOT/e2e-scratch/openssl358"
+export OPENSSL358_PREFIX="$PREFIX"
+export DEST="${DEST:-$ROOT/build-gcc13/openssl358-second}"
+PROD_REAL="$HOME/.local/opt/btx-0.34.7-b094c6ba420f/libexec/btxd.real"
 die() { echo "E2E_OPENSSL358 FAIL: $*" >&2; exit 1; }
 [[ -x "$PREFIX/bin/openssl" ]] || die "missing $PREFIX"
-[[ -x "$BIN/btx-modeld" ]] || die "missing btx-modeld"
-rm -rf "$SCRATCH"; mkdir -p "$SCRATCH"
+if [[ "$(realpath -m "$DEST")" == "$(realpath -m "$(dirname "$PROD_REAL")")" ]]; then
+  die "DEST must not be production libexec"
+fi
+bash "$ROOT/contrib/modelnet/relink-openssl-358.sh"
+WRAP="$DEST"
+[[ -x "$WRAP/btx-modeld" ]] || die "missing wrapped btx-modeld in $WRAP"
+rm -rf "$ROOT/e2e-scratch/openssl358"
+SCRATCH="$ROOT/e2e-scratch/openssl358"
+mkdir -p "$SCRATCH"
 export LD_LIBRARY_PATH="$PREFIX/lib:${LD_LIBRARY_PATH:-}"
 ver="$("$PREFIX/bin/openssl" version)"
 echo "$ver" | grep -q '3.5.8' || die "openssl not 3.5.8: $ver"
 echo "$ver" | grep -q 'Library: OpenSSL 3.5.8' || die "library not 3.5.8: $ver"
+
+ssl_map="$(ldd "$WRAP/btx-modeld.real" | grep libssl || true)"
+echo "ldd btx-modeld.real libssl: $ssl_map"
+echo "$ssl_map" | grep -q 'openssl-3.5.8' || die "btx-modeld.real not resolving libssl from 3.5.8: $ssl_map"
+
+set +e
+ver_modeld="$("$WRAP/btx-modeld" -version 2>&1)"
+rc_ver=$?
+set -e
+echo "wrapped btx-modeld -version rc=$rc_ver"
+echo "$ver_modeld"
+if [[ "$rc_ver" -eq 0 ]]; then
+  echo "$ver_modeld" | grep -q '3.5.8' || die "wrapped btx-modeld -version not 3.5.8"
+else
+  echo "btx-modeld -version not in this binary; proving 3.5.8 via ldd + getmodelnetworkinfo"
+fi
+
+if [[ -x "$WRAP/btxd" ]]; then
+  if [[ -e "$PROD_REAL" ]]; then
+    wrap_id="$(stat -c '%d:%i' "$WRAP/btxd.real" 2>/dev/null || true)"
+    prod_id="$(stat -c '%d:%i' "$PROD_REAL" 2>/dev/null || true)"
+    [[ "$wrap_id" != "$prod_id" ]] || die "wrapped btxd.real is production; abort"
+  fi
+  echo "wrapped btxd -version (second process; not a node start):"
+  "$WRAP/btxd" -version 2>&1 | head -5
+  btxd_ssl="$(ldd "$WRAP/btxd.real" | grep libssl || true)"
+  echo "ldd btxd.real libssl: $btxd_ssl"
+  echo "$btxd_ssl" | grep -q 'openssl-3.5.8' || die "btxd.real not resolving libssl from 3.5.8: $btxd_ssl"
+fi
 
 # PQ-19 hostile conf (X25519 + AES-128). Helper must still report MLKEM768.
 cat >"$SCRATCH/hostile.cnf" <<'EOF'
@@ -39,9 +81,9 @@ python3 -c 'import struct; from pathlib import Path; Path("'"$SCRATCH"'/a/src/mo
 PA=""; PB=""
 cleanup() { for p in "$PB" "$PA"; do [[ -n "$p" ]] && kill -TERM "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
-"$BIN/btx-modeld" -modeldir="$SCRATCH/a" -modelstorage=8MiB -modelbind="127.0.0.1:${PORT}" -modelhost -modelrpcsocket="$SCRATCH/a/modeld.sock" >"$SCRATCH/a.log" 2>&1 &
+"$WRAP/btx-modeld" -modeldir="$SCRATCH/a" -modelstorage=8MiB -modelbind="127.0.0.1:${PORT}" -modelhost -modelrpcsocket="$SCRATCH/a/modeld.sock" >"$SCRATCH/a.log" 2>&1 &
 PA=$!
-"$BIN/btx-modeld" -modeldir="$SCRATCH/b" -modelstorage=8MiB -modelrpcsocket="$SCRATCH/b/modeld.sock" >"$SCRATCH/b.log" 2>&1 &
+"$WRAP/btx-modeld" -modeldir="$SCRATCH/b" -modelstorage=8MiB -modelrpcsocket="$SCRATCH/b/modeld.sock" >"$SCRATCH/b.log" 2>&1 &
 PB=$!
 python3 - "$SCRATCH" "$PORT" "$PA" "$PB" "$ROOT/contrib/modelnet" <<'PY'
 import json, os, socket, sys
@@ -66,12 +108,6 @@ def rpc(sock, method, params, timeout=20):
     if m.get("error"): raise SystemExit("%s: %s"%(method, m["error"]))
     return m["result"]
 
-def ready(path, pid):
-    def c():
-        i=rpc(path,"getmodelnetworkinfo",[])
-        return i if i.get("helper_ready") else None
-    return wait_unix(c, timeout=20, pid=pid, log=path.parent.with_suffix(".log") if False else path.parent.parent/ (path.parent.name+".log"))
-
 sa, sb = root/"a/modeld.sock", root/"b/modeld.sock"
 wait_unix(lambda: rpc(sa,"getmodelnetworkinfo",[]) if (sa.exists()) else None, timeout=20, pid=pa, log=root/"a.log")
 wait_unix(lambda: rpc(sb,"getmodelnetworkinfo",[]) if (sb.exists()) else None, timeout=20, pid=pb, log=root/"b.log")
@@ -93,4 +129,4 @@ if int(listed.get("local_count") or 0)<1:
     raise SystemExit(listed)
 print("E2E_OPENSSL358 PASS", json.dumps({"openssl": info.get("openssl"), "group": info.get("group"), "uri": imp["uri"]}))
 PY
-echo "E2E_OPENSSL358 PASS (second-process; production btxd.real untouched)"
+echo "E2E_OPENSSL358 PASS (second-process wrap; production btxd.real untouched)"

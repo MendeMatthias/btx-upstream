@@ -145,6 +145,9 @@ bool FillJson(BrowserBridgeResponse& out, int status, UniValue obj, bool ok, std
     out.content_type = "application/json";
     out.body = obj.write();
     out.canonical_btx = std::move(canonical);
+    out.headers.emplace_back("X-Content-Type-Options", "nosniff");
+    out.headers.emplace_back("Content-Security-Policy", "default-src 'none'");
+    out.headers.emplace_back("X-BTX-Web-Compatibility", WEB_COMPAT);
     return true;
 }
 
@@ -296,6 +299,30 @@ int BridgeTlsMaxWildcardDepth()
 {
     // Native-style: this edge is not a DNS-wildcard identity authority.
     return 0;
+}
+
+bool DnsSplit42_43(const std::string& token, std::string& left, std::string& right)
+{
+    left.clear();
+    right.clear();
+    std::string payload = token;
+    if (payload.size() >= 6 && ToLower(payload.substr(0, 6)) == "btx://") {
+        payload.erase(0, 6);
+    }
+    if (payload.size() != 85) return false;
+    left = payload.substr(0, 42);
+    right = payload.substr(42);
+    return right.size() == 43;
+}
+
+std::string DnsSplitJoin(const std::string& left, const std::string& right, const std::string& zone)
+{
+    if (left.size() != 42 || right.size() != 43) return {};
+    std::string z = TrimCopy(zone);
+    while (!z.empty() && z.front() == '.') z.erase(z.begin());
+    while (!z.empty() && z.back() == '.') z.pop_back();
+    if (z.empty()) return {};
+    return left + "." + right + "." + z;
 }
 
 bool BridgeRangeToPieces(uint64_t first_byte, uint64_t last_byte, uint64_t piece_size,

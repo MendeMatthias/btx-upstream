@@ -37,8 +37,9 @@ authority. D01: local use is the end of acquisition; paid/remote inference
 is removed from the product language, not deferred.
 
 This tree reports partial features through a **capabilities** object. Those
-bits are **not** `planning/acceptance-matrix.csv` PASS. Packaged production
-rows remain **NOT_RUN**. Qt Models-first pages ship in `src/qt` (`btx:`
+bits are **not** a substitute for `planning/acceptance-matrix.csv`. That file
+is the packaged production bar: **PASS** only where this tree has a Boost
+test or e2e script. Qt Models-first pages ship in `src/qt` (`btx:`
 never enters the payment parser). `btx-qt` needs Qt 6 headers in the same
 compile tree. CLI / `btx-modeld` / `btx-open` remain the no-Qt surfaces.
 
@@ -119,9 +120,10 @@ scheduled as if serving files consumed the ExactReplay GPU.
 HTLC success proves a 32-byte preimage was revealed. It does **not** prove
 the model is useful, safe, aligned, or the file the publisher described.
 
-Paid **wallet funding** RPCs in this tree return `NOT_IMPLEMENTED`.
-Quotes, local campaign objects, and `claimmodelrelease`/`refundmodelrelease`
-pointers exist. Reuse 0.34.6 HTLC RPCs; HASH160 `htlc_tx` is recovery-only.
+Paid **wallet funding** RPCs freeze an exact `htlc_sha256` round
+(`preparemodelfunding` / `signmodelfunding` / `submitmodelfunding`).
+`buildmodelhtlcclaim` / `buildmodelhtlcrefund` build unsigned 0.34.6
+SHA-256 templates. HASH160 `htlc_tx` is recovery-only. Automatic spend is 0.
 `capabilities.paid_retrieval=true` with `paid_chain_verify=false`.
 
 ## What this tree actually implements
@@ -136,13 +138,14 @@ Honest capabilities (`getmodelnetworkinfo` → `capabilities`):
 | `FREE_ONLY` retrieve over PQ1 `/hello`, manifests, pieces | yes (octet-stream piece body) |
 | Seed / pin / list / manifest | yes |
 | `btx-open` preview | yes |
-| Paid retrieve, quotes, campaign RPCs | **quotes + campaign objects yes**; wallet funding RPCs still `NOT_IMPLEMENTED`; `paid_chain_verify=false` |
-| CUDA qualification | **false** |
+| Paid retrieve, quotes, campaign RPCs | **quotes + campaign objects yes**; helper `preparemodelfunding` / `sign` / `submit` / `buildmodelhtlcclaim` implemented (no auto-spend; `paid_chain_verify=false`) |
+| CUDA qualification | **isolated worker** (`BTX_CUDA_QUAL_WORKER`); default `-modelruntimecheck=0` is `NOT_RUN_CUDA_ISOLATION`; capability `cuda_qualification=true` for the worker path |
 | Browser bridge | **false** (optional, never native PQ fallback) |
 | Remote inference | **false** — removed from the roadmap (v1.1 D01) |
 | Worker pool / connection ceilings / cert pin | yes (8/32 workers/queue; 16 inbound; 8 outbound; 2/netgroup; TOFU SPKI pin) |
 
-In-tree capability bits are not CSV PASS and not a B0 rewrite.
+In-tree capability bits are not CSV PASS and not a B0 rewrite. The bar is
+[planning/acceptance-matrix.csv](../../planning/acceptance-matrix.csv).
 
 ## Docs in this directory
 
@@ -165,7 +168,7 @@ In-tree capability bits are not CSV PASS and not a B0 rewrite.
 | [propagation.md](propagation.md) | Demand-seed default, preserve-rare, release (D11) |
 | [rpc.md](rpc.md) | JSON-RPC catalogue (`btx-cli help`) |
 | [http.md](http.md) | PQ1 `/btx-model/2/` peer API |
-| [cuda-not-run.md](cuda-not-run.md) | GPU qualification is NOT_RUN |
+| [cuda-not-run.md](cuda-not-run.md) | Isolated CUDA worker; default runtime check is NOT_RUN_CUDA_ISOLATION |
 | [examples.md](examples.md) | DOC-01 executable CLI examples |
 | [recovery.md](recovery.md) | DOC-03 helper / campaign / HTLC recovery |
 

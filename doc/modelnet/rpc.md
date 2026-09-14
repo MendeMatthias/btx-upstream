@@ -30,22 +30,15 @@ profile, no `btxd`).
 | `delegatemodelservice` / `revokemodelservice` | Typed service ops; never a money signature |
 | `getmodelreciprocity` | Local useful-byte observations; not money |
 | `createmodelrelease` / `pledgemodelrelease` / `getmodelrelease` | Local campaign objects; SHA-256 `key_hash` only |
-| `claimmodelrelease` / `refundmodelrelease` | Pointers to 0.34.6 `buildhtlcclaim` / `buildhtlcrefund` |
+| `claimmodelrelease` / `refundmodelrelease` | Demand-seed + pointer to `buildmodelhtlcclaim` / `buildmodelhtlcrefund` |
+| `preparemodelfunding` / `signmodelfunding` / `submitmodelfunding` / `exportmodelrecovery` | Freeze exact `htlc_sha256` round. Helper never auto-spends; helper sign is complete=false without keys; helper submit journals (no chain verify). `btxd` wallet signs and broadcasts. |
+| `buildmodelhtlcclaim` / `buildmodelhtlcrefund` | Unsigned 0.34.6 SHA-256 HTLC templates. SHA-256(preimage) must match `key_hash`. HASH160 `htlc_tx` is recovery-only. |
 
 Peer HTTP (PQ1): [http.md](http.md). `getmodelnetworkinfo` → `capabilities.http`
 lists every implemented path. `capabilities.features` is `127` (v1.1 core
 profile bits).
 
 POST `/btx-model/2/quotes` records a prepaid quote. POST `.../payment` journals a txid and **refuses duplicate txids**. The helper does not verify the chain and does not spend.
-
-## Still `NOT_IMPLEMENTED` (wallet-side)
-
-`preparemodelfunding`, `signmodelfunding`, `submitmodelfunding`,
-`exportmodelrecovery`, `buildmodelhtlcclaim`, `buildmodelhtlcrefund`.
-
-These names **are registered** so `btx-cli help <name>` works; they return a
-stable `NOT_IMPLEMENTED` error. Use 0.34.6 `buildhtlcclaim` / `buildhtlcrefund`
-for SHA-256 HTLCs. `htlc_tx` remains recovery-only.
 
 ## Isolation
 

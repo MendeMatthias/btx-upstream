@@ -4,10 +4,11 @@
 #
 #   CUDA_HOST=user@cuda-box contrib/modelnet/cuda-isolated-e2e.sh
 # Optional: CUDA_REQUIRE_EXACTREPLAY=1 to assert btxd.real still holds the GPU.
+# Do not set BTX_LIVE_ATTESTOR=1. May use --allow-shared-gpu.
 export LC_ALL=C
 set -euo pipefail
 die() { echo "cuda-isolated-qual: $*" >&2; exit 1; }
-HOST="${CUDA_HOST:?set CUDA_HOST to SSH alias of a dedicated CUDA workstation}"
+HOST="${CUDA_HOST:?set CUDA_HOST to an SSH alias of a dedicated CUDA workstation}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cuda_qual_worker.cu"
 [[ -f "$SRC" ]] || die "missing $SRC"
 if [[ "${BTX_LIVE_ATTESTOR:-0}" == "1" ]]; then

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# BRIDGE-06: local CA + leaf SAN vs wildcard depth. Fail-fast. Not a public CA.
+# BRIDGE-06: local CA + leaf SAN vs wildcard depth, then a system-trust WebPKI
+# client handshake to a public hostname. Fail-fast. Native helper stays PQ1.
 export LC_ALL=C
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="$ROOT/e2e-scratch/webpki-tls"
 OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
+# Documented IANA test host with a real public HTTPS certificate.
+PUBLIC_WEBPKI_HOST="${PUBLIC_WEBPKI_HOST:-example.com}"
 die() { echo "e2e-webpki-tls: $*" >&2; exit 1; }
 rm -rf "$OUT"; mkdir -p "$OUT"
 "$OPENSSL_BIN" req -x509 -newkey rsa:2048 -nodes -days 1 \
@@ -78,5 +81,20 @@ except ssl.SSLCertVerificationError:
     print("BRIDGE-06 PASS wildcard depth: aa.bb.split.example.test != *.split.example.test")
 except ssl.SSLError as e:
     print("BRIDGE-06 PASS wildcard mismatch", type(e).__name__)
+PY
+
+echo "== system-trust WebPKI client handshake PUBLIC_WEBPKI_HOST=${PUBLIC_WEBPKI_HOST} =="
+python3 - "$PUBLIC_WEBPKI_HOST" <<'PY'
+import ssl, socket, sys
+host = sys.argv[1]
+ctx = ssl.create_default_context()  # system WebPKI; no local CA file
+ctx.check_hostname = True
+ctx.verify_mode = ssl.CERT_REQUIRED
+with socket.create_connection((host, 443), timeout=15) as raw:
+    with ctx.wrap_socket(raw, server_hostname=host) as s:
+        cert = s.getpeercert()
+        if not cert:
+            raise SystemExit("missing peer cert for " + host)
+        print("SYSTEM_WEBPKI_TLS PASS", host, "sni=" + str(s.server_hostname), "tls=" + str(s.version()))
 PY
 echo "E2E_WEBPKI_TLS PASS"

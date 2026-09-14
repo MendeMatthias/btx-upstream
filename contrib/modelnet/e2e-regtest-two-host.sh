@@ -2,9 +2,14 @@
 # Isolated regtest btxd + btx-modeld on two hosts. Fail-fast.
 # Never production btxd. Never granite seeder port. Never SIGKILL.
 #
-# Binaries may live in different prefixes. Override with env:
-#   SEEDER_BTXD SEEDER_MODELD SEEDER_DIR
-#   FETCHER_BTXD FETCHER_MODELD FETCHER_DIR
+# Coordinator expands env, then ssh. Override with:
+#   SEEDER_HOST FETCHER_HOST REGTEST_MODELD_PORT (default 29449, never 29448)
+#   SEEDER_PROD_PIDS FETCHER_PROD_PIDS (required)
+#   SEEDER_DIR SEEDER_BTXD SEEDER_CLI SEEDER_MODELD SEEDER_LD_LIBRARY_PATH
+#   FETCHER_DIR FETCHER_BTXD FETCHER_CLI FETCHER_MODELD FETCHER_LD_LIBRARY_PATH
+#
+# FETCHER_* defaults with $HOME expand on the remote fetcher (then the
+# coordinator substitutes that HOME so later ssh uses absolute paths).
 #
 #   SEEDER_HOST=... FETCHER_HOST=... SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... \
 #     contrib/modelnet/e2e-regtest-two-host.sh
@@ -15,14 +20,15 @@ SEEDER="${SEEDER_HOST:?set SEEDER_HOST to SSH alias of the seeder}"
 FETCHER="${FETCHER_HOST:?set FETCHER_HOST to SSH alias of the fetcher}"
 MODELD_PORT="${REGTEST_MODELD_PORT:-29449}"
 SEEDER_DIR="${SEEDER_DIR:-/opt/btx-0347-rc/regtest-e2e}"
-# Remote-expanded default; set FETCHER_DIR to an absolute path on the fetcher.
 FETCHER_DIR="${FETCHER_DIR:-\$HOME/.local/opt/btx-0.34.7-rc-regtest}"
 SEEDER_BTXD="${SEEDER_BTXD:-/opt/btx-node/bin/btxd}"
 SEEDER_CLI="${SEEDER_CLI:-${SEEDER_BTXD%/*}/btx-cli}"
-SEEDER_MODELD="${SEEDER_MODELD:-}"
+SEEDER_MODELD="${SEEDER_MODELD:-/opt/btx-0347-rc/bin/btx-modeld}"
+SEEDER_LD_LIBRARY_PATH="${SEEDER_LD_LIBRARY_PATH:-/opt/btx-0347-rc/lib}"
 FETCHER_BTXD="${FETCHER_BTXD:-\$HOME/.local/opt/btx-0.34.7-b094c6ba420f/bin/btxd}"
 FETCHER_CLI="${FETCHER_CLI:-${FETCHER_BTXD%/*}/btx-cli}"
 FETCHER_MODELD="${FETCHER_MODELD:-\$HOME/.local/opt/btx-0.34.7-rc-modeld/bin/btx-modeld}"
+FETCHER_LD_LIBRARY_PATH="${FETCHER_LD_LIBRARY_PATH:-\$HOME/.local/opt/btx-0.34.7-rc-modeld/lib}"
 PROD_SEEDER="${SEEDER_PROD_PIDS:?set SEEDER_PROD_PIDS}"
 PROD_FETCHER="${FETCHER_PROD_PIDS:?set FETCHER_PROD_PIDS}"
 
@@ -41,6 +47,31 @@ if [[ "${MODELD_PORT}" == "29448" ]]; then
   die "REFUSE granite seeder port 29448; set REGTEST_MODELD_PORT (default 29449)"
 fi
 
+# Coordinator expands remote $HOME, then every later ssh uses absolute paths.
+expand_dollar_home() {
+  local host="$1"
+  shift
+  local need=0 n
+  for n in "$@"; do
+    if [[ "${!n}" == *'$HOME'* ]]; then
+      need=1
+      break
+    fi
+  done
+  [[ "$need" -eq 1 ]] || return 0
+  local rh
+  rh="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "printf '%s' \"\$HOME\"")" \
+    || die "cannot read HOME on $host"
+  [[ -n "$rh" ]] || die "empty HOME on $host"
+  local v
+  for n in "$@"; do
+    v="${!n}"
+    v="${v//\$HOME/$rh}"
+    printf -v "$n" '%s' "$v"
+  done
+}
+expand_dollar_home "$FETCHER" FETCHER_DIR FETCHER_BTXD FETCHER_CLI FETCHER_MODELD FETCHER_LD_LIBRARY_PATH
+
 prod_up() {
   local host="$1" pids="$2"
   local have
@@ -48,6 +79,7 @@ prod_up() {
   local p
   IFS=',' read -r -a want <<<"$pids"
   for p in "${want[@]}"; do
+    [[ -n "$p" ]] || continue
     echo "$have" | grep -q "$p" || die "$host production pid $p is gone"
   done
 }
@@ -62,7 +94,14 @@ set -euo pipefail
 DIR="${SEEDER_DIR}"
 BTXD="${SEEDER_BTXD}"
 MODELD="${SEEDER_MODELD}"
+LDLIB="${SEEDER_LD_LIBRARY_PATH}"
 PORT="${MODELD_PORT}"
+[[ -x "\$BTXD" ]] || { echo "missing btxd \$BTXD" >&2; exit 1; }
+[[ -x "\$MODELD" ]] || { echo "missing modeld \$MODELD" >&2; exit 1; }
+if [[ -n "\$LDLIB" ]]; then
+  [[ -d "\$LDLIB" ]] || { echo "missing libdir \$LDLIB" >&2; exit 1; }
+  export LD_LIBRARY_PATH="\$LDLIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+fi
 rm -rf "\$DIR"
 mkdir -p "\$DIR/btxd" "\$DIR/modeld" "\$DIR/src"
 python3 -c "import struct; from pathlib import Path; Path('\$DIR/src/model.safetensors').write_bytes(struct.pack('<Q', 2)+b'{}')"
@@ -75,16 +114,6 @@ nohup "\$BTXD" -regtest -datadir="\$DIR/btxd" -server \\
   -regtestmatmulrequireproductpayload=0 \\
   >"\$DIR/btxd.log" 2>&1 &
 echo \$! > "\$DIR/btxd.pid"
-if [[ -z "\$MODELD" ]]; then
-  MODELD=/opt/btx-0347-rc/bin/btx-modeld
-  export LD_LIBRARY_PATH="/opt/btx-0347-rc/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-  if [[ -x /opt/btx-0347-rc/bin/run-modeld.sh ]]; then MODELD=/opt/btx-0347-rc/bin/run-modeld.sh; fi
-else
-  prefix=\$(cd "\$(dirname "\$MODELD")/.." && pwd)
-  if [[ -d "\$prefix/lib" ]]; then
-    export LD_LIBRARY_PATH="\$prefix/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-  fi
-fi
 nohup "\$MODELD" \\
   -modeldir="\$DIR/modeld" \\
   -modelstorage=80MiB \\
@@ -100,6 +129,13 @@ set -euo pipefail
 DIR="${FETCHER_DIR}"
 BTXD="${FETCHER_BTXD}"
 MODELD="${FETCHER_MODELD}"
+LDLIB="${FETCHER_LD_LIBRARY_PATH}"
+[[ -x "\$BTXD" ]] || { echo "missing btxd \$BTXD" >&2; exit 1; }
+[[ -x "\$MODELD" ]] || { echo "missing modeld \$MODELD" >&2; exit 1; }
+if [[ -n "\$LDLIB" ]]; then
+  [[ -d "\$LDLIB" ]] || { echo "missing libdir \$LDLIB" >&2; exit 1; }
+  export LD_LIBRARY_PATH="\$LDLIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+fi
 rm -rf "\$DIR"
 mkdir -p "\$DIR/btxd" "\$DIR/modeld"
 nohup "\$BTXD" -regtest -datadir="\$DIR/btxd" -server \\
@@ -111,11 +147,7 @@ nohup "\$BTXD" -regtest -datadir="\$DIR/btxd" -server \\
   -regtestmatmulrequireproductpayload=0 \\
   >"\$DIR/btxd.log" 2>&1 &
 echo \$! > "\$DIR/btxd.pid"
-# fetcher: no -modelseed=auto (prove default). OpenSSL 3.5 via modeld prefix lib if present.
-prefix=\$(cd "\$(dirname "\$MODELD")/.." && pwd)
-if [[ -d "\$prefix/lib" ]]; then
-  export LD_LIBRARY_PATH="\$prefix/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-fi
+# fetcher: no -modelseed=auto (prove default). OpenSSL 3.5 via FETCHER_LD_LIBRARY_PATH.
 nohup "\$MODELD" \\
   -modeldir="\$DIR/modeld" \\
   -modelstorage=80MiB \\
@@ -218,7 +250,7 @@ PY
 echo "uri $URI"
 
 echo "== getmodel on fetcher (15s fail-fast) =="
-ssh -o BatchMode=yes "$FETCHER" "DIR=${FETCHER_DIR} URI='$URI' PORT=${MODELD_PORT} python3 -s" <<'PY'
+if ! ssh -o BatchMode=yes "$FETCHER" "DIR=${FETCHER_DIR} URI='$URI' PORT=${MODELD_PORT} python3 -s" <<'PY'
 import json, os, socket, sys, time
 from pathlib import Path
 sock = Path(os.environ["DIR"]) / "modeld" / "modeld.sock"
@@ -248,7 +280,7 @@ def rpc(method, params, timeout=15):
 prop = (rpc("getmodelnetworkinfo", []) or {}).get("propagation") or {}
 if not prop.get("demand_propagation"):
     sys.exit("fetcher demand_propagation false: " + json.dumps(prop))
-rpc("addmodelnode", [f"127.0.0.1:{port}"])
+rpc("addmodelnode", ["127.0.0.1:%s" % port])
 got = rpc("getmodel", [uri, "FREE_ONLY"])
 print("getmodel", json.dumps(got), flush=True)
 if got.get("status") in ("retrieved", "local"):
@@ -289,6 +321,9 @@ while time.time() - t0 < 15:
     time.sleep(0.25)
 sys.exit("retrieve timeout 15s")
 PY
+then
+  die "fetcher retrieve failed"
+fi
 
 echo "== production PIDs still up =="
 prod_up "$SEEDER" "$PROD_SEEDER"

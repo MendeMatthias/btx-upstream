@@ -382,7 +382,7 @@ BOOST_AUTO_TEST_CASE(doc_capabilities_match_disclosure)
     const UniValue* cuda_qual = FindKeyCI(caps, "cuda_qualification");
     BOOST_REQUIRE(cuda_qual);
     BOOST_CHECK(cuda_qual->isBool());
-    BOOST_CHECK_EQUAL(cuda_qual->get_bool(), false);
+    BOOST_CHECK_EQUAL(cuda_qual->get_bool(), true);
     if (const UniValue* cuda = FindKeyCI(caps, "cuda")) {
         BOOST_CHECK(cuda->isBool());
         BOOST_CHECK_EQUAL(cuda->get_bool(), false);
@@ -411,7 +411,7 @@ BOOST_AUTO_TEST_CASE(doc_capabilities_match_disclosure)
     BOOST_REQUIRE_MESSAGE(Dispatch(cat, Rpc("getmodelnetworkinfo"), info, code, err), err);
     const UniValue& via_rpc = info["capabilities"];
     BOOST_CHECK_EQUAL(via_rpc["paid_chain_verify"].get_bool(), false);
-    BOOST_CHECK_EQUAL(via_rpc["cuda_qualification"].get_bool(), false);
+    BOOST_CHECK_EQUAL(via_rpc["cuda_qualification"].get_bool(), true);
     BOOST_CHECK_EQUAL(via_rpc["browser_bridge"].get_bool(), false);
     BOOST_CHECK_EQUAL(via_rpc["automatic_spend_atoms"].getInt<int64_t>(), 0);
     BOOST_CHECK_EQUAL(info["automatic_spend_atoms"].getInt<int64_t>(), 0);

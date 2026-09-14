@@ -858,7 +858,8 @@ BOOST_AUTO_TEST_CASE(catalog_import_seed_list_and_native_http)
     BOOST_CHECK(rpc_result.exists("key_hash"));
     req.pushKV("method", "buildmodelhtlcclaim");
     BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, req, rpc_result, code, err));
-    BOOST_CHECK_EQUAL(code, "NOT_IMPLEMENTED");
+    BOOST_CHECK(code != "NOT_IMPLEMENTED");
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
 
     UniValue listed_after_seed;
     BOOST_REQUIRE(cat.List(listed_after_seed));

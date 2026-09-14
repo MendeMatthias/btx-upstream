@@ -251,6 +251,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'")
+        self.send_header("X-BTX-Web-Compatibility", WEB_COMPAT)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)

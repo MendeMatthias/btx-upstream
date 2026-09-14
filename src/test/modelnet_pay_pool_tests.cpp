@@ -184,7 +184,7 @@ BOOST_AUTO_TEST_CASE(pay_07_helper_cannot_sign_or_verify_chain)
     const UniValue caps = modelnet::CapabilitiesObject();
     BOOST_CHECK_EQUAL(caps["paid_chain_verify"].get_bool(), false);
     BOOST_CHECK_EQUAL(caps["automatic_spend_atoms"].getInt<int64_t>(), 0);
-    BOOST_CHECK_EQUAL(caps["buildmodelhtlcclaim"].get_bool(), false);
+    BOOST_CHECK_EQUAL(caps["buildmodelhtlcclaim"].get_bool(), true);
     const fs::path tmp = m_path_root / "pay-helper";
     modelnet::ModelCatalog cat{tmp, 1 << 20};
     UniValue req(UniValue::VOBJ);
@@ -193,7 +193,8 @@ BOOST_AUTO_TEST_CASE(pay_07_helper_cannot_sign_or_verify_chain)
     UniValue result;
     std::string code, err;
     BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, req, result, code, err));
-    BOOST_CHECK_EQUAL(code, "NOT_IMPLEMENTED");
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK(err.find("hex required") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_CASE(pool_01_exact_target_freeze)
@@ -292,7 +293,7 @@ BOOST_AUTO_TEST_CASE(pool_08_10_12_campaign_key_valid_not_useful)
     BOOST_CHECK_EQUAL(created["plaintext_verified"].get_bool(), false);
     BOOST_CHECK_EQUAL(created["secret_disclosed"].get_bool(), false);
     BOOST_CHECK(created["claim"].get_str().find("buildhtlcclaim") != std::string::npos);
-    BOOST_CHECK(created["claim"].get_str().find("buildmodelhtlcclaim") == std::string::npos);
+    BOOST_CHECK(created["claim"].get_str().find("htlc_sha256") != std::string::npos);
     const std::string release_id = created["release_id"].get_str();
 
     UniValue pledge(UniValue::VOBJ);
@@ -347,7 +348,7 @@ BOOST_AUTO_TEST_CASE(pool_13_amount_and_exposure_caps)
     BOOST_CHECK(!modelnet::ExposureWithinCeiling(-1, 0, 100));
 }
 
-BOOST_AUTO_TEST_CASE(pool_14_helper_absent_wallet_only_recovery)
+BOOST_AUTO_TEST_CASE(pool_14_helper_funding_requires_params)
 {
     const fs::path tmp = m_path_root / "pool-helper-absent";
     modelnet::ModelCatalog cat{tmp, 1 << 20};
@@ -358,9 +359,14 @@ BOOST_AUTO_TEST_CASE(pool_14_helper_absent_wallet_only_recovery)
         req.pushKV("params", UniValue(UniValue::VARR));
         UniValue result;
         std::string code, err;
-        BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, req, result, code, err));
-        BOOST_CHECK_EQUAL(code, "NOT_IMPLEMENTED");
-        BOOST_CHECK(err.find("wallet") != std::string::npos);
+        const bool ok = modelnet::DispatchHelperRpc(cat, req, result, code, err);
+        BOOST_CHECK(code != "NOT_IMPLEMENTED");
+        if (ok) {
+            BOOST_CHECK(result.exists("schema_version"));
+            BOOST_CHECK(!result.exists("implemented") || result["implemented"].get_bool());
+        } else {
+            BOOST_CHECK(code == "INVALID_PARAMETER" || code == "PREIMAGE_MISMATCH");
+        }
     }
 }
 

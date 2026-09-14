@@ -83,4 +83,36 @@ imp=rpc("importmodel",[str(src)])
 if imp.get("seeded") is not True: raise SystemExit(imp)
 print("FIRSTRUN positive-budget import PASS", imp.get("uri"))
 PY
+
+# User-local OS handler into scratch XDG_DATA_HOME. No real sudo/pkexec.
+OPEN="${BIN%/*}/btx-open"
+[[ -x "$OPEN" ]] || die "missing $OPEN"
+XDG_SCRATCH="$SCRATCH/xdg-data"
+CFG_SCRATCH="$SCRATCH/xdg-config"
+FAKEBIN="$SCRATCH/fakebin"
+rm -rf "$XDG_SCRATCH" "$CFG_SCRATCH" "$FAKEBIN"
+mkdir -p "$XDG_SCRATCH" "$CFG_SCRATCH" "$FAKEBIN"
+cat >"$FAKEBIN/sudo" <<'EOF'
+#!/bin/sh
+echo "e2e-firstrun: sudo must not run" >&2
+exit 1
+EOF
+cat >"$FAKEBIN/pkexec" <<'EOF'
+#!/bin/sh
+echo "e2e-firstrun: pkexec must not run" >&2
+exit 1
+EOF
+chmod +x "$FAKEBIN/sudo" "$FAKEBIN/pkexec"
+XDG_DATA_HOME="$XDG_SCRATCH" XDG_CONFIG_HOME="$CFG_SCRATCH" \
+  BTX_OPEN="$OPEN" INSTALL_SYSTEM=0 PATH="$FAKEBIN:$PATH" \
+  "$ROOT/contrib/modelnet/install-os-handler.sh"
+DESK="$XDG_SCRATCH/applications/btx-open.desktop"
+[[ -f "$DESK" ]] || die "os-handler desktop missing"
+grep -q 'MimeType=x-scheme-handler/btx;' "$DESK" || die "os-handler mime"
+exec_line="$(grep -E '^Exec=' "$DESK")"
+[[ "$exec_line" == "Exec=$OPEN %u" || "$exec_line" == "Exec=\"$OPEN\" %u" ]] || \
+  die "os-handler Exec=$exec_line"
+if printf '%s\n' "$exec_line" | grep -Eq '^Exec=(sh|bash|dash|zsh)( |$)'; then
+  die "os-handler Exec must not be a shell"
+fi
 echo "E2E_FIRSTRUN PASS"

@@ -9,10 +9,10 @@ funds. Hosting does not require mining.
 - Optional **delivery** when free supply cannot finish required ranges.
 - Optional **public secret release** campaigns (B0), settled with 0.34.6
   SHA-256 HTLCs. `preparemodelfunding` / `signmodelfunding` /
-  `submitmodelfunding` exist on `btxd`; the helper returns
-  `NOT_IMPLEMENTED` for those names on purpose. HASH160 `htlc_tx` is
-  recovery-only. There is no `htlc_sha256_tx` and no
-  `buildmodelhtlcclaim`.
+  `submitmodelfunding` freeze an exact round on the helper and on `btxd`.
+  `buildmodelhtlcclaim` / `buildmodelhtlcrefund` build unsigned 0.34.6
+  SHA-256 templates. HASH160 `htlc_tx` is recovery-only. There is no
+  `htlc_sha256_tx`.
 
 Buyers or sponsors pay in ordinary BTX. A sponsor may pay a mirror while
 downloaders still see price zero.

@@ -63,6 +63,19 @@ bool HandleBridgeRequest(const std::string& method, const std::string& path,
 int BridgeTlsMaxWildcardDepth();
 
 /**
+ * BRIDGE-05: DNS 42/43 split of an 85-char Bech32m token.
+ *
+ * A single 85-char label exceeds the 63-char DNS limit. On success, left is
+ * 42 chars, right is 43, and left+right reconstructs the token payload.
+ * token may be a bare 85-char token or a canonical btx:// URI.
+ * Join with DnsSplitJoin as {left}.{right}.{zone}.
+ */
+bool DnsSplit42_43(const std::string& token, std::string& left, std::string& right);
+
+/** Join DnsSplit42_43 labels as {left}.{right}.{zone}. Empty on bad sizes or empty zone. */
+std::string DnsSplitJoin(const std::string& left, const std::string& right, const std::string& zone);
+
+/**
  * BRIDGE-10: map an inclusive byte range onto piece indices.
  *
  * piece_size is PIECE_SIZE from types.h (4 MiB). Rejects last_byte < first_byte

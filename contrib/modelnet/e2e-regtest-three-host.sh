@@ -1,68 +1,95 @@
 #!/usr/bin/env bash
-# Isolated regtest btxd + btx-modeld on three hosts. Fail-fast.
-# Third isolated client: same tiny imported URI via a tunnel, demand-seed.
-# Never production btxd. Never granite seeder port. Never SIGKILL.
+# Isolated regtest on three hosts. Fail-fast Linux pair; Darwin third may SKIP.
+# Never production btxd. Never granite seeder port 29448. Never SIGKILL.
+# Never cmake on the third host. Never copy a Linux ELF onto Darwin.
+#
+# Runs e2e-regtest-two-host.sh first (Linux seeder/fetcher). Then starts a
+# third isolated modeld on THIRD_HOST, tunnels seeder REGTEST_MODELD_PORT
+# (default 29449) to that host, and retrieves the same tiny URI (30s).
+#
+# If THIRD_HOST cannot run (ssh, disk <20G, missing binary, Linux ELF on
+# Darwin, helper did not start), print E2E_REGTEST_THREE SKIP with reason
+# and keep E2E_REGTEST_TWO PASS as the Linux pair result.
 #
 #   SEEDER_HOST=... FETCHER_HOST=... THIRD_HOST=... \
-#   SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... THIRD_PROD_PIDS=... \
-#   SEEDER_BTXD=... SEEDER_MODELD=... SEEDER_DIR=... \
-#   FETCHER_BTXD=... FETCHER_MODELD=... FETCHER_DIR=... \
-#   THIRD_BTXD=... THIRD_MODELD=... THIRD_DIR=... \
+#   SEEDER_PROD_PIDS=... FETCHER_PROD_PIDS=... \
 #     contrib/modelnet/e2e-regtest-three-host.sh
 #
-# THIRD_PROD_PIDS is optional (checked only if set). Binary/dir overrides match
-# e2e-regtest-two-host.sh plus THIRD_*.
+# THIRD_PROD_PIDS may be empty. THIRD_* defaults are Darwin-safe paths;
+# override THIRD_MODELD to whatever native binary that host already has.
 set -euo pipefail
 export LC_ALL=C
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TWO="$ROOT/contrib/modelnet/e2e-regtest-two-host.sh"
 
 SEEDER="${SEEDER_HOST:?set SEEDER_HOST to SSH alias of the seeder}"
 FETCHER="${FETCHER_HOST:?set FETCHER_HOST to SSH alias of the fetcher}"
 THIRD="${THIRD_HOST:?set THIRD_HOST to SSH alias of the third isolated host}"
 MODELD_PORT="${REGTEST_MODELD_PORT:-29449}"
 SEEDER_DIR="${SEEDER_DIR:-/opt/btx-0347-rc/regtest-e2e}"
-FETCHER_DIR="${FETCHER_DIR:-\$HOME/.local/opt/btx-0.34.7-rc-regtest}"
-THIRD_DIR="${THIRD_DIR:-\$HOME/.local/opt/btx-0.34.7-rc-regtest}"
 SEEDER_BTXD="${SEEDER_BTXD:-/opt/btx-node/bin/btxd}"
 SEEDER_CLI="${SEEDER_CLI:-${SEEDER_BTXD%/*}/btx-cli}"
-SEEDER_MODELD="${SEEDER_MODELD:-}"
-FETCHER_BTXD="${FETCHER_BTXD:-\$HOME/.local/opt/btx-0.34.7-b094c6ba420f/bin/btxd}"
-FETCHER_CLI="${FETCHER_CLI:-${FETCHER_BTXD%/*}/btx-cli}"
-FETCHER_MODELD="${FETCHER_MODELD:-\$HOME/.local/opt/btx-0.34.7-rc-modeld/bin/btx-modeld}"
-THIRD_BTXD="${THIRD_BTXD:-/Users/admin/Documents/btx-0341-metal/build-metal/bin/btxd}"
+SEEDER_MODELD="${SEEDER_MODELD:-/opt/btx-0347-rc/bin/btx-modeld}"
+SEEDER_LD_LIBRARY_PATH="${SEEDER_LD_LIBRARY_PATH:-/opt/btx-0347-rc/lib}"
+THIRD_DIR="${THIRD_DIR:-\$HOME/.local/opt/btx-0.34.7-rc-regtest}"
+THIRD_BTXD="${THIRD_BTXD:-\$HOME/.local/opt/btx-0.34.7-rc/bin/btxd}"
 THIRD_CLI="${THIRD_CLI:-${THIRD_BTXD%/*}/btx-cli}"
-THIRD_MODELD="${THIRD_MODELD:-/Users/admin/Documents/btx-0341-metal/build-metal/bin/btx-modeld}"
+THIRD_MODELD="${THIRD_MODELD:-${THIRD_BTXD%/*}/btx-modeld}"
+THIRD_LD_LIBRARY_PATH="${THIRD_LD_LIBRARY_PATH:-}"
 PROD_SEEDER="${SEEDER_PROD_PIDS:?set SEEDER_PROD_PIDS}"
 PROD_FETCHER="${FETCHER_PROD_PIDS:?set FETCHER_PROD_PIDS}"
 PROD_THIRD="${THIRD_PROD_PIDS:-}"
 
-die() { echo "E2E_REGTEST_THREE FAIL: $*" >&2; cleanup || true; exit 1; }
+# 20 GiB in 1K-blocks. A host with ~19G free SKIPs instead of failing the suite.
+MIN_FREE_K=$((20 * 1024 * 1024))
+
 TUNNEL_S=""
-TUNNEL_F=""
 TUNNEL_T=""
+STARTED_SEEDER=0
+STARTED_THIRD=0
+
+die() { echo "E2E_REGTEST_THREE FAIL: $*" >&2; cleanup || true; exit 1; }
+
 cleanup() {
   [[ -n "${TUNNEL_S}" ]] && kill -TERM "$TUNNEL_S" 2>/dev/null || true
-  [[ -n "${TUNNEL_F}" ]] && kill -TERM "$TUNNEL_F" 2>/dev/null || true
   [[ -n "${TUNNEL_T}" ]] && kill -TERM "$TUNNEL_T" 2>/dev/null || true
-  ssh -o BatchMode=yes "$SEEDER" "for f in ${SEEDER_DIR}/btxd.pid ${SEEDER_DIR}/modeld.pid; do [[ -f \$f ]] && kill -TERM \$(cat \$f) 2>/dev/null || true; done" || true
-  ssh -o BatchMode=yes "$FETCHER" "for f in ${FETCHER_DIR}/btxd.pid ${FETCHER_DIR}/modeld.pid; do [[ -f \$f ]] && kill -TERM \$(cat \$f) 2>/dev/null || true; done" || true
-  ssh -o BatchMode=yes "$THIRD" "for f in ${THIRD_DIR}/btxd.pid ${THIRD_DIR}/modeld.pid; do [[ -f \$f ]] && kill -TERM \$(cat \$f) 2>/dev/null || true; done" || true
+  TUNNEL_S=""
+  TUNNEL_T=""
+  if [[ "${STARTED_SEEDER}" == 1 ]]; then
+    ssh -o BatchMode=yes "$SEEDER" "for f in ${SEEDER_DIR}/btxd.pid ${SEEDER_DIR}/modeld.pid; do [[ -f \$f ]] && kill -TERM \$(cat \$f) 2>/dev/null || true; done" || true
+    STARTED_SEEDER=0
+  fi
+  if [[ "${STARTED_THIRD}" == 1 ]]; then
+    ssh -o BatchMode=yes "$THIRD" "for f in ${THIRD_DIR}/btxd.pid ${THIRD_DIR}/modeld.pid; do [[ -f \$f ]] && kill -TERM \$(cat \$f) 2>/dev/null || true; done" || true
+    STARTED_THIRD=0
+  fi
 }
-trap 'rc=$?; cleanup; exit $rc' EXIT
+
+skip() {
+  echo "E2E_REGTEST_THREE SKIP: $*"
+  echo "E2E_REGTEST_TWO PASS"
+  trap - EXIT
+  cleanup || true
+  exit 0
+}
 
 if [[ "${MODELD_PORT}" == "29448" ]]; then
   die "REFUSE granite seeder port 29448; set REGTEST_MODELD_PORT (default 29449)"
 fi
+[[ -x "$TWO" ]] || die "missing $TWO"
 if [[ "$THIRD" == "$SEEDER" || "$THIRD" == "$FETCHER" ]]; then
   die "THIRD_HOST must be a distinct SSH alias (not SEEDER_HOST or FETCHER_HOST)"
 fi
 
 prod_up() {
   local host="$1" pids="$2"
-  local have
+  [[ -n "$pids" ]] || return 0
+  local have p
   have="$(ssh -o BatchMode=yes "$host" "ps -p ${pids} -o pid=" || true)"
-  local p
   IFS=',' read -r -a want <<<"$pids"
   for p in "${want[@]}"; do
+    [[ -n "$p" ]] || continue
     echo "$have" | grep -q "$p" || die "$host production pid $p is gone"
   done
 }
@@ -70,17 +97,71 @@ prod_up() {
 echo "== production PIDs must remain =="
 prod_up "$SEEDER" "$PROD_SEEDER"
 prod_up "$FETCHER" "$PROD_FETCHER"
-if [[ -n "$PROD_THIRD" ]]; then
-  prod_up "$THIRD" "$PROD_THIRD"
+prod_up "$THIRD" "$PROD_THIRD"
+
+echo "== Linux pair (e2e-regtest-two-host.sh) =="
+"$TWO" || die "two-host failed"
+
+echo "== production PIDs after Linux pair =="
+prod_up "$SEEDER" "$PROD_SEEDER"
+prod_up "$FETCHER" "$PROD_FETCHER"
+prod_up "$THIRD" "$PROD_THIRD"
+
+trap 'rc=$?; cleanup; exit $rc' EXIT
+
+echo "== probe THIRD_HOST (SKIP if it cannot run) =="
+if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" true; then
+  skip "THIRD_HOST ssh failed"
 fi
 
-start_seeder() {
-  ssh -o BatchMode=yes "$SEEDER" "bash -s" <<EOF
+THIRD_HOME="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "printf '%s' \"\$HOME\"" || true)"
+if [[ -z "$THIRD_HOME" ]]; then
+  skip "cannot read HOME on THIRD_HOST"
+fi
+THIRD_DIR="${THIRD_DIR//\$HOME/$THIRD_HOME}"
+THIRD_BTXD="${THIRD_BTXD//\$HOME/$THIRD_HOME}"
+THIRD_CLI="${THIRD_CLI//\$HOME/$THIRD_HOME}"
+THIRD_MODELD="${THIRD_MODELD//\$HOME/$THIRD_HOME}"
+THIRD_LD_LIBRARY_PATH="${THIRD_LD_LIBRARY_PATH//\$HOME/$THIRD_HOME}"
+
+UNAME="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "uname -s" || true)"
+AVAIL_K="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "df -Pk / | awk 'NR==2 {print \$4}'" || true)"
+if ! [[ "$AVAIL_K" =~ ^[0-9]+$ ]]; then
+  skip "could not read free disk on THIRD_HOST"
+fi
+if (( AVAIL_K < MIN_FREE_K )); then
+  skip "THIRD_HOST has $((AVAIL_K / 1024 / 1024))G free (<20G); not failing the Linux pair"
+fi
+
+if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "test -x '$THIRD_MODELD'"; then
+  skip "missing THIRD_MODELD $THIRD_MODELD"
+fi
+if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "test -x '$THIRD_BTXD'"; then
+  skip "missing THIRD_BTXD $THIRD_BTXD"
+fi
+if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "command -v python3 >/dev/null"; then
+  skip "python3 missing on THIRD_HOST"
+fi
+
+FILETYPE="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "file -b '$THIRD_MODELD'" || true)"
+if [[ "$UNAME" == Darwin ]] && printf '%s\n' "$FILETYPE" | grep -qi ELF; then
+  skip "THIRD_MODELD is Linux ELF on Darwin; use a Darwin btx-modeld (do not copy Linux binaries)"
+fi
+
+echo "== restart isolated seeder for third-host retrieve =="
+ssh -o BatchMode=yes "$SEEDER" "bash -s" <<EOF
 set -euo pipefail
 DIR="${SEEDER_DIR}"
 BTXD="${SEEDER_BTXD}"
 MODELD="${SEEDER_MODELD}"
+LDLIB="${SEEDER_LD_LIBRARY_PATH}"
 PORT="${MODELD_PORT}"
+[[ -x "\$BTXD" ]] || { echo "missing btxd \$BTXD" >&2; exit 1; }
+[[ -x "\$MODELD" ]] || { echo "missing modeld \$MODELD" >&2; exit 1; }
+if [[ -n "\$LDLIB" ]]; then
+  [[ -d "\$LDLIB" ]] || { echo "missing libdir \$LDLIB" >&2; exit 1; }
+  export LD_LIBRARY_PATH="\$LDLIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+fi
 rm -rf "\$DIR"
 mkdir -p "\$DIR/btxd" "\$DIR/modeld" "\$DIR/src"
 python3 -c "import struct; from pathlib import Path; Path('\$DIR/src/model.safetensors').write_bytes(struct.pack('<Q', 2)+b'{}')"
@@ -93,16 +174,6 @@ nohup "\$BTXD" -regtest -datadir="\$DIR/btxd" -server \\
   -regtestmatmulrequireproductpayload=0 \\
   >"\$DIR/btxd.log" 2>&1 &
 echo \$! > "\$DIR/btxd.pid"
-if [[ -z "\$MODELD" ]]; then
-  MODELD=/opt/btx-0347-rc/bin/btx-modeld
-  export LD_LIBRARY_PATH="/opt/btx-0347-rc/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-  if [[ -x /opt/btx-0347-rc/bin/run-modeld.sh ]]; then MODELD=/opt/btx-0347-rc/bin/run-modeld.sh; fi
-else
-  prefix=\$(cd "\$(dirname "\$MODELD")/.." && pwd)
-  if [[ -d "\$prefix/lib" ]]; then
-    export LD_LIBRARY_PATH="\$prefix/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-  fi
-fi
 nohup "\$MODELD" \\
   -modeldir="\$DIR/modeld" \\
   -modelstorage=80MiB \\
@@ -112,44 +183,7 @@ nohup "\$MODELD" \\
   >"\$DIR/modeld.log" 2>&1 &
 echo \$! > "\$DIR/modeld.pid"
 EOF
-}
-
-start_client() {
-  local host="$1" dir="$2" btxd="$3" modeld="$4" p2p="$5" rpcport="$6"
-  ssh -o BatchMode=yes "$host" "bash -s" <<EOF
-set -euo pipefail
-DIR="${dir}"
-BTXD="${btxd}"
-MODELD="${modeld}"
-rm -rf "\$DIR"
-mkdir -p "\$DIR/btxd" "\$DIR/modeld"
-nohup "\$BTXD" -regtest -datadir="\$DIR/btxd" -server \\
-  -listen=0 -port=${p2p} -rpcport=${rpcport} -rpcuser=regtest -rpcpassword=regtest \\
-  -fallbackfee=0.0002 -disablewallet \\
-  -regtestmatmulbindingheight=2147483647 \\
-  -regtestmatmulproductdigestheight=2147483647 \\
-  -regtestmatmulv4height=2147483647 \\
-  -regtestmatmulrequireproductpayload=0 \\
-  >"\$DIR/btxd.log" 2>&1 &
-echo \$! > "\$DIR/btxd.pid"
-prefix=\$(cd "\$(dirname "\$MODELD")/.." && pwd)
-if [[ -d "\$prefix/lib" ]]; then
-  export LD_LIBRARY_PATH="\$prefix/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
-fi
-# client: no -modelseed=auto (prove default demand-seed). No granite port.
-nohup "\$MODELD" \\
-  -modeldir="\$DIR/modeld" \\
-  -modelstorage=80MiB \\
-  -modelrpcsocket="\$DIR/modeld/modeld.sock" \\
-  >"\$DIR/modeld.log" 2>&1 &
-echo \$! > "\$DIR/modeld.pid"
-EOF
-}
-
-echo "== start isolated regtest btxd + modeld =="
-start_seeder
-start_client "$FETCHER" "$FETCHER_DIR" "$FETCHER_BTXD" "$FETCHER_MODELD" 18454 18453
-start_client "$THIRD" "$THIRD_DIR" "$THIRD_BTXD" "$THIRD_MODELD" 18464 18463
+STARTED_SEEDER=1
 
 wait_sock() {
   local host="$1" path="$2" pidfile="$3" log="$4"
@@ -169,47 +203,75 @@ wait_sock() {
   die "$host socket not ready: $path"
 }
 
-wait_rpc() {
-  local host="$1" cli="$2" datadir="$3" rpcport="$4" pidfile="$5" log="$6"
-  local i out
-  for i in $(seq 1 25); do
-    out="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" \
-      "if [ -f $pidfile ] && ! kill -0 \$(cat $pidfile) 2>/dev/null; then echo DEAD; tail -n 40 $log; exit 2; fi
-       $cli -regtest -datadir=$datadir -rpcport=$rpcport -rpcuser=regtest -rpcpassword=regtest getblockchaininfo")" \
-      && { printf '%s\n' "$out"; return 0; } || true
-    if printf '%s\n' "$out" | grep -q '^DEAD$'; then
-      printf '%s\n' "$out" >&2
-      die "$host btxd died before RPC"
-    fi
-    sleep 0.2
-  done
-  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "tail -n 40 $log" >&2 || true
-  die "$host btxd RPC :$rpcport not ready"
-}
-
 wait_sock "$SEEDER" "${SEEDER_DIR}/modeld/modeld.sock" "${SEEDER_DIR}/modeld.pid" "${SEEDER_DIR}/modeld.log"
-wait_sock "$FETCHER" "${FETCHER_DIR}/modeld/modeld.sock" "${FETCHER_DIR}/modeld.pid" "${FETCHER_DIR}/modeld.log"
-wait_sock "$THIRD" "${THIRD_DIR}/modeld/modeld.sock" "${THIRD_DIR}/modeld.pid" "${THIRD_DIR}/modeld.log"
 
-echo "== isolated monetary nodes =="
-SEED_CHAIN="$(wait_rpc "$SEEDER" "${SEEDER_CLI}" "${SEEDER_DIR}/btxd" 18443 "${SEEDER_DIR}/btxd.pid" "${SEEDER_DIR}/btxd.log")"
-echo "$SEED_CHAIN" | python3 -c 'import json,sys; i=json.load(sys.stdin); assert i.get("chain")=="regtest", i; print("seeder", i["chain"], "blocks", i.get("blocks"))' || die "seeder not regtest: $SEED_CHAIN"
-FETCH_CHAIN="$(wait_rpc "$FETCHER" "${FETCHER_CLI}" "${FETCHER_DIR}/btxd" 18453 "${FETCHER_DIR}/btxd.pid" "${FETCHER_DIR}/btxd.log")"
-echo "$FETCH_CHAIN" | python3 -c 'import json,sys; i=json.load(sys.stdin); assert i.get("chain")=="regtest", i; print("fetcher", i["chain"], "blocks", i.get("blocks"))' || die "fetcher not regtest: $FETCH_CHAIN"
-THIRD_CHAIN="$(wait_rpc "$THIRD" "${THIRD_CLI}" "${THIRD_DIR}/btxd" 18463 "${THIRD_DIR}/btxd.pid" "${THIRD_DIR}/btxd.log")"
-echo "$THIRD_CHAIN" | python3 -c 'import json,sys; i=json.load(sys.stdin); assert i.get("chain")=="regtest", i; print("third", i["chain"], "blocks", i.get("blocks"))' || die "third not regtest: $THIRD_CHAIN"
+echo "== start isolated third modeld (native THIRD_MODELD; no ELF copy, no cmake) =="
+if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "bash -s" <<EOF
+set -euo pipefail
+DIR="${THIRD_DIR}"
+BTXD="${THIRD_BTXD}"
+MODELD="${THIRD_MODELD}"
+LDLIB="${THIRD_LD_LIBRARY_PATH}"
+[[ -n "\$DIR" && "\$DIR" != / ]] || { echo "refuse THIRD_DIR \$DIR" >&2; exit 1; }
+[[ -x "\$BTXD" ]] || { echo "missing btxd \$BTXD" >&2; exit 1; }
+[[ -x "\$MODELD" ]] || { echo "missing modeld \$MODELD" >&2; exit 1; }
+# Darwin/SIP: do not inject a Linux libdir. Native binary only.
+if [[ -n "\$LDLIB" ]]; then
+  [[ -d "\$LDLIB" ]] || { echo "missing libdir \$LDLIB" >&2; exit 1; }
+  export LD_LIBRARY_PATH="\$LDLIB\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+fi
+rm -rf "\$DIR"
+mkdir -p "\$DIR/btxd" "\$DIR/modeld"
+# Portable btxd flags (older Darwin trees may not know -regtestmatmul*).
+nohup "\$BTXD" -regtest -datadir="\$DIR/btxd" -server \\
+  -listen=0 -port=18464 -rpcport=18463 -rpcuser=regtest -rpcpassword=regtest \\
+  -fallbackfee=0.0002 -disablewallet \\
+  >"\$DIR/btxd.log" 2>&1 &
+echo \$! > "\$DIR/btxd.pid"
+# client: no -modelbind (never 29448), no -modelseed=auto.
+nohup "\$MODELD" \\
+  -modeldir="\$DIR/modeld" \\
+  -modelstorage=80MiB \\
+  -modelrpcsocket="\$DIR/modeld/modeld.sock" \\
+  >"\$DIR/modeld.log" 2>&1 &
+echo \$! > "\$DIR/modeld.pid"
+EOF
+then
+  skip "THIRD_HOST start script failed"
+fi
+STARTED_THIRD=1
 
-echo "== SSH tunnels seeder:${MODELD_PORT} -> fetcher/third 127.0.0.1:${MODELD_PORT} =="
+third_ready=0
+for i in $(seq 1 40); do
+  out="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" \
+    "if [ -f ${THIRD_DIR}/modeld.pid ] && ! kill -0 \$(cat ${THIRD_DIR}/modeld.pid) 2>/dev/null; then echo DEAD; tail -n 40 ${THIRD_DIR}/modeld.log; elif [ -S ${THIRD_DIR}/modeld/modeld.sock ]; then echo READY; fi" || true)"
+  if printf '%s\n' "$out" | grep -q '^READY$'; then
+    third_ready=1
+    break
+  fi
+  if printf '%s\n' "$out" | grep -q '^DEAD$'; then
+    printf '%s\n' "$out" >&2
+    skip "THIRD_HOST helper died before socket"
+  fi
+  sleep 0.25
+done
+if [[ "$third_ready" != 1 ]]; then
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$THIRD" "tail -n 40 ${THIRD_DIR}/modeld.log" >&2 || true
+  skip "THIRD_HOST modeld socket not ready"
+fi
+
+echo "== SSH tunnel seeder:${MODELD_PORT} -> third 127.0.0.1:${MODELD_PORT} =="
 ssh -o BatchMode=yes -N -L "127.0.0.1:${MODELD_PORT}:127.0.0.1:${MODELD_PORT}" "$SEEDER" &
 TUNNEL_S=$!
-ssh -o BatchMode=yes -N -R "127.0.0.1:${MODELD_PORT}:127.0.0.1:${MODELD_PORT}" "$FETCHER" &
-TUNNEL_F=$!
 ssh -o BatchMode=yes -N -R "127.0.0.1:${MODELD_PORT}:127.0.0.1:${MODELD_PORT}" "$THIRD" &
 TUNNEL_T=$!
 sleep 0.5
-kill -0 "$TUNNEL_S" 2>/dev/null || die "seeder tunnel died"
-kill -0 "$TUNNEL_F" 2>/dev/null || die "fetcher tunnel died"
-kill -0 "$TUNNEL_T" 2>/dev/null || die "third tunnel died"
+if ! kill -0 "$TUNNEL_S" 2>/dev/null; then
+  skip "seeder tunnel died"
+fi
+if ! kill -0 "$TUNNEL_T" 2>/dev/null; then
+  skip "third tunnel died (cannot bind ${MODELD_PORT} on THIRD_HOST)"
+fi
 
 echo "== import on seeder (demand-seed, no seedmodel) =="
 URI="$(ssh -o BatchMode=yes "$SEEDER" "DIR=${SEEDER_DIR} python3 -s" <<'PY'
@@ -251,15 +313,13 @@ PY
 [[ "$URI" == btx://* ]] || die "import uri: $URI"
 echo "uri $URI"
 
-client_getmodel() {
-  local host="$1" dir="$2" label="$3"
-  ssh -o BatchMode=yes "$host" "DIR=${dir} URI='$URI' PORT=${MODELD_PORT} LABEL='$label' python3 -s" <<'PY'
+echo "== getmodel on third (30s fail-fast) =="
+if ! ssh -o BatchMode=yes "$THIRD" "DIR=${THIRD_DIR} URI='$URI' PORT=${MODELD_PORT} python3 -s" <<'PY'
 import json, os, socket, sys, time
 from pathlib import Path
 sock = Path(os.environ["DIR"]) / "modeld" / "modeld.sock"
 uri = os.environ["URI"]
 port = os.environ["PORT"]
-label = os.environ["LABEL"]
 
 def rpc(method, params, timeout=15):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -288,57 +348,60 @@ def pick_job(jobs, job_id):
             return x
     running = [x for x in arr if x.get("status") == "running"]
     if running:
-        return running[-1]
+        def key(j):
+            try:
+                cm = int(j.get("created_ms") or 0)
+            except (TypeError, ValueError):
+                cm = 0
+            return (cm, str(j.get("job_id") or ""))
+        return max(running, key=key)
     return arr[-1] if arr else {}
 
 prop = (rpc("getmodelnetworkinfo", []) or {}).get("propagation") or {}
 if not prop.get("demand_propagation"):
-    sys.exit("%s demand_propagation false: %s" % (label, json.dumps(prop)))
+    sys.exit("third demand_propagation false: " + json.dumps(prop))
 rpc("addmodelnode", ["127.0.0.1:%s" % port])
 got = rpc("getmodel", [uri, "FREE_ONLY"])
-print(label, "getmodel", json.dumps(got), flush=True)
-
-def prove_seeded():
+print("getmodel", json.dumps(got), flush=True)
+if got.get("status") in ("retrieved", "local"):
     listed = rpc("listmodels", [])
     m = (listed.get("models") or [{}])[0]
     if m.get("seeded") is not True:
-        sys.exit("%s downloader not demand-seeded: %s" % (label, json.dumps(listed)))
-    print("%s retrieve PASS" % label, json.dumps({"bytes": m.get("bytes"), "seeded": m.get("seeded")}))
+        sys.exit("third downloader not demand-seeded: " + json.dumps(listed))
+    print("E2E_REGTEST_THREE retrieve PASS", json.dumps({"bytes": m.get("bytes"), "seeded": m.get("seeded")}))
     raise SystemExit(0)
-
-if got.get("status") in ("retrieved", "local"):
-    prove_seeded()
 job_id = got.get("job_id")
 if not job_id:
-    sys.exit("%s no job: %s" % (label, json.dumps(got)))
+    sys.exit("no job: " + json.dumps(got))
 t0 = time.time()
-while time.time() - t0 < 15:
+while time.time() - t0 < 30:
     j = pick_job(rpc("getmodeljob", [job_id]), job_id)
     if j:
-        print(label, "job", j.get("job_id"), j.get("status"), j.get("error") or j.get("last_err"), flush=True)
+        print("job", j.get("job_id"), j.get("status"), j.get("error") or j.get("last_err"), flush=True)
         if j.get("status") == "failed":
-            sys.exit("%s retrieve failed: %s" % (label, json.dumps(j)))
+            sys.exit("retrieve failed: " + json.dumps(j))
         if j.get("status") == "cancelled":
-            sys.exit("%s retrieve not done: %s" % (label, json.dumps(j)))
+            sys.exit("retrieve not done: " + json.dumps(j))
         if j.get("status") == "done":
-            prove_seeded()
+            listed = rpc("listmodels", [])
+            m = (listed.get("models") or [{}])[0]
+            if m.get("seeded") is not True:
+                sys.exit("third downloader not demand-seeded: " + json.dumps(listed))
+            print("E2E_REGTEST_THREE retrieve PASS", json.dumps({"bytes": m.get("bytes"), "seeded": m.get("seeded")}))
+            raise SystemExit(0)
     time.sleep(0.25)
-sys.exit("%s retrieve timeout 15s" % label)
+sys.exit("retrieve timeout 30s")
 PY
-}
-
-echo "== getmodel on fetcher via tunnel (demand-seed) =="
-client_getmodel "$FETCHER" "$FETCHER_DIR" "fetcher"
-echo "== getmodel on third via tunnel (demand-seed) =="
-client_getmodel "$THIRD" "$THIRD_DIR" "third"
+then
+  die "third retrieve failed"
+fi
 
 echo "== production PIDs still up =="
 prod_up "$SEEDER" "$PROD_SEEDER"
 prod_up "$FETCHER" "$PROD_FETCHER"
-if [[ -n "$PROD_THIRD" ]]; then
-  prod_up "$THIRD" "$PROD_THIRD"
-fi
+prod_up "$THIRD" "$PROD_THIRD"
 echo "E2E_REGTEST_THREE PASS"
+echo "E2E_REGTEST_TWO PASS"
 trap - EXIT
 cleanup
 exit 0

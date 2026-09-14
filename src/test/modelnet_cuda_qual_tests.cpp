@@ -19,6 +19,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(modelnet_cuda_qual_tests, BasicTestingSetup)
@@ -126,7 +127,7 @@ BOOST_AUTO_TEST_CASE(qualify_runtime_default_does_not_need_libcuda)
     BOOST_CHECK(qr == modelnet::QualResult::NOT_RUN_CUDA_ISOLATION);
     BOOST_CHECK(qr != modelnet::QualResult::RUNTIME_OBSERVED);
     BOOST_CHECK(report.detail.find("-modelruntimecheck=0") != std::string::npos);
-    BOOST_CHECK(report.detail.find("cuda_qualification remains false") != std::string::npos);
+    BOOST_CHECK(report.detail.find("isolated worker not invoked") != std::string::npos);
     BOOST_CHECK_EQUAL(std::string{modelnet::QualResultName(qr)}, "NOT_RUN_CUDA_ISOLATION");
 }
 
@@ -214,6 +215,39 @@ BOOST_AUTO_TEST_CASE(qualify_runtime_never_executes_pickle)
     const auto qr = modelnet::QualifyRuntime(fs::PathToString(path), opts, report);
     BOOST_CHECK(qr == modelnet::QualResult::REJECTED_UNSAFE_FORMAT);
     BOOST_CHECK(qr != modelnet::QualResult::RUNTIME_OBSERVED);
+}
+
+BOOST_AUTO_TEST_CASE(qualify_runtime_mock_worker_gpu01)
+{
+    const fs::path dir = m_args.GetDataDirBase() / "cuda-qual";
+    const fs::path path = WriteSafeTensors(dir, "runtime-worker.safetensors");
+    const fs::path worker = dir / fs::PathFromString("mock_cuda_qual_worker");
+    {
+        std::ofstream out(worker);
+        BOOST_REQUIRE(out);
+        out << "#!/usr/bin/env bash\n"
+            << "echo \"GPU-01 RUNTIME_OBSERVED backend=mock $*\"\n";
+        BOOST_REQUIRE(out);
+    }
+    BOOST_REQUIRE_EQUAL(::chmod(fs::PathToString(worker).c_str(), 0755), 0);
+
+    EnvRestore worker_env{"BTX_CUDA_QUAL_WORKER"};
+    EnvRestore share_env{"BTX_ALLOW_SHARED_GPU"};
+    EnvRestore validator{"BTX_VALIDATOR_GPU"};
+    worker_env.Set(fs::PathToString(worker).c_str());
+    share_env.Unset();
+    validator.Set("0");
+
+    modelnet::QualRuntimeOpts opts;
+    opts.runtime_check = true;
+    opts.gpu_index = 2;
+    opts.allow_validator_gpu = false;
+    modelnet::QualReport report;
+    const auto qr = modelnet::QualifyRuntime(fs::PathToString(path), opts, report);
+    BOOST_CHECK_EQUAL(std::string{modelnet::QualResultName(qr)}, "RUNTIME_OBSERVED");
+    BOOST_CHECK(qr == modelnet::QualResult::RUNTIME_OBSERVED);
+    BOOST_CHECK(report.detail.find("GPU-01 RUNTIME_OBSERVED") != std::string::npos);
+    BOOST_CHECK(report.detail.find("--gpu=2") != std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

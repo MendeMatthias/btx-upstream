@@ -23,6 +23,11 @@ Every JSON object includes:
 | `native_fallback` | `false` | Helper does not downgrade to classical TLS |
 | `wallet` | `false` | No wallet RPC, secrets, BanMan, or spend |
 
+JSON responses also send `Content-Security-Policy: default-src 'none'`
+(same policy as `FillJson` in `http_bridge.cpp`). Public DNS 42/43 is
+`DnsSplit42_43` in that C++ library: `{left}.{right}.{zone}`. Native helper
+stays PQ1.
+
 ## Native C++ (not this process)
 
 `src/modelnet/http_bridge.cpp` implements `HandleBridgeGet` /

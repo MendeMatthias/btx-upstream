@@ -715,6 +715,10 @@ int GuiMain(int argc, char* argv[])
             std::string consent_err;
             const fs::path consent_path = modelnet::FirstRunConsentPath(gArgs.GetDataDirNet());
             (void)modelnet::SaveFirstRunConsent(consent_path, consent, consent_err);
+            if (intro->getInstallOsHandlerChecked()) {
+                // User-local without sudo; --system only if the system-wide box is checked.
+                (void)intro->installOsHandler();
+            }
         }
 #endif // ENABLE_MODELNET
     }

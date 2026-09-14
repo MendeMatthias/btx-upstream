@@ -137,8 +137,9 @@ BanMan, AddrMan, fork choice, ExactReplay, and issuance:
 
 Campaign-style funding and SHA-256 HTLC claim/refund for model releases **reuse
 the 0.34.6 wallet HTLC RPCs** (`buildhtlcclaim`, `buildhtlcrefund`, etc.); they
-are not a separate inference-payment API. Model-specific HTLC builder RPCs listed
-in the catalogue remain honest `NOT_IMPLEMENTED` until wired.
+are not a separate inference-payment API. Model-specific HTLC builders
+(`buildmodelhtlcclaim` / `buildmodelhtlcrefund`) freeze unsigned 0.34.6
+`htlc_sha256` templates. HASH160 `htlc_tx` is recovery-only.
 
 Enable the introduction bridge with `-modelnet=1` only when you intend to use
 model RPCs through `btxd`; researchers may call the helper unix socket directly

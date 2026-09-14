@@ -235,9 +235,9 @@ BOOST_AUTO_TEST_CASE(comm_unsubscribe_stops_new_preservation)
     BOOST_CHECK_EQUAL(unpol_result["automatic_preservation"].get_bool(), false);
 }
 
-BOOST_AUTO_TEST_CASE(getmodel_explicit_paid_wallet_required)
+BOOST_AUTO_TEST_CASE(getmodel_explicit_paid_quote_no_autospend)
 {
-    const fs::path tmp = m_args.GetDataDirBase() / "v11-remaining-wallet-required";
+    const fs::path tmp = m_args.GetDataDirBase() / "v11-remaining-explicit-paid";
     modelnet::ModelCatalog cat{tmp, /*quota_bytes=*/1 << 20};
     UniValue req(UniValue::VOBJ);
     UniValue params(UniValue::VARR);
@@ -247,8 +247,11 @@ BOOST_AUTO_TEST_CASE(getmodel_explicit_paid_wallet_required)
     req.pushKV("params", params);
     UniValue result;
     std::string code, err;
-    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, req, result, code, err));
-    BOOST_CHECK_EQUAL(code, "WALLET_REQUIRED");
+    BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, req, result, code, err));
+    BOOST_CHECK_EQUAL(result["automatic_spend_atoms"].getInt<int>(), 0);
+    BOOST_CHECK(result.exists("quote"));
+    BOOST_CHECK_EQUAL(result["funding_rpc"].get_str(), "preparemodelfunding");
+    BOOST_CHECK_EQUAL(result["wallet"].get_bool(), false);
 
     UniValue free_req(UniValue::VOBJ);
     UniValue free_params(UniValue::VARR);
@@ -527,7 +530,7 @@ BOOST_AUTO_TEST_CASE(iso_helper_missing_capabilities_listed)
     BOOST_CHECK(caps.exists("importmodel") && caps["importmodel"].get_bool());
     BOOST_CHECK(caps.exists("listmodels") && caps["listmodels"].get_bool());
     BOOST_CHECK(caps.exists("getmodel_free_only") && caps["getmodel_free_only"].get_bool());
-    BOOST_CHECK(caps.exists("cuda_qualification") && !caps["cuda_qualification"].get_bool());
+    BOOST_CHECK(caps.exists("cuda_qualification") && caps["cuda_qualification"].get_bool());
 }
 
 BOOST_AUTO_TEST_CASE(comm_receipts_unsigned_json_rejected)

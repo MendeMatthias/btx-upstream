@@ -37,9 +37,9 @@ UniValue CampaignToJson(const ReleaseCampaign& c)
     o.pushKV("frozen", c.frozen);
     o.pushKV("secret_disclosed", c.secret_disclosed);
     o.pushKV("plaintext_verified", c.plaintext_verified);
-    o.pushKV("claim", "buildhtlcclaim with 0.34.6 htlc_sha256(key_hash, claimant)");
-    o.pushKV("refund", "buildhtlcrefund after refund_height");
-    o.pushKV("note", "HASH160 htlc_tx is recovery-only. No buildmodelhtlcclaim.");
+    o.pushKV("claim", "buildmodelhtlcclaim / buildhtlcclaim with 0.34.6 htlc_sha256(key_hash, claimant)");
+    o.pushKV("refund", "buildmodelhtlcrefund / buildhtlcrefund after refund_height");
+    o.pushKV("note", "HASH160 htlc_tx is recovery-only.");
     return o;
 }
 

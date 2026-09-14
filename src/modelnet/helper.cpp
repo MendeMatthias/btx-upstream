@@ -8,6 +8,7 @@
 #include <modelnet/community.h>
 #include <modelnet/crypto.h>
 #include <modelnet/free_grant.h>
+#include <modelnet/funding.h>
 #include <modelnet/identity.h>
 #include <modelnet/policy.h>
 #include <modelnet/pq1_runtime.h>
@@ -2131,11 +2132,6 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 }
             }
         }
-        if (mode == RetrievalMode::EXPLICIT_PAID) {
-            err_code = "WALLET_REQUIRED";
-            err = "paid retrieval requires a configured monetary wallet; free functionality continues";
-            return false;
-        }
         result.pushKV("schema_version", 2);
         result.pushKV("uri", r.Uri());
         result.pushKV("automatic_spend_atoms", 0);
@@ -2189,10 +2185,25 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         }
         if (mode != RetrievalMode::FREE_ONLY) {
             Quote q;
-            MakePrepaidQuote(q, r.digest, have_local ? local_probe.artifact_id : Digest48{}, 0, 0, 0, err);
+            int64_t price = 0;
+            if (mode == RetrievalMode::EXPLICIT_PAID) {
+                if (requester.exists("price_atoms") && requester["price_atoms"].isNum()) {
+                    price = requester["price_atoms"].getInt<int64_t>();
+                } else if (budget_atoms > 0) {
+                    price = budget_atoms;
+                } else {
+                    price = 1; // explicit paid is never a free quote; automatic spend stays 0
+                }
+            }
+            MakePrepaidQuote(q, r.digest, have_local ? local_probe.artifact_id : Digest48{}, 0, 0, price, err);
             quotes.push_back(q);
             SavePaymentState(dir, quotes, journal, err);
             result.pushKV("quote", QuoteToJson(q));
+            if (mode == RetrievalMode::EXPLICIT_PAID) {
+                result.pushKV("funding_rpc", "preparemodelfunding");
+                result.pushKV("wallet", false);
+                result.pushKV("note", "EXPLICIT_PAID quotes a price; automatic spend remains 0. preparemodelfunding / signmodelfunding / submitmodelfunding freeze htlc_sha256.");
+            }
         }
         bool paid_binding = false;
         for (const auto& q : quotes) {
@@ -2445,7 +2456,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("schema_version", 2);
         result.pushKV("use", method == "claimmodelrelease" ? "buildhtlcclaim" : "buildhtlcrefund");
         result.pushKV("template", "htlc_sha256");
-        result.pushKV("note", "No buildmodelhtlcclaim. HASH160 htlc_tx is recovery-only. After local decrypt of a qualified public artifact, demand-seed advertises the plaintext identity within the storage budget.");
+        result.pushKV("note", "Claim/refund via buildmodelhtlcclaim / buildmodelhtlcrefund (0.34.6 htlc_sha256). HASH160 htlc_tx is recovery-only. After local decrypt of a qualified public artifact, demand-seed advertises the plaintext identity within the storage budget.");
         if (params.isArray() && params.size() > 0 && Arg(0).isStr()) {
             CatalogEntry e;
             const Digest48 id = IdFromUser(Arg(0).get_str(), err);
@@ -2812,9 +2823,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     }
     if (method == "preparemodelfunding" || method == "signmodelfunding" || method == "submitmodelfunding" ||
         method == "exportmodelrecovery" || method == "buildmodelhtlcclaim" || method == "buildmodelhtlcrefund") {
-        err_code = "NOT_IMPLEMENTED";
-        err = "wallet funding RPCs stay on btxd; reuse 0.34.6 buildhtlcclaim / buildhtlcrefund. HASH160 htlc_tx is recovery-only.";
-        return false;
+        return DispatchFundingRpc(cat, method, params, result, err_code, err);
     }
     err_code = "METHOD_NOT_FOUND";
     err = "unknown model RPC";

@@ -23,13 +23,15 @@ Catalog pieces that were committed under `modeldir/store/` survive. Leftover
 `createmodelrelease` stores SHA-256(`secret32`) only (`secret_retained=false`).
 After a helper restart, `getmodelrelease` reloads `campaigns.json`.
 
-Claim and refund stay on the **wallet**:
+Claim and refund use 0.34.6 SHA-256 HTLC:
 
-- `buildhtlcclaim` / `buildhtlcrefund` (0.34.6 `htlc_sha256`)
+- `buildmodelhtlcclaim` / `buildmodelhtlcrefund` (unsigned helper templates)
+- `buildhtlcclaim` / `buildhtlcrefund` (wallet signs)
 - HASH160 `htlc_tx` is recovery-only for old outputs, never a new campaign
 
-Helper methods `preparemodelfunding` / `signmodelfunding` /
-`submitmodelfunding` / `buildmodelhtlcclaim` return `NOT_IMPLEMENTED`.
+Helper `preparemodelfunding` / `signmodelfunding` /
+`submitmodelfunding` freeze the round. Helper sign is `complete=false`
+without spending keys. Helper submit journals; `btxd` broadcasts.
 
 ## 3. Funding fingerprint mutated
 

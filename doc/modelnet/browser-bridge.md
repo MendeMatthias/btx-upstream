@@ -80,4 +80,5 @@ python3 contrib/modelbridge/modelbridge.py          # 127.0.0.1:18747
 ```
 
 See [contrib/modelbridge/README.md](../../contrib/modelbridge/README.md) and
-the existing [web-bridge-boundary.md](web-bridge-boundary.md) note.
+[web-bridge-boundary.md](web-bridge-boundary.md) (public DNS 42/43 is
+implemented; native helper stays PQ1).
