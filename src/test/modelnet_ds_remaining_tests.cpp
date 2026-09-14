@@ -59,8 +59,8 @@
 //
 // Matrix ids deliberately NOT asserted here (no native API / no implementation to
 // assert against yet, so a "real assertion" would be fabricated):
-//   V11-URI-12  OS handler is the src/btx-open.cpp entry point, not a library call.
-//   V11-URI-14  no short-display/copy helper exists in native code.
+// V11-URI-12  OS handler is the src/btx-open.cpp entry point, not a library call.
+//   V11-URI-14  short display: src/test/modelnet_uri_resolve_tests.cpp uri_14_short_display_copy_is_full_canonical
 //   V11-RESOLVE-07/08/09  no eight-router/four-query bound, 60s negative cache,
 //                         or missing-bootstrap error API in the helper.
 //   V11-BRIDGE-10  the bridge never emits bytes; range->chunk mapping lives in the

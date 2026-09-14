@@ -16,8 +16,11 @@
 
 #ifdef ENABLE_MODELNET
 #include <modelnet/firstrun.h>
+#include <modelnet/resource_uri.h>
 #endif
 
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QPlainTextEdit>
 #include <QPushButton>
 
@@ -29,6 +32,9 @@ ModelNetPage::ModelNetPage(QWidget *parent) :
 {
     ui->setupUi(this);
     connect(ui->refreshButton, &QPushButton::clicked, this, &ModelNetPage::refresh);
+    connect(ui->copyUriButton, &QPushButton::clicked, this, &ModelNetPage::copyOpenedUri);
+    ui->uriDisplayLabel->installEventFilter(this);
+    ui->uriRowWidget->setVisible(false);
     refresh();
 }
 
@@ -46,8 +52,38 @@ void ModelNetPage::setClientModel(ClientModel *model)
 void ModelNetPage::showOpenedUri(const QString& uri)
 {
     refresh();
+#ifdef ENABLE_MODELNET
+    m_full_uri = QString::fromStdString(modelnet::CopyUri(uri.toStdString()));
+    const std::string display = modelnet::ShortDisplayUri(m_full_uri.toStdString());
+    ui->uriDisplayLabel->setText(QString::fromStdString(display));
+    ui->uriRowWidget->setVisible(!m_full_uri.isEmpty());
+    const QString note = tr("Opened resource URI (not a payment, not a spend):\n%1\nCopy uses the full URI, not the short display.\n\n")
+                              .arg(QString::fromStdString(display));
+#else
+    m_full_uri = uri;
+    ui->uriDisplayLabel->setText(uri);
+    ui->uriRowWidget->setVisible(!uri.isEmpty());
     const QString note = tr("Opened resource URI (not a payment, not a spend):\n%1\n\n").arg(uri);
+#endif
     ui->modelsOutput->setPlainText(note + ui->modelsOutput->toPlainText());
+}
+
+void ModelNetPage::copyOpenedUri()
+{
+    if (m_full_uri.isEmpty()) return;
+    GUIUtil::setClipboard(m_full_uri);
+}
+
+bool ModelNetPage::eventFilter(QObject* obj, QEvent* ev)
+{
+    if (obj == ui->uriDisplayLabel && ev->type() == QEvent::KeyPress) {
+        const auto* ke = static_cast<QKeyEvent*>(ev);
+        if (ke->matches(QKeySequence::Copy)) {
+            copyOpenedUri();
+            return true;
+        }
+    }
+    return QWidget::eventFilter(obj, ev);
 }
 
 QString ModelNetPage::callRpc(const std::string& method) const

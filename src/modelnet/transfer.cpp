@@ -84,6 +84,73 @@ bool QuoteMutationRequiresReapproval(const Quote& approved, const Quote& observe
     return false;
 }
 
+bool ApplyPaymentDelivery(PaymentJournal& e, bool reorg_hold_active, std::string& err)
+{
+    if (e.txid.empty()) {
+        err = "txid required";
+        return false;
+    }
+    e.accepted = true;
+    if (reorg_hold_active) {
+        e.delivered = false;
+        e.held_for_reorg = true;
+        err = "reorg payment hold; reserved range not credited";
+        return false;
+    }
+    e.held_for_reorg = false;
+    e.delivered = true;
+    err.clear();
+    return true;
+}
+
+bool ReleaseReorgHold(std::vector<PaymentJournal>& journal, const std::string& txid, std::string& err)
+{
+    if (txid.empty()) {
+        err = "txid required";
+        return false;
+    }
+    for (auto& e : journal) {
+        if (e.txid != txid) continue;
+        return ApplyPaymentDelivery(e, /*reorg_hold_active=*/false, err);
+    }
+    err = "txid not in journal";
+    return false;
+}
+
+bool RemainingUndeliveredRange(const std::vector<PaymentJournal>& journal,
+                                uint32_t file_index, uint32_t first_piece, uint32_t piece_count,
+                                uint32_t& out_first, uint32_t& out_count)
+{
+    out_first = 0;
+    out_count = 0;
+    if (piece_count == 0) return false;
+    auto delivered = [&](uint32_t piece) {
+        for (const auto& e : journal) {
+            if (!e.delivered || e.piece_count == 0) continue;
+            if (RangesOverlap(e.file_index, e.first_piece, e.piece_count, file_index, piece, 1)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    bool in_hole = false;
+    for (uint32_t i = 0; i < piece_count; ++i) {
+        const uint32_t piece = first_piece + i;
+        if (delivered(piece)) {
+            if (in_hole) break;
+            continue;
+        }
+        if (!in_hole) {
+            out_first = piece;
+            out_count = 1;
+            in_hole = true;
+        } else {
+            ++out_count;
+        }
+    }
+    return in_hole;
+}
+
 UniValue QuoteToJson(const Quote& q)
 {
     UniValue o(UniValue::VOBJ);
@@ -157,6 +224,7 @@ bool LoadPaymentState(const fs::path& dir, std::vector<Quote>& quotes, std::vect
             e.txid = jj["txid"].get_str();
             e.accepted = jj.exists("accepted") && jj["accepted"].get_bool();
             e.delivered = jj.exists("delivered") && jj["delivered"].get_bool();
+            e.held_for_reorg = jj.exists("held_for_reorg") && jj["held_for_reorg"].get_bool();
             e.file_index = jj.exists("file_index") ? jj["file_index"].getInt<uint32_t>() : 0;
             e.first_piece = jj.exists("first_piece") ? jj["first_piece"].getInt<uint32_t>() : 0;
             e.piece_count = jj.exists("piece_count") ? jj["piece_count"].getInt<uint32_t>() : 0;
@@ -178,6 +246,7 @@ bool SavePaymentState(const fs::path& dir, const std::vector<Quote>& quotes, con
         j.pushKV("txid", e.txid);
         j.pushKV("accepted", e.accepted);
         j.pushKV("delivered", e.delivered);
+        j.pushKV("held_for_reorg", e.held_for_reorg);
         j.pushKV("file_index", static_cast<int64_t>(e.file_index));
         j.pushKV("first_piece", static_cast<int64_t>(e.first_piece));
         j.pushKV("piece_count", static_cast<int64_t>(e.piece_count));

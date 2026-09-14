@@ -34,6 +34,7 @@ struct PaymentJournal {
     std::string txid;
     bool accepted{false};
     bool delivered{false};
+    bool held_for_reorg{false};
     uint32_t file_index{0};
     uint32_t first_piece{0};
     uint32_t piece_count{0};
@@ -57,6 +58,16 @@ bool QuoteMayBeTakenAsFree(const Quote& accepted, const UniValue& requester_json
 
 /** True when signed quote terms changed and a new approval is required. */
 bool QuoteMutationRequiresReapproval(const Quote& approved, const Quote& observed);
+
+/** PAY-05: reorg hold reserves the range but does not credit pieces. */
+bool ApplyPaymentDelivery(PaymentJournal& e, bool reorg_hold_active, std::string& err);
+/** Credit a previously held journal txid once the reorg hold clears. */
+bool ReleaseReorgHold(std::vector<PaymentJournal>& journal, const std::string& txid, std::string& err);
+
+/** PAY-09: first contiguous undelivered subrange of [first, first+count). False if nothing remains. */
+bool RemainingUndeliveredRange(const std::vector<PaymentJournal>& journal,
+                                uint32_t file_index, uint32_t first_piece, uint32_t piece_count,
+                                uint32_t& out_first, uint32_t& out_count);
 
 UniValue QuoteToJson(const Quote& q);
 bool QuoteFromJson(const UniValue& o, Quote& q, std::string& err);

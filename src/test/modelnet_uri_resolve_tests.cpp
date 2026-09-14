@@ -10,7 +10,7 @@
 // V11-URI-10     uri_decode_token_vs_uri
 // V11-RESOLVE-02 resolve_incomplete_local_catalog
 // V11-RESOLVE-08 resolve_incomplete_local_catalog
-// V11-URI-15     decode_object_matches_decode_resource
+// V11-URI-14     uri_14_short_display_copy_is_full_canonical
 
 #include <bech32.h>
 #include <crypto/common.h>
@@ -351,6 +351,26 @@ BOOST_AUTO_TEST_CASE(decode_object_matches_decode_resource)
     BOOST_CHECK(!modelnet::DecodeResource(truncated, model_r, err));
     BOOST_REQUIRE(modelnet::HandleBridgeGet("/" + truncated, br));
     BOOST_CHECK_EQUAL(br.http_status, 400);
+}
+
+BOOST_AUTO_TEST_CASE(uri_14_short_display_copy_is_full_canonical)
+{
+    modelnet::Digest48 d{};
+    d.data[0] = 0x7e;
+    std::string uri, err;
+    BOOST_REQUIRE(modelnet::EncodeResource(modelnet::ResourceKind::MODEL, d, uri, err));
+    const std::string display = modelnet::ShortDisplayUri(uri);
+    const std::string copy = modelnet::CopyUri(uri);
+    BOOST_CHECK(!display.empty());
+    BOOST_CHECK(display != uri);
+    BOOST_CHECK(display.find("...") != std::string::npos);
+    BOOST_CHECK(display.size() < uri.size());
+    BOOST_CHECK_EQUAL(copy, uri);
+    BOOST_CHECK_EQUAL(modelnet::CopyUri(copy), uri);
+    modelnet::Resource r;
+    BOOST_CHECK(!modelnet::DecodeResource(display, r, err));
+    BOOST_CHECK(modelnet::CopyUri(display).empty());
+    BOOST_CHECK(modelnet::ShortDisplayUri("not-a-uri").empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

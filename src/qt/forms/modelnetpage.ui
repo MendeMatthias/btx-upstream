@@ -35,6 +35,48 @@
     </widget>
    </item>
    <item>
+    <widget class="QWidget" name="uriRowWidget">
+     <layout class="QHBoxLayout" name="uriRow">
+     <item>
+      <widget class="QLabel" name="uriDisplayLabel">
+       <property name="text">
+        <string/>
+       </property>
+       <property name="textInteractionFlags">
+        <set>Qt::TextSelectableByMouse|Qt::TextSelectableByKeyboard</set>
+       </property>
+       <property name="toolTip">
+        <string>Short display of the opened btx:// URI. Copy (button or Ctrl+C) puts the full canonical URI on the clipboard.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="copyUriButton">
+       <property name="text">
+        <string>Copy URI</string>
+       </property>
+       <property name="toolTip">
+        <string>Copy the full canonical btx:// URI, not the short display.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="uriRowSpacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+    </widget>
+   </item>
+   <item>
     <layout class="QHBoxLayout" name="horizontalLayoutRefresh">
      <item>
       <widget class="QPushButton" name="refreshButton">

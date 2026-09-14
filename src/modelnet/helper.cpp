@@ -1150,6 +1150,22 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         const fs::path dir = cat.Store().Root().parent_path();
         LoadPaymentState(dir, quotes, journal, err);
         const std::string txid = body["txid"].get_str();
+        if (body.exists("release_reorg_hold") && body["release_reorg_hold"].isBool() &&
+            body["release_reorg_hold"].get_bool()) {
+            if (!ReleaseReorgHold(journal, txid, err)) {
+                resp.status = 409;
+                resp.body = JsonError("REORG_HOLD", err);
+                return true;
+            }
+            SavePaymentState(dir, quotes, journal, err);
+            UniValue rel(UniValue::VOBJ);
+            rel.pushKV("schema_version", 2);
+            rel.pushKV("txid", txid);
+            rel.pushKV("delivered", true);
+            rel.pushKV("held_for_reorg", false);
+            resp.body = rel.write();
+            return true;
+        }
         if (DuplicatePayment(journal, txid)) {
             resp.status = 409;
             resp.body = JsonError("DUPLICATE_PAYMENT", "txid already recorded; retry does not pay again");
@@ -1167,13 +1183,24 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.body = JsonError("DUPLICATE_PAYMENT", "range already reserved; restart does not pay again");
             return true;
         }
+        const bool reorg_hold = body.exists("reorg_hold") && body["reorg_hold"].isBool() && body["reorg_hold"].get_bool();
+        std::string hold_err;
+        (void)ApplyPaymentDelivery(e, reorg_hold, hold_err);
+        if (!reorg_hold) {
+            e.accepted = false;
+            e.delivered = false;
+            e.held_for_reorg = false;
+        }
         journal.push_back(e);
         SavePaymentState(dir, quotes, journal, err);
         UniValue o(UniValue::VOBJ);
         o.pushKV("schema_version", 2);
         o.pushKV("recorded", true);
-        o.pushKV("accepted", false);
+        o.pushKV("accepted", e.accepted);
+        o.pushKV("delivered", e.delivered);
+        o.pushKV("held_for_reorg", e.held_for_reorg);
         o.pushKV("note", "Journal records intent. Chain settlement is 0.34.6 wallet RPCs; helper does not verify the chain.");
+        if (reorg_hold) o.pushKV("error", hold_err);
         resp.body = o.write();
         return true;
     }

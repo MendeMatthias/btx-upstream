@@ -6,6 +6,8 @@
 // Chain inclusion is wallet_modelnet_funding.py + wallet_htlc_atomicswap.py.
 //
 // POOL-01  exact target / freeze amount
+// PAY-05  reorg payment hold (ApplyPaymentDelivery)
+// PAY-09  partial delivery (RemainingUndeliveredRange)
 // POOL-02  all-input/all-output template (MatchFrozenTemplate)
 // POOL-03  changed round invalidates fingerprint
 // POOL-04  missing participant (empty claimant / refund)
@@ -195,6 +197,55 @@ BOOST_AUTO_TEST_CASE(pay_07_helper_cannot_sign_or_verify_chain)
     BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, req, result, code, err));
     BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
     BOOST_CHECK(err.find("hex required") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(pay_05_reorg_payment_hold)
+{
+    modelnet::PaymentJournal e;
+    e.txid = "aa11";
+    e.quote_id = "q1";
+    e.file_index = 0;
+    e.first_piece = 0;
+    e.piece_count = 4;
+    std::string err;
+    BOOST_CHECK(!modelnet::ApplyPaymentDelivery(e, /*reorg_hold_active=*/true, err));
+    BOOST_CHECK(!e.delivered);
+    BOOST_CHECK(e.held_for_reorg);
+    BOOST_CHECK(err.find("reorg") != std::string::npos);
+
+    std::vector<modelnet::PaymentJournal> journal{e};
+    BOOST_CHECK(modelnet::DuplicateReservedRange(journal, 0, 0, 4));
+    BOOST_REQUIRE(modelnet::ReleaseReorgHold(journal, "aa11", err));
+    BOOST_CHECK(journal[0].delivered);
+    BOOST_CHECK(!journal[0].held_for_reorg);
+    BOOST_CHECK(!modelnet::ReleaseReorgHold(journal, "missing", err));
+}
+
+BOOST_AUTO_TEST_CASE(pay_09_partial_delivery)
+{
+    std::vector<modelnet::PaymentJournal> journal;
+    modelnet::PaymentJournal first;
+    first.txid = "aa";
+    first.file_index = 0;
+    first.first_piece = 0;
+    first.piece_count = 2;
+    first.delivered = true;
+    journal.push_back(first);
+    BOOST_CHECK(modelnet::DuplicateReservedRange(journal, 0, 0, 2));
+    BOOST_CHECK(modelnet::DuplicateReservedRange(journal, 0, 0, 4));
+    BOOST_CHECK(!modelnet::DuplicateReservedRange(journal, 0, 2, 2));
+    uint32_t remain_first = 0, remain_count = 0;
+    BOOST_REQUIRE(modelnet::RemainingUndeliveredRange(journal, 0, 0, 4, remain_first, remain_count));
+    BOOST_CHECK_EQUAL(remain_first, 2U);
+    BOOST_CHECK_EQUAL(remain_count, 2U);
+    modelnet::PaymentJournal rest;
+    rest.txid = "bb";
+    rest.file_index = 0;
+    rest.first_piece = remain_first;
+    rest.piece_count = remain_count;
+    rest.delivered = true;
+    journal.push_back(rest);
+    BOOST_CHECK(!modelnet::RemainingUndeliveredRange(journal, 0, 0, 4, remain_first, remain_count));
 }
 
 BOOST_AUTO_TEST_CASE(pool_01_exact_target_freeze)

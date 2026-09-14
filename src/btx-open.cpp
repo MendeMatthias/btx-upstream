@@ -36,6 +36,8 @@ int main(int argc, char* argv[])
     const bool have_budget = modelnet::EnvHasPositiveStorageBudget(storage_bytes, storage_err);
     (void)storage_err;
     std::cout << "canonical=" << r.Uri() << "\n"
+              << "display=" << modelnet::ShortDisplayUri(r.Uri()) << "\n"
+              << "copy=" << modelnet::CopyUri(r.Uri()) << "\n"
               << "kind=" << modelnet::ResourceKindName(r.kind) << "\n"
               << "digest=" << r.digest.Hex() << "\n"
               << "action=preview-only\n"

@@ -31,6 +31,11 @@ bool RawToken(uint8_t version, uint8_t kind, const Digest48& digest, std::string
 bool BridgePath(const std::string& uri, const std::string& origin, std::string& out, std::string& err);
 bool SplitBridgeHost(const std::string& uri, const std::string& suffix, std::string& out, std::string& err);
 
+/** Truncated display (`btx://abcdefgh...last8`). Not decodable. Empty if `text` is not a URI. */
+std::string ShortDisplayUri(std::string_view text);
+/** Canonical full URI for clipboard/copy. Empty if `text` is not a URI. Never returns the short form. */
+std::string CopyUri(std::string_view text);
+
 } // namespace modelnet
 
 #endif // BITCOIN_MODELNET_RESOURCE_URI_H

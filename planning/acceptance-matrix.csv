@@ -16,7 +16,7 @@ URI-10,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_10_explicit_loc
 URI-11,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_11_authority_not_dns
 URI-12,URI,PASS,contrib/modelnet/e2e-os-handler.sh user-local plus pkexec then sudo --system (BTX_SYSTEM_DESKTOP scratch); src/qt/intro.cpp installOsHandler; src/test/modelnet_b0_remaining_tests.cpp uri_12_btx_open_preview_binary_present
 URI-13,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_13_not_a_spending_or_payment_input
-URI-14,URI,NOT_RUN,no short-display/copy helper; Qt cancelled
+URI-14,URI,PASS,src/test/modelnet_uri_resolve_tests.cpp uri_14_short_display_copy_is_full_canonical; contrib/modelnet/e2e-os-handler.sh display vs copy; src/qt/modelnetpage.cpp copyOpenedUri
 URI-15,URI,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_uri_15_typed_hash_domain; src/test/modelnet_uri_resolve_tests.cpp decode_object_matches_decode_resource
 RESOLVE-01,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_01_cpu_only_cache
 RESOLVE-02,RESOLVE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_resolve_02_local_cache_hit; src/test/modelnet_uri_resolve_tests.cpp resolve_incomplete_local_catalog
@@ -163,11 +163,11 @@ PAY-01,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_01_quote_json_zero_cann
 PAY-02,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_02_quote_mutation_requires_reapproval
 PAY-03,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_03_10_duplicate_txid_and_range
 PAY-04,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_04_08_buyer_bind_and_durable_journal
-PAY-05,PAY,NOT_RUN,no dedicated Boost case name (pay_pool_tests covers PAY-01..04/06..08/10)
+PAY-05,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_05_reorg_payment_hold
 PAY-06,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_06_eta_includes_fees
 PAY-07,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_07_helper_cannot_sign_or_verify_chain
 PAY-08,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_04_08_buyer_bind_and_durable_journal
-PAY-09,PAY,NOT_RUN,no dedicated Boost case name (pay_pool_tests covers PAY-01..04/06..08/10)
+PAY-09,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_09_partial_delivery
 PAY-10,PAY,PASS,src/test/modelnet_pay_pool_tests.cpp pay_03_10_duplicate_txid_and_range
 POOL-01,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_01_exact_target_freeze
 POOL-02,POOL,PASS,src/test/modelnet_pay_pool_tests.cpp pool_02_all_outputs_match_frozen_template

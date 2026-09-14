@@ -187,4 +187,23 @@ bool SplitBridgeHost(const std::string& uri, const std::string& suffix, std::str
     return true;
 }
 
+std::string ShortDisplayUri(std::string_view text)
+{
+    Resource r;
+    std::string err;
+    if (!DecodeResource(text, r, err)) return {};
+    const std::string full = r.Uri();
+    if (full.size() < 22) return {};
+    const std::string token = full.substr(6);
+    return "btx://" + token.substr(0, 8) + "..." + token.substr(token.size() - 8);
+}
+
+std::string CopyUri(std::string_view text)
+{
+    Resource r;
+    std::string err;
+    if (!DecodeResource(text, r, err)) return {};
+    return r.Uri();
+}
+
 } // namespace modelnet

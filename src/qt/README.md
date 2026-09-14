@@ -58,6 +58,8 @@ To run:
 `PaymentServer::handleURIOrFile` intercepts `btx:` **before**
 `parseBitcoinURI` / `DecodeDestination` and emits `receivedModelResource`.
 `BitcoinGUI::handleModelResource` opens the Models page (`showOpenedUri`).
+The Models page shows a **short display**; Copy / Ctrl+C puts the **full**
+canonical URI on the clipboard (V11-URI-14).
 Drop events with `btx:` take the same path. Opening a URI **never** runs
 inference, never starts mining, never opens the spending wallet, and never
 uploads payload bytes. See [doc/modelnet/howto.md](/doc/modelnet/howto.md).

@@ -11,6 +11,12 @@ die() { echo "e2e-os-handler: $*" >&2; exit 1; }
 out="$("$OPEN" "$URI")"
 printf '%s\n' "$out" | grep -q 'action=preview-only' || die "preview"
 printf '%s\n' "$out" | grep -q 'wallet=not-opened' || die "wallet"
+canonical="$(printf '%s\n' "$out" | awk -F= '/^canonical=/{print $2}')"
+display="$(printf '%s\n' "$out" | awk -F= '/^display=/{print $2}')"
+copy="$(printf '%s\n' "$out" | awk -F= '/^copy=/{print $2}')"
+[[ -n "$canonical" && "$copy" == "$canonical" ]] || die "copy must be the full canonical URI"
+[[ "$display" != "$canonical" ]] || die "display must be shorter than canonical"
+[[ "$display" == *...* ]] || die "display must truncate"
 set +e
 "$OPEN" "$URI" extra >/dev/null 2>&1
 rc=$?

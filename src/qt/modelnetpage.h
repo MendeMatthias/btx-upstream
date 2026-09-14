@@ -5,6 +5,7 @@
 #ifndef BITCOIN_QT_MODELNETPAGE_H
 #define BITCOIN_QT_MODELNETPAGE_H
 
+#include <QEvent>
 #include <QWidget>
 
 #include <string>
@@ -29,8 +30,12 @@ public:
     void setClientModel(ClientModel *model);
     void showOpenedUri(const QString& uri);
 
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override;
+
 public Q_SLOTS:
     void refresh();
+    void copyOpenedUri();
 
 private:
     Ui::ModelNetPage *ui;
@@ -38,6 +43,7 @@ private:
 
     QString callRpc(const std::string& method) const;
     void refreshConsent();
+    QString m_full_uri;
 };
 
 #endif // BITCOIN_QT_MODELNETPAGE_H
