@@ -539,11 +539,13 @@ BOOST_AUTO_TEST_CASE(pq1_handshake_mlkem768)
     const fs::path key = dir / "key.pem";
     const fs::path cert = dir / "cert.pem";
     const fs::path openssl_err = dir / "openssl.err";
+    const std::string openssl = modelnet::OpensslBin();
     const std::string cmd = strprintf(
-        "/usr/bin/openssl req -x509 -new -newkey mldsa44 -keyout '%s' -out '%s' -nodes -subj '/CN=btx-model-test' -days 1 >'%s' 2>&1",
-        fs::PathToString(key), fs::PathToString(cert), fs::PathToString(openssl_err));
+        "%s req -x509 -new -newkey mldsa44 -keyout '%s' -out '%s' -nodes -subj '/CN=btx-model-test' -days 1 >'%s' 2>&1",
+        openssl, fs::PathToString(key), fs::PathToString(cert), fs::PathToString(openssl_err));
     const int rc = std::system(cmd.c_str());
-    BOOST_REQUIRE_MESSAGE(rc == 0, "openssl mldsa44 cert failed rc=" + std::to_string(rc) + " " + ReadAll(openssl_err));
+    BOOST_REQUIRE_MESSAGE(rc == 0, "openssl mldsa44 cert failed rc=" + std::to_string(rc) +
+                                         " bin=" + openssl + " " + ReadAll(openssl_err));
     const std::string cert_pem = ReadAll(cert);
     const std::string key_pem = ReadAll(key);
     modelnet::Pq1Context server;

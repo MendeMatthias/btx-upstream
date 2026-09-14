@@ -69,12 +69,6 @@ std::string TrimCopy(std::string s)
     return s;
 }
 
-std::string OpensslBin()
-{
-    if (const char* e = std::getenv("BTX_OPENSSL")) return e;
-    return "openssl";
-}
-
 std::string HeaderGet(const NativeResponse& resp, const std::string& name)
 {
     const std::string want = ToLower(name);

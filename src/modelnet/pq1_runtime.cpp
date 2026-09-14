@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -58,12 +59,61 @@ void DecayUnauthLocked(UnauthState& e)
 
 ConnLimits& GlobalConnLimits() { return g_limits; }
 
+namespace {
+bool OpensslCliHasMlKem768(const std::string& bin)
+{
+    if (bin.empty()) return false;
+    const std::string cmd = bin + " list -kem-algorithms 2>/dev/null";
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (!fp) return false;
+    std::string out;
+    char buf[256];
+    while (fgets(buf, sizeof(buf), fp) != nullptr) out += buf;
+    const int rc = pclose(fp);
+    return rc == 0 && out.find("MLKEM768") != std::string::npos;
+}
+} // namespace
+
+std::string OpensslBin()
+{
+    if (const char* e = std::getenv("BTX_OPENSSL")) return e;
+    static const std::string cached = [] {
+        const char* cands[] = {
+            "/opt/homebrew/opt/openssl@3/bin/openssl",
+            "/opt/homebrew/opt/openssl/bin/openssl",
+            "/usr/local/opt/openssl@3/bin/openssl",
+            "/usr/local/opt/openssl/bin/openssl",
+            "openssl",
+        };
+        for (const char* c : cands) {
+            if (OpensslCliHasMlKem768(c)) return std::string{c};
+        }
+        return std::string{"openssl"};
+    }();
+    return cached;
+}
+
 void SetPq1SocketOpts(int fd, bool nonblock)
 {
     int mss = 800;
     setsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss, sizeof(mss));
+    // TLS records are capped at 512 bytes. Disable path-MTU "don't
+    // fragment" so a 512-byte record is not dropped on a smaller path.
+    // Linux: IP_PMTUDISC_DONT. Darwin has no IP_MTU_DISCOVER; clear
+    // IP_DONTFRAG / IPV6_DONTFRAG instead.
+#if defined(IP_MTU_DISCOVER) && defined(IP_PMTUDISC_DONT)
     int disc = IP_PMTUDISC_DONT;
     setsockopt(fd, IPPROTO_IP, IP_MTU_DISCOVER, &disc, sizeof(disc));
+#elif defined(IP_DONTFRAG)
+    int dontfrag = 0;
+    setsockopt(fd, IPPROTO_IP, IP_DONTFRAG, &dontfrag, sizeof(dontfrag));
+#endif
+#if defined(IPV6_DONTFRAG)
+    {
+        int v6dontfrag = 0;
+        setsockopt(fd, IPPROTO_IPV6, IPV6_DONTFRAG, &v6dontfrag, sizeof(v6dontfrag));
+    }
+#endif
     int nodelay = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     if (nonblock) {

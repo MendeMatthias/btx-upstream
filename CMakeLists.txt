@@ -166,6 +166,29 @@ option(ENABLE_WALLET "Enable wallet." ON)
 option(WITH_MODELNET "Enable BTX Native Model Network helper and libraries (0.34.7)." ON)
 if(WITH_MODELNET)
   set(ENABLE_MODELNET ON)
+  if(APPLE)
+    # bitcoin_modelnet links OpenSSL into btxd / btx-modeld. Homebrew
+    # libssl.dylib would fail scripts/release/verify_release_btxd.py on a
+    # clean Mac (same class of miss as shared libzmq). Prefer static archives
+    # unless the caller already set OPENSSL_USE_STATIC_LIBS.
+    if(NOT DEFINED OPENSSL_USE_STATIC_LIBS)
+      set(OPENSSL_USE_STATIC_LIBS ON)
+    endif()
+    if(NOT OPENSSL_ROOT_DIR)
+      foreach(_btx_ssl_root IN ITEMS
+          "$ENV{HOMEBREW_PREFIX}/opt/openssl@3"
+          /opt/homebrew/opt/openssl@3
+          /opt/homebrew/opt/openssl
+          /usr/local/opt/openssl@3
+          /usr/local/opt/openssl)
+        if(_btx_ssl_root AND EXISTS "${_btx_ssl_root}/include/openssl/ssl.h")
+          set(OPENSSL_ROOT_DIR "${_btx_ssl_root}" CACHE PATH
+            "OpenSSL 3.5+ prefix for Native Model Network")
+          break()
+        endif()
+      endforeach()
+    endif()
+  endif()
 endif()
 option(WITH_SQLITE "Enable SQLite wallet support." ${ENABLE_WALLET})
 if(WITH_SQLITE)
@@ -861,9 +884,15 @@ message("  libbtxkernel (experimental) ......... ${BUILD_KERNEL_LIB}")
 message("Optional features:")
 message("  wallet support ...................... ${ENABLE_WALLET}")
 message("  native model network ............... ${WITH_MODELNET}")
+if(WITH_MODELNET AND OPENSSL_VERSION)
+  message("   - OpenSSL .......................... ${OPENSSL_VERSION}")
+endif()
 if(ENABLE_WALLET)
   message("   - descriptor wallets (SQLite) ...... ${WITH_SQLITE}")
   message("   - legacy wallets (Berkeley DB) ..... ${WITH_BDB}")
+endif()
+if(APPLE)
+  message("  Metal MatMul ........................ ${BTX_ENABLE_METAL}")
 endif()
 message("  external signer ..................... ${ENABLE_EXTERNAL_SIGNER}")
 message("  tor subprocess ...................... ${ENABLE_TOR_SUBPROCESS}")

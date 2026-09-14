@@ -29,6 +29,11 @@ inference is removed from the roadmap (v1.1 D01).
 Build: `-DWITH_MODELNET=ON` (default). OpenSSL 3.5+ required for the
 helper. See [doc/modelnet/README.md](../modelnet/README.md).
 
+macOS arm64 ships as `macos-arm64-metal`: `-DBTX_ENABLE_METAL=ON`,
+static OpenSSL 3.5+, Qt 6 GUI, and every precompiled `.metallib` next to
+`libexec/btxd.real`. See [doc/build-osx.md](../build-osx.md) and
+[doc/release-process.md](../release-process.md).
+
 ## Upgrade notes
 
 `btxd` does not replace a running signer. Run `btx-modeld` as a **second

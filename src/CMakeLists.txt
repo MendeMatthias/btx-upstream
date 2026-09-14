@@ -1816,6 +1816,28 @@ set(BTX_NODE_ARCHIVES
 
 if(WITH_MODELNET)
   find_package(OpenSSL REQUIRED)
+  if(OPENSSL_VERSION VERSION_LESS 3.5)
+    message(FATAL_ERROR
+      "WITH_MODELNET requires OpenSSL 3.5+ with ML-KEM-768 / ML-DSA-44 "
+      "(found ${OPENSSL_VERSION}). Set OPENSSL_ROOT_DIR to an OpenSSL 3.5+ "
+      "prefix (Homebrew: brew install openssl@3).")
+  endif()
+  if(APPLE)
+    set(_btx_ssl_loc "")
+    get_target_property(_btx_ssl_loc OpenSSL::SSL IMPORTED_LOCATION)
+    if(NOT _btx_ssl_loc)
+      get_target_property(_btx_ssl_loc OpenSSL::SSL IMPORTED_LOCATION_RELEASE)
+    endif()
+    if(_btx_ssl_loc AND _btx_ssl_loc MATCHES "\\.(dylib|so)([0-9.]*)$")
+      message(FATAL_ERROR
+        "WITH_MODELNET on macOS resolved shared OpenSSL (${_btx_ssl_loc}). "
+        "A Homebrew libssl.dylib load command fails on a Mac without that keg. "
+        "Pass -DOPENSSL_USE_STATIC_LIBS=ON and OPENSSL_ROOT_DIR pointing at "
+        "libssl.a (Homebrew: brew install openssl@3).")
+    endif()
+    message(STATUS "OpenSSL (macOS static): ${_btx_ssl_loc}")
+  endif()
+  set(OPENSSL_VERSION "${OPENSSL_VERSION}" PARENT_SCOPE)
   if(TARGET OpenSSL::SSL)
     set_property(TARGET OpenSSL::SSL PROPERTY IMPORTED_GLOBAL TRUE)
   endif()

@@ -64,6 +64,9 @@ public:
 
 ConnLimits& GlobalConnLimits();
 
+/** CLI used for ML-DSA-44 self-signed TLS files. Never Apple LibreSSL. */
+std::string OpensslBin();
+
 /** PQ-19: drop inherited OPENSSL_CONF / provider-module paths before SSL init. */
 void Pq1SanitizeOpenSslEnv();
 /** OPENSSL_INIT_NO_LOAD_CONFIG after sanitize. Safe to call more than once. */
