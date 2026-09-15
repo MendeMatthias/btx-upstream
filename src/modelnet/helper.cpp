@@ -2517,6 +2517,37 @@ static bool PreservationPermitted(const ModelCatalog& cat)
     return o["preservation_allowed"].isBool() && o["preservation_allowed"].get_bool();
 }
 
+static std::string LocalPexEndpoint()
+{
+    if (!g_swarm.nat.external.empty()) return g_swarm.nat.external;
+    if (g_swarm.bind.empty()) return {};
+    if (g_swarm.bind.rfind("0.0.0.0:", 0) == 0 || g_swarm.bind.rfind("[::]:", 0) == 0) return {};
+    return g_swarm.bind;
+}
+
+static void RefreshLocalPex(ModelCatalog& cat)
+{
+    const std::string ep = LocalPexEndpoint();
+    if (ep.empty()) return;
+    UniValue listed;
+    cat.List(listed);
+    if (!listed.exists("models")) return;
+    const int64_t now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    int n = 0;
+    std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
+    for (const auto& m : listed["models"].getValues()) {
+        if (!m.exists("seeded") || !m["seeded"].get_bool() || !m.exists("model_id")) continue;
+        ProviderHint h;
+        h.endpoint = ep;
+        h.model_id = m["model_id"].get_str();
+        h.availability_summary = "seeded";
+        h.expiry_ms = now + PEX_DEFAULT_TTL_MS;
+        g_swarm.pex.NoteLocal(h);
+        if (++n >= static_cast<int>(PEX_MAX_RECORDS_PER_MESSAGE)) break;
+    }
+}
+
 bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& result, std::string& err_code, std::string& err, std::atomic<bool>* stop)
 {
     result = UniValue(UniValue::VOBJ);
@@ -3793,6 +3824,8 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 return false;
             }
             cat.SetPolicy(live);
+            g_runtime.follow_peers = live.follow_configured_peers;
+            g_runtime.preserve_rare = live.preserve_rare;
             const UniValue dumped = PolicyToJson(cat.Policy());
             if (!WriteJsonFile(HelperDir(cat) / "policy.json", dumped, err)) {
                 err_code = "IO";
@@ -4810,12 +4843,13 @@ static void GossipPexOnSession(Pq1Session& sess, ModelCatalog& cat, const std::s
 
 static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::path& pinfile, std::atomic<bool>* stop)
 {
-    if (!PreservationPermitted(cat)) return;
     const auto pol = cat.Policy();
-    const bool follow = pol.follow_configured_peers && pol.seed_mode == SeedMode::AUTO;
-    if ((!pol.preserve_rare && !follow) || pol.storage_quota_bytes == 0) return;
+    const bool follow = pol.follow_configured_peers && pol.seed_mode == SeedMode::AUTO && pol.storage_quota_bytes > 0;
+    const bool rare = pol.preserve_rare && PreservationPermitted(cat);
+    if (!follow && !rare) return;
     const uint64_t spare = pol.storage_quota_bytes > cat.UsedBytes() ? pol.storage_quota_bytes - cat.UsedBytes() : 0;
     if (spare == 0) return;
+    RefreshLocalPex(cat);
     std::set<Digest48> local;
     UniValue listed;
     cat.List(listed);
@@ -4894,7 +4928,7 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
     if (follow) {
         got = SelectPeerFollow(observed, local, spare, pol, pick);
     }
-    if (!got && pol.preserve_rare) {
+    if (!got && rare) {
         got = SelectPreserveRare(observed, local, spare, pol, pick, static_cast<int64_t>(std::time(nullptr)));
     }
     if (!got) return;
@@ -5049,7 +5083,8 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
             RefreshAutoStorage(cfg, &cat);
             last_quota = std::chrono::steady_clock::now();
         }
-        if ((cfg.preserve_rare || cfg.follow_peers) &&
+        if ((cat.Policy().preserve_rare ||
+             (cat.Policy().follow_configured_peers && cat.Policy().seed_mode == SeedMode::AUTO)) &&
             std::chrono::steady_clock::now() - last_preserve >= std::chrono::seconds(5)) {
             TryPreserveRareTick(cat, pq, pinfile, stop);
             last_preserve = std::chrono::steady_clock::now();

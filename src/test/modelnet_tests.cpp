@@ -279,6 +279,9 @@ BOOST_AUTO_TEST_CASE(demand_seed_and_preserve_rare_policy)
     follow.allow_encrypted = true;
     BOOST_CHECK(modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, true, 10ULL << 30, 40ULL << 30));
     follow.allow_encrypted = false;
+    follow.storage_quota_bytes = 0;
+    BOOST_CHECK(!modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 10ULL << 30, 40ULL << 30));
+    follow.storage_quota_bytes = 80ULL << 30;
 
     modelnet::PreserveCandidate granite, tiny, follow_pick;
     granite.model_id.data[0] = 9;

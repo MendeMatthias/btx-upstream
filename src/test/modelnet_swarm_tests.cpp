@@ -383,6 +383,29 @@ BOOST_AUTO_TEST_CASE(swarm_px_01_08_provider_exchange)
     BOOST_CHECK(!px.Ingest("198.51.100.1:29447", flood, 2000, acc, err) || acc.size() <= 16);
     px.Expire(1000 + PEX_DEFAULT_TTL_MS + 1);
     BOOST_CHECK(px.Recent(1000 + PEX_DEFAULT_TTL_MS + 1).empty());
+    UniValue self(UniValue::VOBJ);
+    UniValue srecs(UniValue::VARR);
+    UniValue sone(UniValue::VOBJ);
+    sone.pushKV("endpoint", "198.51.100.1:29447");
+    sone.pushKV("model_id", std::string(96, 'a'));
+    srecs.push_back(sone);
+    self.pushKV("providers", srecs);
+    acc.clear();
+    BOOST_REQUIRE(px.Ingest("198.51.100.1:29447", self, 3000, acc, err));
+    BOOST_REQUIRE_EQUAL(acc.size(), 1);
+    BOOST_CHECK_EQUAL(acc[0].endpoint, "198.51.100.1:29447");
+    ProviderHint local;
+    local.endpoint = "203.0.113.9:29447";
+    local.model_id = std::string(96, 'b');
+    local.expiry_ms = 4000 + PEX_DEFAULT_TTL_MS;
+    px.NoteLocal(local);
+    const UniValue adv = px.Advertise(4000, PEX_MAX_RECORDS_PER_MESSAGE);
+    BOOST_REQUIRE(adv.exists("providers"));
+    bool saw_local = false;
+    for (const auto& p : adv["providers"].getValues()) {
+        if (p["endpoint"].get_str() == "203.0.113.9:29447") saw_local = true;
+    }
+    BOOST_CHECK(saw_local);
 }
 
 BOOST_AUTO_TEST_CASE(swarm_nat_01_10_control_plane)

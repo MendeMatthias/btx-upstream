@@ -54,6 +54,7 @@ step "12/12 GUI URI source + OS handler"
 
 step "13/16 default peer-follow (no getmodel)"
 MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-peer-follow.sh" || die "e2e-peer-follow"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-preserve-rare.sh" || die "e2e-preserve-rare"
 
 step "14/16 default hosting START-01..03"
 BIN="$BIN" "$ROOT/contrib/modelnet/e2e-hosting-default.sh" || die "e2e-hosting-default"

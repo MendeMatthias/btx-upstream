@@ -44,16 +44,20 @@ download / import M
 | `-modelstorage=` / `-modelcache=` | `auto` | AUTO budget, `0` (no payload), or `80GiB` (FIXED) |
 | `-modelseed=auto\|manual\|off` | `auto` | Auto = seed on intentional download. `manual` = only `seedmodel`. `off` = never auto-advertise |
 | `-modelseedupondownload=0\|1` | B0 alias | `1` → auto, `0` → off. **Not** a second opt-in; ignored when `-modelseed` is set |
-| `-modelpreserverare` | off | Unsolicited fetch of under-replicated **qualified** public models into spare space. At most one job per minute |
+| `-modelpreserverare` | off | Unsolicited fetch of under-replicated **qualified** public models into spare space. At most one fetch per 5s tick |
 | `-modelfollowpeers` | on | Follow FREE models announced by catalog contacts (`-modelpeer`, `addmodelnode`, PEX) into spare quota. Disable with `=0` |
 | `-modeluploadlimit=` | 0 | Serving cap (bytes/s). 0 = existing connection ceilings only |
-| `-modelallowencrypted` | off | Permit preserve-rare of `ENCRYPTED_UNQUALIFIED` ciphertext |
+| `-modelallowencrypted` | off | Permit preserve-rare and peer-follow of `ENCRYPTED_UNQUALIFIED` ciphertext |
 
 `getmodelpolicy` / `setmodelpolicy` expose the same fields. `auto_pay` and
 non-zero automatic spend remain refused.
 
 `getmodelnetworkinfo.propagation` reports `demand_propagation`,
-`preservation_propagation`, `release_propagation`.
+`peer_follow_propagation`, `preservation_propagation`, and
+`release_propagation`. The helper polls catalog contacts every **5s**.
+Governor `preservation_allowed=false` pauses preserve-rare only; catalog
+follow still runs. Seeders advertise their local seeded catalogs over PEX
+so a third peer can learn the seeder from an intermediate contact.
 
 ## What is served on PQ1
 

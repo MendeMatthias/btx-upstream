@@ -126,7 +126,6 @@ bool ProviderExchange::Ingest(const std::string& from_endpoint,
             continue;
         }
         if (!m_self.empty() && h.endpoint == m_self) continue;
-        if (h.endpoint == from_endpoint) continue;
         bool dup = false;
         for (auto& c : m_cache) {
             if (c.endpoint == h.endpoint && c.service_id == h.service_id) {
@@ -171,10 +170,13 @@ std::vector<ProviderHint> ProviderExchange::Recent(int64_t now_ms) const
 UniValue ProviderExchange::Advertise(int64_t now_ms, size_t max_records) const
 {
     UniValue arr(UniValue::VARR);
-    size_t n = 0;
-    for (const auto& h : m_cache) {
-        if (h.expiry_ms <= now_ms) continue;
-        if (n >= max_records) break;
+    std::vector<std::string> seen;
+    auto emit = [&](const ProviderHint& h) {
+        if (h.expiry_ms <= now_ms) return;
+        if (arr.size() >= max_records) return;
+        const std::string key = h.endpoint + "|" + h.model_id;
+        if (std::find(seen.begin(), seen.end(), key) != seen.end()) return;
+        seen.push_back(key);
         UniValue o(UniValue::VOBJ);
         o.pushKV("endpoint", h.endpoint);
         if (!h.service_id.empty()) o.pushKV("service_id", h.service_id);
@@ -182,12 +184,26 @@ UniValue ProviderExchange::Advertise(int64_t now_ms, size_t max_records) const
         if (!h.availability_summary.empty()) o.pushKV("availability", h.availability_summary);
         o.pushKV("expiry", h.expiry_ms);
         arr.push_back(o);
-        ++n;
-    }
+    };
+    for (const auto& h : m_local) emit(h);
+    for (const auto& h : m_cache) emit(h);
     UniValue body(UniValue::VOBJ);
     body.pushKV("schema_version", 2);
     body.pushKV("providers", arr);
     return body;
+}
+
+void ProviderExchange::NoteLocal(const ProviderHint& hint)
+{
+    if (hint.endpoint.empty()) return;
+    for (auto& c : m_local) {
+        if (c.endpoint == hint.endpoint && c.model_id == hint.model_id) {
+            c = hint;
+            return;
+        }
+    }
+    if (m_local.size() >= m_limits.max_records) m_local.erase(m_local.begin());
+    m_local.push_back(hint);
 }
 
 } // namespace modelnet

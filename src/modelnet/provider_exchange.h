@@ -49,6 +49,7 @@ struct PexStats {
 class ProviderExchange {
     PexLimits m_limits;
     std::vector<ProviderHint> m_cache;
+    std::vector<ProviderHint> m_local;
     std::map<std::string, std::vector<int64_t>> m_peer_times;
     PexStats m_stats;
 
@@ -66,6 +67,8 @@ public:
     UniValue Advertise(int64_t now_ms, size_t max_records) const;
     const PexStats& Stats() const { return m_stats; }
     void NoteSelf(const std::string& endpoint) { m_self = endpoint; }
+    /** Upsert a locally seeded catalog hint so Advertise can introduce this node. */
+    void NoteLocal(const ProviderHint& hint);
 
 private:
     std::string m_self;
