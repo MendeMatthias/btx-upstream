@@ -752,6 +752,9 @@ void ModelNetPage::runModelSearch()
     case 3:
         scope = "LOCAL";
         break;
+    case 4:
+        method = "getrecentreleases";
+        break;
     case 0:
     default:
         scope = "NETWORK";

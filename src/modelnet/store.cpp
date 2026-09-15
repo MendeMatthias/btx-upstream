@@ -325,20 +325,50 @@ void ModelStore::SetQuotaBytes(uint64_t bytes)
 
 void ModelStore::EvictUnpinned()
 {
-    const fs::path tmp = m_root / "tmp";
-    if (!fs::exists(tmp)) return;
     std::error_code ec;
     const auto now = std::chrono::file_clock::now();
-    for (auto it = std::filesystem::directory_iterator(tmp, ec), end = std::filesystem::directory_iterator();
-         it != end && !ec; it.increment(ec)) {
-        if (!it->is_regular_file(ec) || ec) continue;
-        const auto ftime = std::filesystem::last_write_time(it->path(), ec);
-        if (ec) continue;
-        const auto age = std::chrono::duration_cast<std::chrono::hours>(now - ftime);
-        if (age.count() >= 24) {
-            std::filesystem::remove(it->path(), ec);
+    const fs::path tmp = m_root / "tmp";
+    if (fs::exists(tmp)) {
+        for (auto it = std::filesystem::directory_iterator(tmp, ec), end = std::filesystem::directory_iterator();
+             it != end && !ec; it.increment(ec)) {
+            if (!it->is_regular_file(ec) || ec) continue;
+            const auto ftime = std::filesystem::last_write_time(it->path(), ec);
+            if (ec) continue;
+            const auto age = std::chrono::duration_cast<std::chrono::hours>(now - ftime);
+            if (age.count() >= 24) {
+                std::filesystem::remove(it->path(), ec);
+            }
         }
     }
+    const fs::path arts = m_root / "artifacts";
+    if (fs::exists(arts)) {
+        for (auto it = std::filesystem::directory_iterator(arts, ec), end = std::filesystem::directory_iterator();
+             it != end && !ec; it.increment(ec)) {
+            if (!it->is_directory(ec) || ec) continue;
+            const std::string hex = fs::PathToString(it->path().filename());
+            if (m_pinned.count(hex)) continue;
+            const auto ftime = std::filesystem::last_write_time(it->path(), ec);
+            if (ec) continue;
+            const auto age = std::chrono::duration_cast<std::chrono::hours>(now - ftime);
+            if (age.count() < 24) continue;
+            bool any_piece = false;
+            std::error_code rec_ec;
+            for (auto rit = std::filesystem::recursive_directory_iterator(it->path(), rec_ec),
+                 rend = std::filesystem::recursive_directory_iterator();
+                 rit != rend && !rec_ec; rit.increment(rec_ec)) {
+                if (!rit->is_regular_file(rec_ec) || rec_ec) continue;
+                const std::string name = fs::PathToString(rit->path().filename());
+                if (name.size() >= 6 && name.compare(name.size() - 6, 6, ".piece") == 0) {
+                    any_piece = true;
+                    break;
+                }
+            }
+            if (!any_piece) {
+                std::filesystem::remove_all(it->path(), ec);
+            }
+        }
+    }
+    RecountUsed();
 }
 
 bool ModelStore::ListCommittedPieces(const Digest48& artifact, uint32_t file_index, std::vector<uint32_t>& out) const

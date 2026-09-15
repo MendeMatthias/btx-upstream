@@ -24,6 +24,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstring>
+#include <chrono>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -152,11 +153,36 @@ BOOST_AUTO_TEST_CASE(pin_a_survives_restart)
         const auto imported = ImportTiny(cat, tmp / "src", 0x21, true);
         id = imported.model_id;
         BOOST_CHECK(imported.pinned);
+        BOOST_CHECK(cat.Store().IsPinned(imported.artifact_id));
     }
     modelnet::ModelCatalog resumed{tmp, 1 << 20};
     modelnet::CatalogEntry found;
     BOOST_REQUIRE(resumed.Find(id, found));
     BOOST_CHECK(found.pinned);
+    BOOST_CHECK(resumed.Store().IsPinned(found.artifact_id));
+}
+
+BOOST_AUTO_TEST_CASE(store_gc_removes_only_empty_unpinned_artifacts)
+{
+    const fs::path tmp = m_path_root / "store-gc";
+    modelnet::ModelStore store{tmp, 1 << 20};
+    modelnet::Digest48 id;
+    id.data[0] = 0x42;
+    const fs::path empty = tmp / "artifacts" / id.Hex().c_str();
+    fs::create_directories(empty);
+    std::filesystem::last_write_time(
+        empty, std::filesystem::file_time_type::clock::now() - std::chrono::hours(48));
+
+    store.EvictUnpinned();
+    BOOST_CHECK(!fs::exists(empty));
+
+    fs::create_directories(empty);
+    std::filesystem::last_write_time(
+        empty, std::filesystem::file_time_type::clock::now() - std::chrono::hours(48));
+    std::string err;
+    BOOST_REQUIRE(store.Pin(id, err));
+    store.EvictUnpinned();
+    BOOST_CHECK(fs::exists(empty));
 }
 
 BOOST_AUTO_TEST_CASE(pin_f_unpin_makes_eligible)

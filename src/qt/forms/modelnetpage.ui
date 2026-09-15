@@ -145,6 +145,11 @@
            <string>Local</string>
           </attribute>
          </widget>
+         <widget class="QWidget" name="tabScopeReleases">
+          <attribute name="title">
+           <string>Releases</string>
+          </attribute>
+         </widget>
         </widget>
        </item>
        <item>

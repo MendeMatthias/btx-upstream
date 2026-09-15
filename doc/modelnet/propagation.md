@@ -58,12 +58,16 @@ artifacts only. A local-only download (`-modelseed=off`) is not advertised.
 
 When the working budget is exceeded, unpinned **common** replicas (many
 observed sources) go first. Rare seeded copies rank higher. Pinned copies
-are never deleted by this path.
+are never deleted by this path. The store garbage collector also removes
+aged temporary files and empty unpinned artifact directories, then recounts
+usage; it does not delete a non-empty artifact behind the catalog's quota
+and admission policy.
 
-## GUI copy (first-run) — out of scope
+## GUI copy (first-run)
 
-Addendum §2.3 recommends this first-run copy. Qt pages are **out of
-scope** in this tree; set the same fields with CLI flags above.
+The Qt Models page and first-run resource controls expose the same policy
+without requiring a terminal when a GUI build is used. Headless and
+standalone helper deployments set the same fields with the CLI flags above.
 
 ```
 Model Network Storage

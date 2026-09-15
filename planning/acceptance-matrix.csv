@@ -254,6 +254,7 @@ SHARD-08,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_08_three_disjoin
 SHARD-14,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_14_15_17_partial_ranges
 SHARD-19,HOSTING,PASS,contrib/modelnet/e2e-shard19.sh BTX_SHARD19=1 granite replica 13888336427 bytes 2026-09-15
 E2E-28,HOSTING,PASS,contrib/modelnet/e2e-hosting-abc.sh stock C retrieve+pin+restart
+E2E-28-3HOST,HOSTING,PASS,contrib/modelnet/e2e-regtest-three-host.sh isolated regtest seeder/fetcher/native Darwin third; Linux pair + third retrieve, demand-seed, production PID watch 2026-09-15
 APPLE-PKG,HOSTING,PASS,contrib/modelnet/e2e-apple-pkg-recipe.sh macdeploy+CMake Darwin recipe 2026-09-15; .pkg artifact not produced (not Darwin)
 IS_RELEASE,HOSTING,NOT_RUN,CLIENT_VERSION_IS_RELEASE stays false until operator flips after remaining gates
 SWARM-RF-01,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_01_rare_before_common
@@ -405,7 +406,7 @@ SEARCH-SCALE-100K,SEARCH,PASS,contrib/modelnet/e2e-search-scale.sh BTX_SEARCH_SC
 SEARCH-CHAOS,SEARCH,PASS,contrib/modelnet/e2e-search-chaos.sh BTX_SEARCH_CHAOS=1 LOCAL after indexer SIGTERM; coverage.complete=false
 SEARCH-CREATOR-E2E,SEARCH,PASS,contrib/modelnet/e2e-search-creator.sh publishmodelsearchrecord + LOCAL search; GUI Publish tab src/qt/modelnetpage.cpp
 SEARCH-RELEASE-E2E,SEARCH,PASS,contrib/modelnet/e2e-search-release.sh createmodelrelease + getrecentreleases 2026-09-15
-SEARCH-GUI-GATE,SEARCH,PASS,contrib/modelnet/e2e-gui-gates.sh search-first+Details+Publish; BUILD_GUI=OFF so btx-qt binary not in this tree
+SEARCH-GUI-GATE,SEARCH,PASS,contrib/modelnet/e2e-gui-gates.sh search-first+Details+Publish+Releases; BUILD_GUI=OFF so btx-qt binary not in this tree
 SEARCH-API-REF,SEARCH,PASS,contrib/modelnet/reference-directory-client unix RPC only; e2e used searchmodels/importmodelindex
 SEARCH-BRIDGE-API,SEARCH,PASS,src/test/modelnet_bridge_tests.cpp GET /api/v1 stubs; not authoritative
 SEARCH-MODELNET-OFF,SEARCH,PASS,contrib/modelnet/check-with-modelnet-off.sh 8/8 2026-09-15

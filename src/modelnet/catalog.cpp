@@ -472,6 +472,7 @@ bool ModelCatalog::LoadLocked(std::string& err)
         if (e.pinned) {
             std::string pin_err;
             m_store.Pin(e.model_id, pin_err);
+            m_store.Pin(e.artifact_id, pin_err);
         }
         m_models.push_back(std::move(e));
     }
@@ -582,6 +583,7 @@ bool ModelCatalog::ImportPath(const std::string& path, bool pin, CatalogEntry& o
     if (pin) {
         std::string pin_err;
         m_store.Pin(model_id, pin_err);
+        m_store.Pin(artifact_id, pin_err);
     }
     DemandSeedLocked(out);
     m_models.push_back(out);
@@ -617,8 +619,10 @@ bool ModelCatalog::PinModel(const Digest48& model_id, bool on, std::string& err)
                 m.admission = AdmissionLevel::PINNED;
                 std::string pin_err;
                 m_store.Pin(m.model_id, pin_err);
+                m_store.Pin(m.artifact_id, pin_err);
             } else {
                 m_store.Unpin(m.model_id);
+                m_store.Unpin(m.artifact_id);
                 if (m.seeded) m.admission = AdmissionLevel::SEEDING;
                 else m.admission = AdmissionLevel::STRUCTURE_VERIFIED;
             }

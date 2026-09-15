@@ -3148,9 +3148,17 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         std::lock_guard<std::mutex> lock(g_search_mu);
         IngestCatalogIntoSearch(cat);
         SearchQuery q;
-        if (Arg(0).isObject()) ParseSearchQuery(Arg(0), q, err);
-        if (method == "getnewmodels" || method == "browsemodels") q.sort = SearchSort::NEWEST;
+        if (Arg(0).isObject()) {
+            if (!ParseSearchQuery(Arg(0), q, err)) {
+                err_code = "INVALID_PARAMS";
+                return false;
+            }
+        }
+        if (method == "getnewmodels") q.sort = SearchSort::NEWEST;
         if (method == "gettrendingmodels") q.sort = SearchSort::PROVIDERS;
+        if (method == "browsemodels" && (!Arg(0).isObject() || !Arg(0).exists("sort"))) {
+            q.sort = SearchSort::AVAILABILITY;
+        }
         if (method == "getsimilarmodels" && Arg(0).isObject()) {
             if (Arg(0).exists("family")) q.filters.family = Arg(0)["family"].get_str();
         }

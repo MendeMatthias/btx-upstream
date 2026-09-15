@@ -11,9 +11,11 @@ grep -n 'onResultDetails' "$ROOT/src/qt/modelnetpage.cpp" >/dev/null || die "Det
 grep -n 'getmodeldirectoryentry' "$ROOT/src/qt/modelnetpage.cpp" >/dev/null || die "Details RPC missing"
 grep -n 'publishmodelsearchrecord' "$ROOT/src/qt/modelnetpage.cpp" >/dev/null || die "creator publish RPC missing"
 grep -n 'onPublishSearchRecord' "$ROOT/src/qt/modelnetpage.cpp" >/dev/null || die "creator slot missing"
+grep -n 'getrecentreleases' "$ROOT/src/qt/modelnetpage.cpp" >/dev/null || die "release discovery RPC missing"
 grep -n 'publishButton' "$ROOT/src/qt/forms/modelnetpage.ui" >/dev/null || die "Publish button missing in .ui"
 grep -n 'Publish search record' "$ROOT/src/qt/forms/modelnetpage.ui" >/dev/null || die "Publish label missing"
 grep -n 'Search open models' "$ROOT/src/qt/forms/modelnetpage.ui" >/dev/null || die "search-first placeholder missing"
+grep -n 'name="tabScopeReleases"' "$ROOT/src/qt/forms/modelnetpage.ui" >/dev/null || die "Releases tab missing"
 grep -n 'getresourcegovernorinfo' "$ROOT/src/qt/modelnetpage.cpp" >/dev/null || die "governor status RPC missing"
 grep -n 'getSpareResourcesChecked' "$ROOT/src/qt/intro.cpp" >/dev/null || die "intro spare-resources getter missing"
 grep -n 'getMiningIdleChecked' "$ROOT/src/qt/intro.cpp" >/dev/null || die "intro mining-idle getter missing"
@@ -34,10 +36,14 @@ if "onPublishSearchRecord" not in page:
     raise SystemExit("onPublishSearchRecord missing")
 if "publishmodelsearchrecord" not in page:
     raise SystemExit("publish RPC missing")
+if "getrecentreleases" not in page:
+    raise SystemExit("release discovery RPC missing")
 if "getresourcegovernorinfo" not in page:
     raise SystemExit("governor RPC missing")
 if "publishButton" not in ui:
     raise SystemExit("publishButton missing in ui")
+if 'name="tabScopeReleases"' not in ui:
+    raise SystemExit("Releases tab missing in ui")
 if 'ForceSetArg("-resourcegovernor"' not in btc:
     raise SystemExit("bitcoin.cpp missing resourcegovernor ForceSetArg")
 print("GUI source contract: search-first + Details + Publish + governor")
