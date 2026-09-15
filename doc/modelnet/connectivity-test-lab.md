@@ -3,8 +3,9 @@
 Real NAT topologies live in `contrib/modelnet/e2e-connectivity-lab.sh`.
 
 The script uses Linux network namespaces when `CAP_NET_ADMIN` is
-available. Without it, only the loopback PUBLIC↔PUBLIC stand-in runs
-and the remaining topologies stay `NOT_RUN`.
+available. Without it, loopback PUBLIC stand-in (A), IPv6 `::1` (H),
+and roam (G, via `e2e-combined-20.sh`) still run. Topologies B–F stay
+`NOT_RUN`.
 
 Never point this lab at production `btxd`, attestors, or public IPs.
 

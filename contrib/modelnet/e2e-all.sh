@@ -64,8 +64,29 @@ MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-shard-disjoint.sh" || die "e2e-shar
 step "16/17 swarm three-peer RPC"
 MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-swarm-three-peer.sh" || die "e2e-swarm-three-peer"
 
-step "17/17 connectivity lab (loopback; netns optional)"
+step "17/17 connectivity lab (loopback + IPv6; netns optional)"
 MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-connectivity-lab.sh" || die "e2e-connectivity-lab"
+
+step "search directory"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-search-directory.sh" || die "e2e-search-directory"
+
+step "search live PQ1 fanout + slow-peer timeout"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-search-net.sh" || die "e2e-search-net"
+
+step "search release campaign RPC"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-search-release.sh" || die "e2e-search-release"
+
+step "search chaos"
+BTX_SEARCH_CHAOS=1 MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-search-chaos.sh" || die "e2e-search-chaos"
+
+step "combined swarm+connectivity 20-step"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-combined-20.sh" || die "e2e-combined-20"
+
+step "governor concurrent retrieve"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-gov-retrieve.sh" || die "e2e-gov-retrieve"
+
+step "WITH_MODELNET=OFF + governor"
+"$ROOT/contrib/modelnet/check-with-modelnet-off.sh" || die "check-with-modelnet-off"
 
 if [[ -x /usr/bin/google-chrome ]]; then
   step "optional web bridge"
@@ -87,4 +108,6 @@ echo "Two-host: contrib/modelnet/e2e-regtest-two-host.sh"
 echo "Three-host: contrib/modelnet/e2e-regtest-three-host.sh"
 echo "Cross-host inspect: contrib/modelnet/e2e-cross-host-inspect.sh"
 echo "CUDA on a dedicated workstation: CUDA_HOST=... contrib/modelnet/cuda-isolated-e2e.sh"
+echo "13.8 GiB (opt-in, disk-backed): BTX_SHARD19=1 contrib/modelnet/e2e-shard19.sh"
+echo "Search scale: BTX_SEARCH_SCALE_RUN=1 contrib/modelnet/e2e-search-scale.sh"
 exit 0

@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <map>
+#include <vector>
 
 namespace modelnet {
 namespace {
@@ -930,9 +932,69 @@ UniValue SearchResponseJson(const std::string& query_id, const std::string& resp
     UniValue arr(UniValue::VARR);
     for (const auto& h : hits) arr.push_back(SearchResultCard(h));
     o.pushKV("results", arr);
+    UniValue recs(UniValue::VARR);
+    for (const auto& h : hits) recs.push_back(SearchRecordToJson(h.rec));
+    o.pushKV("records", recs);
     o.pushKV("truncated", truncated);
     o.pushKV("coverage_hint", "incomplete");
     return o;
+}
+
+bool SearchPeerTimedOut(int64_t elapsed_ms, int timeout_ms)
+{
+    return elapsed_ms >= timeout_ms;
+}
+
+void NoteSearchPeerTimeout(SearchCoverage& cov)
+{
+    cov.timed_out += 1;
+    cov.complete = false;
+}
+
+bool SearchHitFromCard(const UniValue& card, SearchHit& out, std::string& err)
+{
+    out = {};
+    if (!card.isObject() || !card.exists("model_id") || !card["model_id"].isStr()) {
+        err = "card";
+        return false;
+    }
+    if (!Digest48::FromHex(card["model_id"].get_str(), out.rec.model_id, err)) return false;
+    if (card.exists("artifact_id") && card["artifact_id"].isStr() && !card["artifact_id"].get_str().empty()) {
+        if (!Digest48::FromHex(card["artifact_id"].get_str(), out.rec.artifact_id, err)) return false;
+    }
+    if (card.exists("name") && card["name"].isStr()) {
+        out.rec.display_name = card["name"].get_str();
+        out.rec.canonical_name = out.rec.display_name;
+    }
+    if (card.exists("uri") && card["uri"].isStr()) out.rec.btx_uri = card["uri"].get_str();
+    out.provenance.push_back("peer");
+    return true;
+}
+
+void MergeRemoteSearchHits(SearchJob& job, std::vector<SearchHit> extra)
+{
+    std::map<std::string, SearchHit> merged;
+    for (auto& h : job.hits) merged[h.rec.model_id.Hex()] = std::move(h);
+    for (auto& h : extra) {
+        const std::string key = h.rec.model_id.Hex();
+        auto it = merged.find(key);
+        if (it == merged.end()) {
+            h.sources = 1;
+            merged[key] = std::move(h);
+        } else {
+            it->second.sources += 1;
+            it->second.provenance.insert(it->second.provenance.end(), h.provenance.begin(), h.provenance.end());
+        }
+    }
+    job.hits.clear();
+    for (auto& kv : merged) job.hits.push_back(std::move(kv.second));
+    std::sort(job.hits.begin(), job.hits.end(), [](const SearchHit& a, const SearchHit& b) {
+        return a.score > b.score;
+    });
+    if (job.q.limit > 0 && static_cast<int>(job.hits.size()) > job.q.limit) {
+        job.hits.resize(job.q.limit);
+    }
+    job.coverage.complete = false;
 }
 
 SearchJob SearchRuntime::Start(const SearchQuery& q, const std::vector<SearchIndex*>& extras, int64_t now_ms)

@@ -148,7 +148,27 @@ grep -q 'WITH_MODELNET=OFF' "$WORKDIR/stub_fail.log" \
   || fail "disabled_stub.h #error mentions WITH_MODELNET=OFF" "$(cat "$WORKDIR/stub_fail.log")"
 pass "disabled_stub.h #errors when ENABLE_MODELNET is set"
 
-# --- 5. This script did not invoke cmake (disk rule)
+# --- 5. Resource governor remains compiled when WITH_MODELNET=OFF
+grep -qF 'RegisterResourceGovernorRPCCommands' "$ROOT/src/rpc/register.h" \
+  || fail "src/rpc/register.h registers resource governor RPCs"
+if grep -n 'RegisterResourceGovernorRPCCommands' "$ROOT/src/rpc/register.h" | grep -q 'ENABLE_MODELNET'; then
+  fail "RegisterResourceGovernorRPCCommands must not sit behind ENABLE_MODELNET"
+fi
+pass "resource governor RPC registration is independent of ENABLE_MODELNET"
+
+grep -qF -- '-resourcegovernor' "$init" || fail "src/init.cpp documents -resourcegovernor"
+# The arg must appear after the modelnet #endif that closes the -model* block.
+gov_line=$(grep -n 'AddArg("-resourcegovernor' "$init" | head -1 | cut -d: -f1)
+mn_endif=$(awk '/AddArg\("-modeluploadlimit/{n=NR} n && /#endif/{print NR; exit}' "$init")
+[[ -n "$gov_line" && -n "$mn_endif" && "$gov_line" -gt "$mn_endif" ]] \
+  || fail "-resourcegovernor is declared outside ENABLE_MODELNET" "gov_line=$gov_line mn_endif=$mn_endif"
+pass "-resourcegovernor is declared outside ENABLE_MODELNET"
+
+grep -qF 'node/resource_governor.cpp' "$src_cm" \
+  || fail "src/CMakeLists.txt compiles node/resource_governor.cpp"
+pass "node/resource_governor.cpp is in bitcoin_common (not modelnet-only)"
+
+# --- 6. This script did not invoke cmake (disk rule)
 pass "did not invoke project cmake/ninja; /tmp probe dir removed on exit"
 
 printf '\n%d checks passed: WITH_MODELNET=OFF is the monetary-only build.\n' "$pass_n"

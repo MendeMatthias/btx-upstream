@@ -31,6 +31,7 @@ constexpr size_t SEARCH_PAGE_MAX = 100;
 constexpr int SEARCH_TTL_DEFAULT = 2;
 constexpr int SEARCH_TTL_MAX = 4;
 constexpr int SEARCH_FANOUT_MAX = 8;
+constexpr int SEARCH_PEER_TIMEOUT_MS = 1500;
 constexpr int SEARCH_TERMS_MAX = 16;
 constexpr size_t SEARCH_QUERY_BYTES_MAX = 4096;
 
@@ -266,6 +267,11 @@ bool ShouldForwardSearch(int ttl, int hop);
 SearchRequest ParseSearchRequest(const UniValue& o, std::string& err);
 UniValue SearchResponseJson(const std::string& query_id, const std::string& responder,
                              const std::vector<SearchHit>& hits, bool truncated);
+
+bool SearchPeerTimedOut(int64_t elapsed_ms, int timeout_ms = SEARCH_PEER_TIMEOUT_MS);
+void NoteSearchPeerTimeout(SearchCoverage& cov);
+void MergeRemoteSearchHits(SearchJob& job, std::vector<SearchHit> extra);
+bool SearchHitFromCard(const UniValue& card, SearchHit& out, std::string& err);
 
 class SearchRuntime {
     std::map<std::string, SearchJob> m_jobs;

@@ -57,17 +57,91 @@ kill -TERM "$PID_A" 2>/dev/null || true
 wait "$PID_A" 2>/dev/null || true
 note "A loopback helper: getmodelnetworkinfo exposes reachability_state (listen != PUBLIC)"
 
+# --- H. IPv6 loopback (::1) listen + retrieve (no netns required) ---
+DIR_H1="$SCRATCH/h1"
+DIR_H2="$SCRATCH/h2"
+rm -rf "$DIR_H1" "$DIR_H2"
+mkdir -p "$DIR_H1" "$DIR_H2" "$SCRATCH/hsrc"
+python3 - "$SCRATCH/hsrc/weights.safetensors" <<'PY'
+import json, struct, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+n = 32
+header = {"w": {"dtype": "F32", "shape": [n], "data_offsets": [0, n * 4]}}
+hb = json.dumps(header, separators=(",", ":")).encode()
+p.write_bytes(struct.pack("<Q", len(hb)) + hb + bytes(n * 4))
+PY
+PORTH="$(python3 - <<'PY'
+import socket
+s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("::1", 0))
+print(s.getsockname()[1]); s.close()
+PY
+)"
+"$BIN" -modeldir="$DIR_H1" -modelrpcsocket="$DIR_H1/modeld.sock" -modelbind="[::1]:$PORTH" -modelhost \
+  -modelstorage=8MiB >"$DIR_H1/modeld.log" 2>&1 &
+PID_H1=$!
+"$BIN" -modeldir="$DIR_H2" -modelrpcsocket="$DIR_H2/modeld.sock" -modelpeer="[::1]:$PORTH" \
+  -modelstorage=8MiB >"$DIR_H2/modeld.log" 2>&1 &
+PID_H2=$!
+python3 - "$DIR_H1/modeld.sock" "$DIR_H2/modeld.sock" "$PID_H1" "$PID_H2" "$SCRATCH/hsrc/weights.safetensors" "$ROOT/contrib/modelnet" <<'PY'
+import json, socket, sys
+from pathlib import Path
+sa, sb, pa, pb, src = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+sys.path.insert(0, sys.argv[6])
+from failfast import wait_unix, poll_job
+
+def rpc(sock, method, params, timeout=30):
+    s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(timeout)
+    s.connect(str(sock))
+    s.sendall(json.dumps({"jsonrpc":"1.0","id":1,"method":method,"params":params}).encode()+b"\n")
+    s.shutdown(socket.SHUT_WR)
+    data=b""
+    while True:
+        c=s.recv(65536)
+        if not c: break
+        data+=c
+        if b"\n" in data: break
+    s.close()
+    m=json.loads(data.decode())
+    if m.get("error"): raise SystemExit("%s: %s"%(method,m["error"]))
+    return m["result"]
+
+def ready(path, pid):
+    def c():
+        i=rpc(path,"getmodelnetworkinfo",[])
+        return i if i.get("helper_ready") else None
+    return wait_unix(c, timeout=25, pid=pid, log=path.parent/"modeld.log")
+ia=ready(sa, pa); ib=ready(sb, pb)
+if not ia.get("pq1_ready") or not ib.get("pq1_ready"):
+    raise SystemExit("H pq1 not ready")
+imp=rpc(sa,"importmodel",[src,{"pin":True}])
+got=rpc(sb,"getmodel",[imp["uri"],"FREE_ONLY"])
+if got.get("job_id"):
+    poll_job(lambda: rpc(sb,"getmodeljob",[got["job_id"]]), timeout=60, stall_s=30)
+elif got.get("status") not in ("retrieved","local"):
+    raise SystemExit("H retrieve %s"%got)
+print("H IPv6 ::1 retrieve ok", flush=True)
+PY
+kill -TERM "$PID_H1" "$PID_H2" 2>/dev/null || true
+wait "$PID_H1" "$PID_H2" 2>/dev/null || true
+note "H IPv6 loopback [::1] listen+retrieve PASS"
+
+# --- G. roam is executed by e2e-combined-20.sh (restart fetcher, pieces kept) ---
+note "G roam: see contrib/modelnet/e2e-combined-20.sh (restart same modeldir)"
+
 if ! ip netns list >/dev/null 2>&1; then
-  note "SKIP B-H: ip netns not available"
+  note "SKIP B-F: ip netns not available"
   note "NOT_RUN namespace topologies (cone/restricted/symmetric/double-NAT)"
   exit 0
 fi
 if ! ip netns add btx-conn-probe 2>/dev/null; then
-  note "SKIP B-H: CAP_NET_ADMIN missing (cannot create netns)"
-  note "NOT_RUN namespace topologies"
+  note "SKIP B-F: CAP_NET_ADMIN missing (cannot create netns)"
+  note "NOT_RUN namespace topologies B-F (private/public NAT, relay, bootstrap loss)"
   exit 0
 fi
 ip netns delete btx-conn-probe 2>/dev/null || true
-note "netns available; full NAT matrix not auto-applied in this session (manual nft rules)."
-note "NOT_RUN C-H until nft topologies are applied by an operator with CAP_NET_ADMIN."
+note "netns available; full NAT matrix B-F still needs nft MASQUERADE applied by this script."
+note "NOT_RUN B-F until nft topologies are auto-applied (this session cannot sudo)."
 exit 0

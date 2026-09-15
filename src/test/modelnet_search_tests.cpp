@@ -329,6 +329,20 @@ BOOST_AUTO_TEST_CASE(search_net_01_to_13)
     SearchJob st;
     BOOST_CHECK(rt.Status(job.query_id, st));
     BOOST_CHECK(rt.Cancel(job.query_id));
+
+    BOOST_CHECK(SearchPeerTimedOut(SEARCH_PEER_TIMEOUT_MS, SEARCH_PEER_TIMEOUT_MS));
+    BOOST_CHECK(SearchPeerTimedOut(SEARCH_PEER_TIMEOUT_MS + 1, SEARCH_PEER_TIMEOUT_MS));
+    BOOST_CHECK(!SearchPeerTimedOut(0, SEARCH_PEER_TIMEOUT_MS));
+    SearchCoverage cov;
+    NoteSearchPeerTimeout(cov);
+    BOOST_CHECK_EQUAL(cov.timed_out, 1);
+    BOOST_CHECK(!cov.complete);
+    SearchHit remote;
+    remote.rec = a;
+    remote.provenance = {"pex-peer"};
+    SearchJob jmerge = job;
+    MergeRemoteSearchHits(jmerge, {remote});
+    BOOST_CHECK_GE(jmerge.hits.size(), 1);
 }
 
 BOOST_AUTO_TEST_CASE(search_scale_unsigned_2k)

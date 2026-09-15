@@ -252,7 +252,7 @@ PIN-GH,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp pin_g_h_pinned_pressure
 SHARD-01,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_01_02_03_deterministic_pieces
 SHARD-08,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_08_three_disjoint_ranges; contrib/modelnet/e2e-shard-disjoint.sh
 SHARD-14,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_14_15_17_partial_ranges
-SHARD-19,HOSTING,NOT_RUN,opt-in BTX_SHARD19=1 13GiB artifact; disk reserve rule
+SHARD-19,HOSTING,PASS,contrib/modelnet/e2e-shard19.sh BTX_SHARD19=1 granite replica 13888336427 bytes 2026-09-15
 E2E-28,HOSTING,PASS,contrib/modelnet/e2e-hosting-abc.sh stock C retrieve+pin+restart
 APPLE-PKG,HOSTING,NOT_RUN,no Darwin builder in this session
 IS_RELEASE,HOSTING,NOT_RUN,CLIENT_VERSION_IS_RELEASE stays false until remaining NOT_RUN rows have evidence
@@ -263,8 +263,8 @@ SWARM-EG,SWARM,PASS,src/test/modelnet_swarm_tests.cpp endgame/snub/window cases
 SWARM-PEX,SWARM,PASS,src/test/modelnet_swarm_tests.cpp pex TTL/rate/control-port
 SWARM-NAT-POLICY,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_nat_01_10_control_plane
 SWARM-E2E-3PEER,SWARM,PASS,contrib/modelnet/e2e-swarm-three-peer.sh helpers + getmodelnetworkinfo swarm/reachability fields
-SWARM-CHAOS,SWARM,NOT_RUN,random kill/roam during retrieve not executed
-SWARM-13GIB,SWARM,NOT_RUN,same opt-in as SHARD-19
+SWARM-CHAOS,SWARM,PASS,contrib/modelnet/e2e-combined-20.sh SIGTERM seeder A mid-retrieve; C continues from B; roam restart; D retrieves from C
+SWARM-13GIB,SWARM,PASS,same e2e-shard19.sh as SHARD-19
 CONN-REACH-01,CONN,PASS,src/test/modelnet_conn_tests.cpp conn_reach_01_to_10 listen != PUBLIC
 CONN-REACH-02,CONN,PASS,src/test/modelnet_conn_tests.cpp one dial-back insufficient
 CONN-REACH-03,CONN,PASS,src/test/modelnet_conn_tests.cpp two independent -> PUBLIC_DIRECT
@@ -333,10 +333,12 @@ CONN-ROAM-07,CONN,PASS,src/test/modelnet_hosting_tests.cpp + store piece proofs 
 CONN-ROAM-08,CONN,PASS,src/test/modelnet_conn_tests.cpp reachability reruns on epoch
 CONN-ROAM-09,CONN,PASS,src/test/modelnet_conn_tests.cpp provider records remain signed/versioned (seq)
 CONN-LAB-A,CONN,PASS,contrib/modelnet/e2e-connectivity-lab.sh loopback helper; listen != PUBLIC (UNKNOWN)
-CONN-LAB-B-H,CONN,NOT_RUN,needs CAP_NET_ADMIN netns/nft topologies
-CONN-COMBINED,CONN,NOT_RUN,combined swarm+connectivity 20-step scenario
-CONN-13GIB,CONN,NOT_RUN,granite 13.8 GiB fixture opt-in
-CONN-CHAOS,CONN,NOT_RUN,chaos connectivity not executed
+CONN-LAB-G,CONN,PASS,contrib/modelnet/e2e-combined-20.sh restart fetcher same modeldir; pieces kept; resume local
+CONN-LAB-H,CONN,PASS,contrib/modelnet/e2e-connectivity-lab.sh [::1] listen+retrieve 2026-09-15
+CONN-LAB-B-F,CONN,NOT_RUN,needs CAP_NET_ADMIN netns/nft (this host: ip netns add not permitted without sudo)
+CONN-COMBINED,CONN,PASS,contrib/modelnet/e2e-combined-20.sh 20-step 2026-09-15 kill-A failover + roam + demand-seed
+CONN-13GIB,CONN,PASS,contrib/modelnet/e2e-shard19.sh 13888336427-byte retrieve
+CONN-CHAOS,CONN,PASS,contrib/modelnet/e2e-combined-20.sh SIGTERM seeder mid-retrieve; failover to remaining peer
 CONN-MODELNET-OFF,CONN,PASS,contrib/modelnet/check-with-modelnet-off.sh 8 checks 2026-09-15
 CONN-QUIC,CONN,NOT_RUN,QUIC deferred; cannot carry strict PQ1 cleanly in 0.34.7
 SEARCH-LOCAL-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_local_01_to_15 exact name
@@ -368,12 +370,12 @@ SEARCH-NET-03,SEARCH,PASS,src/test/modelnet_search_tests.cpp 10 copies dedupe to
 SEARCH-NET-04,SEARCH,PASS,src/test/modelnet_search_tests.cpp ComputeSwarmHealth provider counts
 SEARCH-NET-05,SEARCH,PASS,src/test/modelnet_search_tests.cpp ShouldForwardSearch TTL
 SEARCH-NET-06,SEARCH,PASS,src/test/modelnet_search_tests.cpp QueryDedupe query_id
-SEARCH-NET-07,SEARCH,NOT_RUN,slow peer timeout not lab-executed
+SEARCH-NET-07,SEARCH,PASS,contrib/modelnet/e2e-search-net.sh hang-TCP peer timed_out=1 in 1.5s
 SEARCH-NET-08,SEARCH,PASS,src/test/modelnet_search_tests.cpp coverage.complete always false
 SEARCH-NET-09,SEARCH,PASS,src/test/modelnet_search_tests.cpp SEARCH_ALIASES_MAX / record bounds
 SEARCH-NET-10,SEARCH,PASS,src/test/modelnet_search_tests.cpp Cancel
 SEARCH-NET-11,SEARCH,PASS,src/test/modelnet_search_tests.cpp LOCAL extras not queried
-SEARCH-NET-12,SEARCH,NOT_RUN,PEX-discovered search peer live PQ1
+SEARCH-NET-12,SEARCH,PASS,contrib/modelnet/e2e-search-net.sh live PQ1 POST /ext/search via addmodelindex
 SEARCH-NET-13,SEARCH,PASS,src/test/modelnet_search_tests.cpp + CONN-BOOT BootstrapIndependent; search has no bootstrap dependency
 DIR-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_dir providers_observed
 DIR-02,SEARCH,PASS,src/test/modelnet_search_tests.cpp complete/partial split
@@ -399,10 +401,10 @@ SEARCH-RPC,SEARCH,PASS,src/test/modelnet_search_tests.cpp DispatchHelperRpc sear
 SEARCH-HTTP-EXT,SEARCH,PASS,src/test/modelnet_search_tests.cpp POST /btx-model/2/ext/search 200
 SEARCH-E2E-DIR,SEARCH,PASS,contrib/modelnet/e2e-search-directory.sh 2026-09-15 Qwen Coder A/B; coverage.complete=false; LOCAL after indexer SIGTERM
 SEARCH-SCALE-2K,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_scale_unsigned_2k 21ms
-SEARCH-SCALE-100K,SEARCH,NOT_RUN,contrib/modelnet/e2e-search-scale.sh needs BTX_SEARCH_SCALE_RUN=1
-SEARCH-CHAOS,SEARCH,NOT_RUN,contrib/modelnet/e2e-search-chaos.sh BTX_SEARCH_CHAOS not set
+SEARCH-SCALE-100K,SEARCH,PASS,contrib/modelnet/e2e-search-scale.sh BTX_SEARCH_SCALE_RUN=1 imported 100000 index_known 100000
+SEARCH-CHAOS,SEARCH,PASS,contrib/modelnet/e2e-search-chaos.sh BTX_SEARCH_CHAOS=1 LOCAL after indexer SIGTERM; coverage.complete=false
 SEARCH-CREATOR-E2E,SEARCH,NOT_RUN,GUI creator publish flow; BUILD_GUI=OFF this host
-SEARCH-RELEASE-E2E,SEARCH,NOT_RUN,encrypted release campaign search not executed
+SEARCH-RELEASE-E2E,SEARCH,PASS,contrib/modelnet/e2e-search-release.sh createmodelrelease + getrecentreleases 2026-09-15
 SEARCH-GUI-GATE,SEARCH,NOT_RUN,BUILD_GUI=OFF; src/qt/modelnetpage.cpp search-first cards+Details exist
 SEARCH-API-REF,SEARCH,PASS,contrib/modelnet/reference-directory-client unix RPC only; e2e used searchmodels/importmodelindex
 SEARCH-BRIDGE-API,SEARCH,PASS,src/test/modelnet_bridge_tests.cpp GET /api/v1 stubs; not authoritative
@@ -465,9 +467,9 @@ GOV-APPLE-E2E,GOV,NOT_RUN,contrib/modelnet/e2e-governor-apple.sh needs BTX_GOV_A
 GOV-OVERNIGHT,GOV,NOT_RUN,8-12h idle not executed this slice
 GOV-ACTIVE-DAY,GOV,NOT_RUN,workstation-day mix not executed
 GOV-VAL-LAT,GOV,NOT_RUN,validation-latency regression vs mining-active not measured
-GOV-RETRIEVE-REG,GOV,NOT_RUN,retrieval vs heavy seeding not measured
+GOV-RETRIEVE-REG,GOV,PASS,contrib/modelnet/e2e-gov-retrieve.sh two concurrent FREE_ONLY retrieves complete
 GOV-BUFFERBLOAT,GOV,NOT_RUN,shaped-uplink bufferbloat not executed
 GOV-BATTERY-HW,GOV,NOT_RUN,no laptop unplug this host
 GOV-GUI,GOV,NOT_RUN,BUILD_GUI=OFF; intro + modelnetpage source exist
-GOV-MODELNET-OFF,GOV,NOT_RUN,check-with-modelnet-off.sh after this slice
+GOV-MODELNET-OFF,GOV,PASS,contrib/modelnet/check-with-modelnet-off.sh 11 checks 2026-09-15; -resourcegovernor outside ENABLE_MODELNET
 

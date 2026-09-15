@@ -112,7 +112,7 @@ while imported_total < target:
     records = []
     for i in range(n):
         t = tag + i
-        mid = f"{(t & 0xFF):02x}{(t >> 8) & 0xFF:02x}" + "00" * 46
+        mid = f"{t:096x}"
         records.append(
             {
                 "type": "btx-model-search-v1",
@@ -135,7 +135,7 @@ while imported_total < target:
 stats = rpc("getnetworkmodelstats", [])
 known = int(stats.get("search_records_known", stats.get("models_known", 0)))
 print("E2E_SEARCH_SCALE imported_total", imported_total, "index_known", known)
-if known < min(imported_total, target) // 2:
+if known < min(imported_total, target):
     raise SystemExit(f"index size suspicious: known={known} imported={imported_total}")
 print("E2E_SEARCH_SCALE PASS")
 PY

@@ -170,18 +170,11 @@ int AddrConnectPreference(const sockaddr* sa)
 
 bool SplitHostPort(const std::string& in, std::string& host, uint16_t& port)
 {
-    const auto colon = in.rfind(':');
-    if (colon == std::string::npos) return false;
-    host = in.substr(0, colon);
-    try {
-        const int p = std::stoi(in.substr(colon + 1));
-        if (p <= 0 || p > 65535) return false;
-        port = static_cast<uint16_t>(p);
-    } catch (...) {
-        return false;
+    if (SplitListenBind(in, host, port)) {
+        if (host.empty()) host = "0.0.0.0";
+        return true;
     }
-    if (host.empty()) host = "0.0.0.0";
-    return true;
+    return false;
 }
 
 void SetListenOpts(int fd)
@@ -550,27 +543,48 @@ int ListenTcp(const std::string& bind, std::string& err)
         err = "invalid -modelbind";
         return -1;
     }
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    const bool v6 = host.find(':') != std::string::npos;
+    const int fd = ::socket(v6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         err = "socket";
         return -1;
     }
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (host == "0.0.0.0") {
-        addr.sin_addr.s_addr = INADDR_ANY;
-    } else if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-        err = "bind host";
-        close(fd);
-        return -1;
-    }
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(fd, 16) != 0) {
-        err = "bind/listen failed";
-        close(fd);
-        return -1;
+    if (v6) {
+        int v6only = 1;
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+        sockaddr_in6 addr{};
+        addr.sin6_family = AF_INET6;
+        addr.sin6_port = htons(port);
+        if (host == "::" || host == "::0") {
+            addr.sin6_addr = in6addr_any;
+        } else if (inet_pton(AF_INET6, host.c_str(), &addr.sin6_addr) != 1) {
+            err = "bind host";
+            close(fd);
+            return -1;
+        }
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(fd, 16) != 0) {
+            err = "bind/listen failed";
+            close(fd);
+            return -1;
+        }
+    } else {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(port);
+        if (host == "0.0.0.0") {
+            addr.sin_addr.s_addr = INADDR_ANY;
+        } else if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+            err = "bind host";
+            close(fd);
+            return -1;
+        }
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(fd, 16) != 0) {
+            err = "bind/listen failed";
+            close(fd);
+            return -1;
+        }
     }
     SetListenOpts(fd);
     return fd;
@@ -677,6 +691,8 @@ struct Pq1Session {
     uint16_t port{0};
     fs::path pinfile;
     std::atomic<bool>* stop{nullptr};
+    int handshake_ms{PQ1_HANDSHAKE_MS};
+    int io_ms{PQ1_IDLE_MS};
     bool outbound_held{false};
     std::vector<std::pair<std::string, std::string>> piece_headers;
 
@@ -782,7 +798,7 @@ struct Pq1Session {
                 continue;
             }
             std::string werr;
-            if (!WaitFd(fd, true, PQ1_HANDSHAKE_MS, stop, werr)) {
+            if (!WaitFd(fd, true, handshake_ms, stop, werr)) {
                 last_try_err = werr.empty() ? "connect failed" : werr;
                 continue;
             }
@@ -802,7 +818,7 @@ struct Pq1Session {
             SSL_set_fd(ssl, fd);
             SSL_set_connect_state(ssl);
             std::string herr;
-            if (!SslHandshake(ssl, fd, /*accept=*/false, PQ1_HANDSHAKE_MS, stop, herr)) {
+            if (!SslHandshake(ssl, fd, /*accept=*/false, handshake_ms, stop, herr)) {
                 last_try_err = herr.empty() ? "PQ1 handshake failed" : herr;
                 continue;
             }
@@ -850,7 +866,7 @@ struct Pq1Session {
         }
         wire += "Content-Length: " + std::to_string(req.body.size()) + "\r\nConnection: keep-alive\r\n\r\n";
         wire += req.body;
-        const int wto = req.path.find("/pieces/") != std::string::npos ? PQ1_TRANSFER_MS : PQ1_IDLE_MS;
+        const int wto = req.path.find("/pieces/") != std::string::npos ? PQ1_TRANSFER_MS : io_ms;
         if (!SslWriteAll(ssl, fd, wire, wto, stop, err)) {
             if (err.empty()) err = "write failed";
             Close();
@@ -870,6 +886,41 @@ struct Pq1Session {
         return true;
     }
 };
+
+bool QuerySearchPeer(Pq1Context& pq, const fs::path& pinfile, const std::string& endpoint,
+                     const UniValue& query_body, UniValue& out, bool& timed_out, std::string& err)
+{
+    timed_out = false;
+    std::string host;
+    uint16_t port = 0;
+    if (!SplitHostPort(endpoint, host, port)) {
+        err = "endpoint";
+        return false;
+    }
+    Pq1Session sess;
+    sess.pinfile = pinfile;
+    sess.handshake_ms = SEARCH_PEER_TIMEOUT_MS;
+    sess.io_ms = SEARCH_PEER_TIMEOUT_MS;
+    if (!sess.Connect(pq, host, port, err)) {
+        timed_out = true;
+        return false;
+    }
+    NativeRequest req;
+    NativeResponse resp;
+    req.method = "POST";
+    req.path = std::string(MODEL_HTTP_ROOT) + "ext/search";
+    req.body = query_body.write();
+    if (!sess.Request(req, resp, err) || resp.status != 200) {
+        timed_out = true;
+        if (err.empty()) err = "search peer http";
+        return false;
+    }
+    if (!out.read(resp.body) || !out.isObject()) {
+        err = "search peer json";
+        return false;
+    }
+    return true;
+}
 
 Digest48 IdFromUser(const std::string& s, std::string& err)
 {
@@ -1016,7 +1067,15 @@ void IngestCatalogIntoSearch(ModelCatalog& cat)
         if (m.exists("bytes")) r.size_bytes = m["bytes"].getInt<int64_t>();
         r.signed_ok = false;
         err.clear();
-        (void)g_search_idx.Put(r, ConnNowMs(), err);
+        if (const auto* existing = g_search_idx.Get(r.model_id)) {
+            if (existing->signed_ok || !existing->release_id.empty()) {
+                // Published/signed metadata wins over catalog filenames.
+            } else {
+                (void)g_search_idx.Put(r, ConnNowMs(), err);
+            }
+        } else {
+            (void)g_search_idx.Put(r, ConnNowMs(), err);
+        }
         if (m.exists("seeded") && m["seeded"].get_bool()) {
             auto& vec = g_search_obs[r.model_id.Hex()];
             vec.erase(std::remove_if(vec.begin(), vec.end(),
@@ -2348,6 +2407,15 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
             last_bytes = now_bytes;
             const bool transient = IsTransientPq1Error(last_err);
             const bool last_remaining = remaining_unfailed() <= 1;
+            const bool connect_class = last_err.find("connect failed") != std::string::npos ||
+                                        last_err.find("handshake") != std::string::npos;
+            // Another healthy contact exists: do not burn the 1024-try WAN
+            // retry budget on a dead seeder (SWARM-CHAOS / CONN-COMBINED).
+            if (transient && !last_remaining && (connect_class || transient_streak >= 2)) {
+                failed_peers.insert(peer);
+                transient_streak = 0;
+                continue;
+            }
             if (transient && (transient_streak < PQ1_PEER_TRANSIENT_TRIES || last_remaining)) {
                 job->progress.peer_retries.fetch_add(1);
                 ++transient_streak;
@@ -2666,7 +2734,80 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         }
         std::vector<SearchIndex*> extras;
         auto job = g_search_rt.Start(q, extras, ConnNowMs());
-        const int index_configured = static_cast<int>(g_search_idx.IndexPeers().size());
+        const std::vector<std::string> index_peers = g_search_idx.IndexPeers();
+        const int index_configured = static_cast<int>(index_peers.size());
+        std::vector<std::string> fanout;
+        auto add_ep = [&](const std::string& ep) {
+            if (ep.empty()) return;
+            if (!g_swarm.bind.empty() && (ep == g_swarm.bind || ep == "[" + g_swarm.bind + "]")) return;
+            if (std::find(fanout.begin(), fanout.end(), ep) != fanout.end()) return;
+            if (static_cast<int>(fanout.size()) >= SEARCH_FANOUT_MAX) return;
+            fanout.push_back(ep);
+        };
+        if (q.scope != SearchScope::LOCAL) {
+            for (const auto& p : index_peers) add_ep(p);
+            for (const auto& p : cat.Peers()) add_ep(p);
+        }
+        lock.unlock();
+        int index_queried = 0;
+        std::vector<UniValue> remote_records;
+        std::vector<SearchHit> remote_hits;
+        if (q.scope != SearchScope::LOCAL) {
+            {
+                std::lock_guard<std::mutex> plock(g_swarm.pex_mu);
+                for (const auto& h : g_swarm.pex.Recent(ConnNowMs())) add_ep(h.endpoint);
+            }
+            Pq1Context pq;
+            std::string tls_err;
+            const fs::path pinfile = HelperDir(cat) / "tls" / "pins.json";
+            const bool pq_ok = LoadPq1Identity(pq, HelperDir(cat), tls_err);
+            UniValue qbody(UniValue::VOBJ);
+            qbody.pushKV("text", q.text);
+            qbody.pushKV("limit", q.limit);
+            qbody.pushKV("ttl", SEARCH_TTL_DEFAULT);
+            qbody.pushKV("query_id", job.query_id);
+            qbody.pushKV("scope", "LOCAL");
+            for (const auto& ep : fanout) {
+                if (!pq_ok) {
+                    NoteSearchPeerTimeout(job.coverage);
+                    continue;
+                }
+                UniValue reply;
+                bool timed = false;
+                std::string perr;
+                const bool is_index = std::find(index_peers.begin(), index_peers.end(), ep) != index_peers.end();
+                if (QuerySearchPeer(pq, pinfile, ep, qbody, reply, timed, perr)) {
+                    job.coverage.responses_received += 1;
+                    if (is_index) ++index_queried;
+                    else job.coverage.connected_peers_queried += 1;
+                    if (reply.exists("records") && reply["records"].isArray()) {
+                        for (const auto& recj : reply["records"].getValues()) {
+                            if (recj.isObject()) remote_records.push_back(recj);
+                        }
+                    }
+                    if (reply.exists("results") && reply["results"].isArray()) {
+                        for (const auto& card : reply["results"].getValues()) {
+                            SearchHit hit;
+                            std::string herr;
+                            if (SearchHitFromCard(card, hit, herr)) {
+                                hit.provenance = {ep};
+                                remote_hits.push_back(std::move(hit));
+                            }
+                        }
+                    }
+                } else if (timed) {
+                    NoteSearchPeerTimeout(job.coverage);
+                }
+            }
+        }
+        lock.lock();
+        for (const auto& recj : remote_records) {
+            ModelSearchRecord rec;
+            std::string ierr;
+            if (!SearchRecordFromJson(recj, rec, ierr)) continue;
+            (void)g_search_idx.Put(rec, ConnNowMs(), ierr);
+        }
+        MergeRemoteSearchHits(job, std::move(remote_hits));
         lock.unlock();
         int routing_known = 0;
         std::map<std::string, std::vector<ProviderObservation>> extra_obs;
@@ -2709,7 +2850,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         UniValue cov(UniValue::VOBJ);
         cov.pushKV("local", true);
         cov.pushKV("connected_peers_queried", q.scope == SearchScope::LOCAL ? 0 : job.coverage.connected_peers_queried);
-        cov.pushKV("index_peers_queried", q.scope == SearchScope::LOCAL ? 0 : index_configured);
+        cov.pushKV("index_peers_queried", q.scope == SearchScope::LOCAL ? 0 : index_queried);
         cov.pushKV("index_peers_configured", index_configured);
         cov.pushKV("routing_peers_queried", q.scope == SearchScope::LOCAL ? 0 : std::min(routing_known, SEARCH_FANOUT_MAX));
         cov.pushKV("responses_received", job.coverage.responses_received);
@@ -3014,7 +3155,21 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         }
         const auto hits = g_search_idx.Search(q, ConnNowMs());
         UniValue arr(UniValue::VARR);
-        for (const auto& h : hits) arr.push_back(SearchResultCard(h));
+        std::map<std::string, std::string> campaign_ids;
+        if (method == "getrecentreleases") {
+            std::vector<ReleaseCampaign> campaigns;
+            std::string cerr;
+            LoadCampaigns(HelperDir(cat), campaigns, cerr);
+            for (const auto& c : campaigns) campaign_ids[c.model_id.Hex()] = c.release_id.Hex();
+        }
+        for (auto h : hits) {
+            if (method == "getrecentreleases") {
+                auto it = campaign_ids.find(h.rec.model_id.Hex());
+                if (it != campaign_ids.end() && h.rec.release_id.empty()) h.rec.release_id = it->second;
+                if (h.rec.release_id.empty()) continue;
+            }
+            arr.push_back(SearchResultCard(h));
+        }
         result.pushKV("schema_version", 2);
         result.pushKV("results", arr);
         result.pushKV("metric", method == "gettrendingmodels" ? "observed_provider_growth_local" : SearchSortName(q.sort));
