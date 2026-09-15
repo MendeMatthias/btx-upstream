@@ -52,6 +52,21 @@ MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-tls-fragment.sh" || die "e2e-tls-fr
 step "12/12 GUI URI source + OS handler"
 "$ROOT/contrib/modelnet/e2e-gui-uri.sh" || die "e2e-gui-uri"
 
+step "13/15 default hosting START-01..03"
+BIN="$BIN" "$ROOT/contrib/modelnet/e2e-hosting-default.sh" || die "e2e-hosting-default"
+
+step "14/15 helper lifecycle START-06/08/09/14/15"
+BIN="$BIN" "$ROOT/contrib/modelnet/e2e-hosting-lifecycle.sh" || die "e2e-hosting-lifecycle"
+
+step "15/15 disjoint piece reconstruct"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-shard-disjoint.sh" || die "e2e-shard-disjoint"
+
+step "16/17 swarm three-peer RPC"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-swarm-three-peer.sh" || die "e2e-swarm-three-peer"
+
+step "17/17 connectivity lab (loopback; netns optional)"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-connectivity-lab.sh" || die "e2e-connectivity-lab"
+
 if [[ -x /usr/bin/google-chrome ]]; then
   step "optional web bridge"
   "$ROOT/contrib/modelnet/e2e-bridge-optional.sh" || die "e2e-bridge-optional"

@@ -166,8 +166,20 @@ In-tree capability bits are not CSV PASS and not a B0 rewrite. The bar is
 | [community-router.md](community-router.md) | CPU introducers, not consensus |
 | [web-bridge-boundary.md](web-bridge-boundary.md) | Optional browser edge |
 | [propagation.md](propagation.md) | Demand-seed default, preserve-rare, release (D11) |
-| [rpc.md](rpc.md) | JSON-RPC catalogue (`btx-cli help`) |
+| [rpc.md](rpc.md) | JSON-RPC catalogue — includes search/directory/indexer methods |
 | [http.md](http.md) | PQ1 `/btx-model/2/` peer API |
+| [swarm.md](swarm.md) | Rarest-first swarm, endgame, partial serve |
+| [connectivity.md](connectivity.md) | NAT, relay, hole punch, provider routing |
+| [reachability.md](reachability.md) | AutoNAT-style dial-back, host advertisement |
+| [relay.md](relay.md) | Bounded model relay, PQ1 through-forward |
+| [hole-punching.md](hole-punching.md) | DCUtR-inspired direct upgrade |
+| [provider-routing.md](provider-routing.md) | Signed provider records, not a generic DHT |
+| [search.md](search.md) | Search vs identity vs availability vs trust; `ModelSearchRecord`; query privacy |
+| [directory.md](directory.md) | Observed directory entries, swarm health, reconstructability |
+| [indexers.md](indexers.md) | Optional `NODE_MODEL_INDEX` explorers; import/export |
+| [bootstrap.md](bootstrap.md) | Introduction only; survive bootstrap loss |
+| [network-roaming.md](network-roaming.md) | Address/sleep epochs |
+| [connectivity-test-lab.md](connectivity-test-lab.md) | Namespace NAT lab |
 | [cuda-not-run.md](cuda-not-run.md) | Isolated CUDA worker; default runtime check is NOT_RUN_CUDA_ISOLATION |
 | [examples.md](examples.md) | DOC-01 executable CLI examples |
 | [recovery.md](recovery.md) | DOC-03 helper / campaign / HTLC recovery |

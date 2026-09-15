@@ -10,7 +10,16 @@
 #include <modelnet/free_grant.h>
 #include <modelnet/funding.h>
 #include <modelnet/identity.h>
+#include <modelnet/model_nat.h>
+#include <modelnet/piece_picker.h>
+#include <modelnet/provider_exchange.h>
+#include <modelnet/provider_route.h>
+#include <modelnet/reachability.h>
+#include <modelnet/relay_reserve.h>
+#include <modelnet/search.h>
 #include <modelnet/policy.h>
+#include <modelnet/auto_storage.h>
+#include <modelnet/piece_ranges.h>
 #include <modelnet/pq1_runtime.h>
 #include <modelnet/protocol.h>
 #include <modelnet/records.h>
@@ -47,6 +56,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -668,6 +678,7 @@ struct Pq1Session {
     fs::path pinfile;
     std::atomic<bool>* stop{nullptr};
     bool outbound_held{false};
+    std::vector<std::pair<std::string, std::string>> piece_headers;
 
     ~Pq1Session() { Close(); }
 
@@ -931,6 +942,96 @@ std::string FormatHttpResponse(const NativeResponse& resp)
     return o.str();
 }
 
+struct SwarmRuntime {
+    ProviderExchange pex;
+    std::mutex pex_mu;
+    ModelMapResult nat;
+    std::string bind;
+    bool relay{false};
+    bool host{false};
+    std::atomic<uint64_t> bytes_served_while_partial{0};
+    std::atomic<uint64_t> pex_received{0};
+    std::atomic<uint64_t> pex_accepted{0};
+    std::atomic<int> partial_seeded_pieces{0};
+    std::atomic<int> duplicate_endgame_requests{0};
+    std::atomic<int> active_piece_requests{0};
+    std::atomic<bool> current_endgame{false};
+    int min_rarity{0};
+    int rare_1{0};
+    int rare_2{0};
+    int providers_known{0};
+    ReachabilityTracker reach;
+    RelayTable relays;
+    RoutingTable routes;
+    ProviderCache providers;
+    NetworkEpoch net_epoch;
+    std::mutex conn_mu;
+    std::atomic<int> hole_punch_attempts{0};
+    std::atomic<int> hole_punch_successes{0};
+    std::atomic<uint64_t> relay_bytes{0};
+    std::atomic<uint64_t> direct_bytes{0};
+    std::atomic<int> last_provider_lookup{0};
+    std::atomic<int> provider_records_found{0};
+};
+static SwarmRuntime g_swarm;
+
+int64_t ConnNowMs()
+{
+    return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+static SearchIndex g_search_idx;
+static SearchRuntime g_search_rt;
+static std::mutex g_search_mu;
+static std::map<std::string, std::vector<ProviderObservation>> g_search_obs;
+static QueryDedupe g_search_dedupe;
+static bool g_search_bound{false};
+
+bool AllowModelSeedBytes(const ModelCatalog& cat, size_t n);
+
+void EnsureSearchBound()
+{
+    if (!g_search_bound) {
+        g_search_rt.Bind(&g_search_idx);
+        g_search_bound = true;
+    }
+}
+
+void IngestCatalogIntoSearch(ModelCatalog& cat)
+{
+    UniValue listed;
+    cat.List(listed);
+    if (!listed.exists("models") || !listed["models"].isArray()) return;
+    for (const auto& m : listed["models"].getValues()) {
+        ModelSearchRecord r;
+        std::string err;
+        if (m.exists("model_id")) Digest48::FromHex(m["model_id"].get_str(), r.model_id, err);
+        if (m.exists("artifact_id")) Digest48::FromHex(m["artifact_id"].get_str(), r.artifact_id, err);
+        if (m.exists("uri")) r.btx_uri = m["uri"].get_str();
+        if (m.exists("label")) {
+            r.canonical_name = m["label"].get_str();
+            r.display_name = r.canonical_name;
+        }
+        if (m.exists("bytes")) r.size_bytes = m["bytes"].getInt<int64_t>();
+        r.signed_ok = false;
+        err.clear();
+        (void)g_search_idx.Put(r, ConnNowMs(), err);
+        if (m.exists("seeded") && m["seeded"].get_bool()) {
+            auto& vec = g_search_obs[r.model_id.Hex()];
+            vec.erase(std::remove_if(vec.begin(), vec.end(),
+                                     [](const ProviderObservation& o) { return o.provider_id == "local"; }),
+                      vec.end());
+            ProviderObservation o;
+            o.provider_id = "local";
+            o.endpoint = "local";
+            o.complete = !(m.exists("incomplete") && m["incomplete"].get_bool());
+            o.last_seen_ms = ConnNowMs();
+            vec.push_back(o);
+        }
+    }
+}
+
 bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResponse& resp)
 {
     resp = {};
@@ -965,6 +1066,9 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.status = 404;
             resp.body = JsonError("NOT_FOUND", "not seeded");
             return true;
+        }
+        if (!manij.exists("complete")) {
+            manij.pushKV("complete", served.seeded && !served.incomplete);
         }
         resp.body = manij.write();
         resp.status = 200;
@@ -1056,6 +1160,12 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.body = JsonError("MISSING_PIECE", err);
             return true;
         }
+        if (!AllowModelSeedBytes(cat, bytes.size())) {
+            resp.status = 429;
+            resp.body = JsonError("RESOURCE_GOVERNOR", "background upload budget exhausted");
+            resp.headers.emplace_back("Retry-After", "1");
+            return true;
+        }
         std::string proof_csv;
         for (size_t i = 0; i < proof.size(); ++i) {
             if (i) proof_csv += ",";
@@ -1072,6 +1182,10 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         resp.headers.emplace_back("X-BTX-File-Size", std::to_string(file_size));
         resp.headers.emplace_back("X-BTX-Pieces-Root", pieces_root);
         resp.headers.emplace_back("X-BTX-Proof", proof_csv);
+        if (entry.incomplete || !entry.bytes_verified) {
+            g_swarm.bytes_served_while_partial.fetch_add(bytes.size());
+            g_swarm.partial_seeded_pieces.fetch_add(1);
+        }
         return true;
     }
     if (req.path == root + "availability" && req.method == "POST") {
@@ -1085,10 +1199,36 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         UniValue models(UniValue::VARR);
         if (listed.exists("models")) {
             for (const auto& m : listed["models"].getValues()) {
-                if (!m.exists("seeded") || !m["seeded"].get_bool()) continue;
+                bool any = false;
+                if (m.exists("files") && m["files"].isArray()) {
+                    for (const auto& f : m["files"].getValues()) {
+                        if (f.exists("piece_count") && f["piece_count"].getInt<int>() > 0) any = true;
+                    }
+                }
+                if (!any && (!m.exists("seeded") || !m["seeded"].get_bool())) continue;
                 UniValue one = m;
+                if (one.exists("files") && one["files"].isArray()) {
+                    UniValue files(UniValue::VARR);
+                    for (const auto& f : one["files"].getValues()) {
+                        UniValue ff = f;
+                        if (f.exists("ranges")) {
+                            std::vector<PieceRange> rs;
+                            std::string rerr;
+                            if (ParsePieceRangesJson(f["ranges"], rs, rerr)) {
+                                ff.pushKV("range_pairs", PieceRangesToPairsJson(rs));
+                            }
+                        }
+                        files.push_back(ff);
+                    }
+                    one.pushKV("files", files);
+                }
                 if (!one.exists("observed_sources") || one["observed_sources"].getInt<int>() == 0) {
                     one.pushKV("observed_sources", 1);
+                }
+                const bool complete = one.exists("complete") && one["complete"].get_bool();
+                one.pushKV("complete", complete);
+                if (!complete) {
+                    one.pushKV("partial", true);
                 }
                 models.push_back(one);
             }
@@ -1096,6 +1236,317 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         pub.pushKV("models", models);
         pub.pushKV("local_count", static_cast<int>(models.size()));
         o.pushKV("local", pub);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/pex" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "pex body");
+            return true;
+        }
+        std::string err;
+        std::vector<ProviderHint> accepted;
+        const int64_t now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+        std::string from = RequestHeader(req, "X-BTX-From");
+        if (from.empty()) from = "peer";
+        {
+            std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
+            if (!g_swarm.pex.Ingest(from, body, now, accepted, err)) {
+                resp.status = 400;
+                resp.body = JsonError("PEX_REJECT", err);
+                return true;
+            }
+            g_swarm.pex_received.store(g_swarm.pex.Stats().received);
+            g_swarm.pex_accepted.store(g_swarm.pex.Stats().accepted);
+            g_swarm.providers_known = static_cast<int>(g_swarm.pex.Recent(now).size());
+        }
+        for (const auto& h : accepted) cat.AddPeer(h.endpoint);
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("accepted", static_cast<int>(accepted.size()));
+        o.pushKV("authoritative", false);
+        o.pushKV("note", "hints only; PQ1 still required");
+        {
+            std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
+            UniValue adv = g_swarm.pex.Advertise(now, PEX_MAX_RECORDS_PER_MESSAGE);
+            if (adv.exists("providers")) o.pushKV("providers", adv["providers"]);
+        }
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/rendezvous" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "rendezvous body");
+            return true;
+        }
+        std::string err;
+        const std::string endpoint = body.exists("endpoint") ? body["endpoint"].get_str() : "";
+        const std::string expected = body.exists("expected_service_id") ? body["expected_service_id"].get_str() : "";
+        const std::string presented = body.exists("service_id") ? body["service_id"].get_str() : "";
+        if (!ValidateRendezvous(endpoint, expected, presented, err)) {
+            resp.status = 403;
+            resp.body = JsonError("RENDEZVOUS_REJECT", err);
+            return true;
+        }
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("ok", true);
+        o.pushKV("pq1_required", true);
+        o.pushKV("classical_fallback", false);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/relay/connect" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "relay body");
+            return true;
+        }
+        RelayConnectRequest rr;
+        rr.endpoint = body.exists("endpoint") ? body["endpoint"].get_str() : "";
+        rr.expected_service_id = body.exists("expected_service_id") ? body["expected_service_id"].get_str() : "";
+        rr.presented_service_id = body.exists("service_id") ? body["service_id"].get_str() : "";
+        std::string err;
+        if (!ValidateRelayConnect(rr, g_swarm.relay, err)) {
+            resp.status = 403;
+            resp.body = JsonError("RELAY_REJECT", err);
+            return true;
+        }
+        std::string host;
+        uint16_t port = 0;
+        if (!SplitListenBind(rr.endpoint, host, port)) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_ENDPOINT", "host:port");
+            return true;
+        }
+        resp.status = 200;
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("ok", true);
+        o.pushKV("inner_pq1", true);
+        o.pushKV("relay_impersonation", false);
+        resp.body = o.write();
+        resp.splice_tcp = true;
+        resp.splice_host = host;
+        resp.splice_port = port;
+        return true;
+    }
+    if (req.path == root + "ext/autonat/probe" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "probe body");
+            return true;
+        }
+        DialbackRequest dr;
+        dr.request_id = body.exists("request_id") ? body["request_id"].get_str() : "";
+        dr.candidate = body.exists("candidate") ? body["candidate"].get_str() : "";
+        dr.requester = body.exists("requester") ? body["requester"].get_str() : "peer";
+        dr.requester_netgroup = body.exists("requester_netgroup") ? body["requester_netgroup"].get_str() : "";
+        dr.now_ms = ConnNowMs();
+        std::string err;
+        std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+        if (!g_swarm.reach.AdmitProbe(dr, err)) {
+            resp.status = 400;
+            resp.body = JsonError("PROBE_REJECT", err);
+            return true;
+        }
+        g_swarm.reach.FinishProbe();
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("ok", true);
+        o.pushKV("would_dial", true);
+        o.pushKV("pq1_required", true);
+        o.pushKV("scanner", false);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/autonat/report" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "report body");
+            return true;
+        }
+        DialbackReport r;
+        r.request_id = body.exists("request_id") ? body["request_id"].get_str() : "";
+        r.observer_id = body.exists("observer_id") ? body["observer_id"].get_str() : "";
+        r.observer_netgroup = body.exists("observer_netgroup") ? body["observer_netgroup"].get_str() : "";
+        r.observed_endpoint = body.exists("observed_endpoint") ? body["observed_endpoint"].get_str() : "";
+        r.ok = body.exists("ok") && body["ok"].get_bool();
+        r.at_ms = ConnNowMs();
+        std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+        g_swarm.reach.NoteReport(r, r.at_ms);
+        resp.body = g_swarm.reach.StatusJson().write();
+        return true;
+    }
+    if (req.path == root + "ext/relay/reserve" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "reserve body");
+            return true;
+        }
+        RelayReservation out;
+        std::string err;
+        std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+        if (!g_swarm.relays.Reserve(body.exists("service_id") ? body["service_id"].get_str() : "",
+                                    body.exists("netgroup") ? body["netgroup"].get_str() : "",
+                                    body.exists("relay_endpoint") ? body["relay_endpoint"].get_str() : "",
+                                    ConnNowMs(), out, err)) {
+            resp.status = 403;
+            resp.body = JsonError("RESERVE_REJECT", err);
+            return true;
+        }
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("reservation_id", out.reservation_id);
+        o.pushKV("expiry_ms", out.expiry_ms);
+        o.pushKV("byte_ceiling", static_cast<int>(out.byte_ceiling));
+        o.pushKV("inner_pq1", true);
+        o.pushKV("automatic_spend_atoms", 0);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/holepunch" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "holepunch body");
+            return true;
+        }
+        std::vector<std::string> local, remote;
+        if (body.exists("local") && body["local"].isArray()) {
+            for (const auto& v : body["local"].getValues()) {
+                if (v.isStr()) local.push_back(v.get_str());
+            }
+        }
+        if (body.exists("remote") && body["remote"].isArray()) {
+            for (const auto& v : body["remote"].getValues()) {
+                if (v.isStr()) remote.push_back(v.get_str());
+            }
+        }
+        PunchPlan plan;
+        std::string err;
+        const int64_t rtt = body.exists("rtt_ms") ? body["rtt_ms"].getInt<int64_t>() : 40;
+        if (!PlanHolePunch(local, remote, ConnNowMs(), rtt, plan, err)) {
+            resp.status = 400;
+            resp.body = JsonError("PUNCH_REJECT", err);
+            return true;
+        }
+        const bool direct = body.exists("direct") && body["direct"].get_bool();
+        const bool pq1 = body.exists("pq1") && body["pq1"].get_bool();
+        const bool ident = body.exists("identity") && body["identity"].get_bool();
+        g_swarm.hole_punch_attempts.fetch_add(1);
+        const PunchResult pr = RecordPunchAttempt(plan, direct, pq1, ident, false);
+        if (pr == PunchResult::DIRECT_OK) g_swarm.hole_punch_successes.fetch_add(1);
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("result", pr == PunchResult::DIRECT_OK ? "direct" : (pr == PunchResult::RETAIN_RELAY ? "relay" : "retry"));
+        o.pushKV("pq1_required", true);
+        o.pushKV("classical_fallback", false);
+        o.pushKV("relay_skips_identity", false);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/providers/put" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "provider body");
+            return true;
+        }
+        ProviderRecord rec;
+        std::string err;
+        if (!ProviderRecordFromJson(body, rec, err)) {
+            resp.status = 400;
+            resp.body = JsonError("PROVIDER_TYPE", err);
+            return true;
+        }
+        std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+        if (!g_swarm.providers.Put(rec, ConnNowMs(), err)) {
+            resp.status = 403;
+            resp.body = JsonError("PROVIDER_REJECT", err);
+            return true;
+        }
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("ok", true);
+        o.pushKV("inference", false);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/providers/get" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "get body");
+            return true;
+        }
+        Digest48 id;
+        std::string err;
+        if (!body.exists("resource") || !Digest48::FromHex(body["resource"].get_str(), id, err)) {
+            resp.status = 400;
+            resp.body = JsonError("INVALID_PARAMETER", err);
+            return true;
+        }
+        std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+        const auto found = g_swarm.providers.Get(id, ConnNowMs());
+        g_swarm.last_provider_lookup.store(static_cast<int>(ConnNowMs() / 1000));
+        g_swarm.provider_records_found.store(static_cast<int>(found.size()));
+        UniValue arr(UniValue::VARR);
+        for (const auto& r : found) arr.push_back(ProviderRecordToJson(r));
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("schema_version", 2);
+        o.pushKV("records", arr);
+        o.pushKV("authoritative", false);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/search" && req.method == "POST") {
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "search body");
+            return true;
+        }
+        if (body.write().size() > SEARCH_QUERY_BYTES_MAX) {
+            resp.status = 413;
+            resp.body = JsonError("QUERY_TOO_LARGE", "max query bytes");
+            return true;
+        }
+        std::string qid = body.exists("query_id") ? body["query_id"].get_str() : "";
+        int ttl = body.exists("ttl") ? body["ttl"].getInt<int>() : SEARCH_TTL_DEFAULT;
+        if (ttl > SEARCH_TTL_MAX) ttl = SEARCH_TTL_MAX;
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        if (!qid.empty() && !g_search_dedupe.Admit(qid)) {
+            UniValue o = SearchResponseJson(qid, "local", {}, true);
+            o.pushKV("duplicate", true);
+            resp.body = o.write();
+            return true;
+        }
+        SearchQuery q;
+        std::string err;
+        if (!ParseSearchQuery(body, q, err)) {
+            resp.status = 400;
+            resp.body = JsonError("INVALID_PARAMETER", err);
+            return true;
+        }
+        q.scope = SearchScope::LOCAL;
+        const auto hits = g_search_idx.Search(q, ConnNowMs());
+        UniValue o = SearchResponseJson(qid.empty() ? NewSearchQueryId() : qid, "local", hits,
+                                         static_cast<int>(hits.size()) >= q.limit);
+        o.pushKV("ttl_remaining", std::max(0, ttl - 1));
+        o.pushKV("forward", ShouldForwardSearch(ttl - 1, 1));
+        o.pushKV("authoritative", false);
+        o.pushKV("node_model_index", true);
         resp.body = o.write();
         return true;
     }
@@ -1785,6 +2236,8 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
     // stay on disk; RetrieveFreeFromPeer skips them via GetPiece.
     job->worker = std::thread([job, &cat, model_id]() {
         auto failed = [&](const std::string& e) {
+            CatalogEntry done;
+            if (cat.Find(model_id, done)) cat.EndTransfer(done.artifact_id);
             UniValue r(UniValue::VOBJ);
             r.pushKV("schema_version", 2);
             r.pushKV("status", "failed");
@@ -1801,6 +2254,8 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
             return;
         }
         const fs::path pinfile = cat.Store().Root().parent_path() / "tls" / "pins.json";
+        CatalogEntry live;
+        if (cat.Find(model_id, live)) cat.BeginTransfer(live.artifact_id);
         std::set<std::string> failed_peers;
         std::string last_err;
         int transient_streak = 0;
@@ -1841,7 +2296,19 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
             }
             std::string rerr;
             try {
-                if (RetrieveFreeFromPeer(cat, pq, host, port, model_id, rerr, &job->cancel, pinfile, &job->progress)) {
+                std::vector<std::string> extras;
+                for (const auto& p : cat.Peers()) {
+                    if (p != peer && failed_peers.count(p) == 0) extras.push_back(p);
+                }
+                {
+                    std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+                    for (const auto& rec : g_swarm.providers.Get(model_id, ConnNowMs())) {
+                        for (const auto& ep : rec.endpoints) {
+                            if (ep != peer && failed_peers.count(ep) == 0) extras.push_back(ep);
+                        }
+                    }
+                }
+                if (RetrieveFreeFromPeer(cat, pq, host, port, model_id, rerr, &job->cancel, pinfile, &job->progress, extras)) {
                     std::string seed_err;
                     cat.ApplyDemandSeed(model_id, seed_err);
                     CatalogEntry got;
@@ -1858,6 +2325,8 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                     std::lock_guard<std::mutex> lock(job->mu);
                     job->result = std::move(r);
                     job->status = "done";
+                    CatalogEntry done;
+                    if (cat.Find(model_id, done)) cat.EndTransfer(done.artifact_id);
                     return;
                 }
             } catch (const std::exception& e) {
@@ -1920,6 +2389,64 @@ void JoinRetrieveJobs()
 
 } // namespace
 
+struct HelperRuntimeInfo {
+    StorageMode storage_mode{StorageMode::AUTO};
+    uint64_t target_bytes{0};
+    uint64_t effective_quota{0};
+    uint64_t fs_capacity{0};
+    uint64_t fs_available{0};
+    uint64_t reserve_bytes{0};
+    bool demand_seed{true};
+    bool preserve_rare{false};
+    bool public_host_reachable{false};
+    bool advertised_host{false};
+    uint64_t upload_bps{0};
+    int active_transfers{0};
+};
+static HelperRuntimeInfo g_runtime;
+std::mutex g_seed_budget_mu;
+int64_t g_seed_tokens{0};
+int64_t g_seed_last_ms{0};
+
+bool AllowModelSeedBytes(const ModelCatalog& cat, size_t n)
+{
+    UniValue o;
+    ReadJsonFile(HelperDir(cat) / "governor-permit.json", o);
+    int64_t cap = static_cast<int64_t>(g_runtime.upload_bps);
+    bool seeding_allowed = true;
+    if (o.exists("upload_bps") && o["upload_bps"].isNum()) {
+        const int64_t gov_cap = o["upload_bps"].getInt<int64_t>();
+        if (gov_cap > 0) cap = cap > 0 ? std::min(cap, gov_cap) : gov_cap;
+        else if (o.exists("seeding_allowed") && o["seeding_allowed"].isBool() && !o["seeding_allowed"].get_bool()) {
+            cap = 0;
+            seeding_allowed = false;
+        }
+    }
+    if (o.exists("seeding_allowed") && o["seeding_allowed"].isBool()) {
+        seeding_allowed = o["seeding_allowed"].get_bool();
+    }
+    if (!seeding_allowed && cap <= 0) return false;
+    if (cap <= 0) return true; // no extra cap
+    const int64_t now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    std::lock_guard<std::mutex> lock(g_seed_budget_mu);
+    if (g_seed_last_ms <= 0) g_seed_last_ms = now;
+    const int64_t dt = std::max<int64_t>(0, now - g_seed_last_ms);
+    g_seed_last_ms = now;
+    g_seed_tokens = std::min(cap, g_seed_tokens + cap * dt / 1000);
+    if (g_seed_tokens < static_cast<int64_t>(n)) return false;
+    g_seed_tokens -= static_cast<int64_t>(n);
+    return true;
+}
+
+static bool PreservationPermitted(const ModelCatalog& cat)
+{
+    UniValue o;
+    ReadJsonFile(HelperDir(cat) / "governor-permit.json", o);
+    if (!o.exists("preservation_allowed")) return true;
+    return o["preservation_allowed"].isBool() && o["preservation_allowed"].get_bool();
+}
+
 bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& result, std::string& err_code, std::string& err, std::atomic<bool>* stop)
 {
     result = UniValue(UniValue::VOBJ);
@@ -1950,6 +2477,64 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("automatic_spend_atoms", 0);
         result.pushKV("quota_bytes", cat.QuotaBytes());
         result.pushKV("used_bytes", cat.UsedBytes());
+        result.pushKV("storage_mode", StorageModeName(g_runtime.storage_mode));
+        result.pushKV("storage_target_bytes", g_runtime.target_bytes);
+        result.pushKV("storage_effective_quota_bytes", g_runtime.effective_quota ? g_runtime.effective_quota : cat.QuotaBytes());
+        result.pushKV("storage_used_bytes", cat.UsedBytes());
+        result.pushKV("storage_pinned_bytes", cat.PinnedBytes());
+        result.pushKV("storage_reclaimable_bytes", cat.ReclaimableBytes());
+        result.pushKV("filesystem_capacity_bytes", g_runtime.fs_capacity);
+        result.pushKV("filesystem_available_bytes", g_runtime.fs_available);
+        result.pushKV("filesystem_reserve_bytes", g_runtime.reserve_bytes);
+        result.pushKV("seed_mode", cat.Policy().seed_mode == SeedMode::AUTO ? "auto" : SeedModeName(cat.Policy().seed_mode));
+        result.pushKV("demand_seed", g_runtime.demand_seed && cat.Policy().seed_mode == SeedMode::AUTO && cat.QuotaBytes() > 0);
+        result.pushKV("preserve_rare", g_runtime.preserve_rare);
+        result.pushKV("public_host_reachable", g_runtime.public_host_reachable);
+        result.pushKV("advertised_host", g_runtime.advertised_host);
+        result.pushKV("nat_limited", !g_runtime.public_host_reachable);
+        result.pushKV("nat_status", ModelNatStatusName(g_swarm.nat.status));
+        result.pushKV("relay_status", g_swarm.relay ? "optional" : "off");
+        result.pushKV("peers_connected", GlobalConnLimits().Inbound() + GlobalConnLimits().Outbound());
+        result.pushKV("providers_known", g_swarm.providers_known);
+        result.pushKV("min_rarity", g_swarm.min_rarity);
+        result.pushKV("rare_pieces_1_source", g_swarm.rare_1);
+        result.pushKV("rare_pieces_2_sources", g_swarm.rare_2);
+        result.pushKV("active_piece_requests", g_swarm.active_piece_requests.load());
+        result.pushKV("duplicate_endgame_requests", g_swarm.duplicate_endgame_requests.load());
+        result.pushKV("current_endgame", g_swarm.current_endgame.load());
+        result.pushKV("partial_seeded_pieces", g_swarm.partial_seeded_pieces.load());
+        result.pushKV("bytes_served_while_partial", g_swarm.bytes_served_while_partial.load());
+        result.pushKV("pex_records_received", g_swarm.pex_received.load());
+        result.pushKV("pex_records_accepted", g_swarm.pex_accepted.load());
+        {
+            std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+            const UniValue rs = g_swarm.reach.StatusJson();
+            result.pushKV("reachability_state", rs["reachability_state"]);
+            result.pushKV("direct_ipv4", g_swarm.reach.BestCandidate());
+            result.pushKV("direct_ipv6", "");
+            result.pushKV("mapped_endpoint", rs["mapped_endpoint"]);
+            result.pushKV("external_observations", rs["observations"]);
+            result.pushKV("relay_reservations", g_swarm.relays.StatusJson());
+            result.pushKV("active_relay", rs["relay"]);
+            result.pushKV("routing_table_size", static_cast<int>(g_swarm.routes.Size()));
+            result.pushKV("provider_cache_size", static_cast<int>(g_swarm.providers.Size()));
+            result.pushKV("bootstrap_peers", 0);
+            result.pushKV("bootstrap_dependency", !BootstrapIndependent(true, g_swarm.routes.Size()) && g_swarm.routes.Size() == 0);
+            result.pushKV("network_epoch", static_cast<int64_t>(g_swarm.net_epoch.epoch));
+        }
+        result.pushKV("last_provider_lookup", g_swarm.last_provider_lookup.load());
+        result.pushKV("provider_records_found", g_swarm.provider_records_found.load());
+        result.pushKV("hole_punch_attempts", g_swarm.hole_punch_attempts.load());
+        result.pushKV("hole_punch_successes", g_swarm.hole_punch_successes.load());
+        result.pushKV("relay_bytes", g_swarm.relay_bytes.load());
+        result.pushKV("direct_bytes", g_swarm.direct_bytes.load());
+        result.pushKV("classical_fallback", false);
+        result.pushKV("upload_limit", g_runtime.upload_bps);
+        result.pushKV("active_transfers", g_runtime.active_transfers);
+        result.pushKV("helper_managed_by_btxd", false);
+        result.pushKV("helper_state", "READY");
+        result.pushKV("helper_pid", static_cast<int>(getpid()));
+        result.pushKV("helper_restart_count", 0);
         result.pushKV("propagation", PolicyToJson(cat.Policy()));
         result.pushKV("capabilities", CapabilitiesObject());
         result.pushKV("http_workers", PQ1_HTTP_WORKERS);
@@ -1961,6 +2546,32 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("outbound_connections", GlobalConnLimits().Outbound());
         result.pushKV("peer_pin", "TOFU tls_spki_hash D384(BTX/TransportKey/v2, DER_SPKI)");
         result.pushKV("htlc", "reuses final 0.34.6 htlc_sha256 / buildhtlcclaim / buildhtlcrefund");
+        result.pushKV("node_model_index", true);
+        result.pushKV("search_ttl_default", SEARCH_TTL_DEFAULT);
+        result.pushKV("search_ttl_max", SEARCH_TTL_MAX);
+        result.pushKV("search_monetary_coupling", false);
+        return true;
+    }
+    if (method == "lookupmodelproviders") {
+        Digest48 id;
+        if (!Digest48::FromHex(Arg(0).get_str(), id, err)) {
+            err_code = "INVALID_PARAMETER";
+            return false;
+        }
+        LookupBudget budget;
+        budget.start_ms = ConnNowMs();
+        std::vector<ProviderRecord> found;
+        std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+        (void)LookupStep(g_swarm.routes, g_swarm.providers, id, budget, ConnNowMs(), found, err);
+        g_swarm.last_provider_lookup.store(static_cast<int>(ConnNowMs() / 1000));
+        g_swarm.provider_records_found.store(static_cast<int>(found.size()));
+        UniValue arr(UniValue::VARR);
+        for (const auto& r : found) arr.push_back(ProviderRecordToJson(r));
+        result.pushKV("schema_version", 2);
+        result.pushKV("records", arr);
+        result.pushKV("queries", budget.queries);
+        result.pushKV("authoritative", false);
+        result.pushKV("inference", false);
         return true;
     }
     if (method == "decoderesource" || method == "decoderesourceuri" || method == "openbtxuri") {
@@ -2043,24 +2654,438 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         return true;
     }
     if (method == "searchmodels") {
-        cat.List(result);
-        result.pushKV("remote_count", 0);
-        result.pushKV("coverage", "incomplete");
-        std::string text;
+        EnsureSearchBound();
+        std::unique_lock<std::mutex> lock(g_search_mu);
+        IngestCatalogIntoSearch(cat);
+        SearchQuery q;
         if (params.isArray() && params.size() > 0) {
-            if (Arg(0).isStr()) text = Arg(0).get_str();
-            else if (Arg(0).isObject() && Arg(0).exists("text")) text = Arg(0)["text"].get_str();
-            else if (Arg(0).isObject() && Arg(0).exists("query")) text = Arg(0)["query"].get_str();
-        }
-        if (!text.empty() && result.exists("models")) {
-            const std::string q = ToLower(text);
-            UniValue filtered(UniValue::VARR);
-            for (const auto& m : result["models"].getValues()) {
-                if (ToLower(m.write()).find(q) != std::string::npos) filtered.push_back(m);
+            if (!ParseSearchQuery(Arg(0), q, err)) {
+                err_code = "INVALID_PARAMETER";
+                return false;
             }
-            result.pushKV("models", filtered);
-            result.pushKV("local_count", static_cast<int>(filtered.size()));
         }
+        std::vector<SearchIndex*> extras;
+        auto job = g_search_rt.Start(q, extras, ConnNowMs());
+        const int index_configured = static_cast<int>(g_search_idx.IndexPeers().size());
+        lock.unlock();
+        int routing_known = 0;
+        std::map<std::string, std::vector<ProviderObservation>> extra_obs;
+        {
+            std::lock_guard<std::mutex> slock(g_swarm.conn_mu);
+            routing_known = static_cast<int>(g_swarm.routes.Size());
+            for (const auto& h : job.hits) {
+                const auto found = g_swarm.providers.Get(h.rec.model_id, ConnNowMs());
+                for (const auto& pr : found) {
+                    ProviderObservation o;
+                    o.provider_id = pr.service_id.Hex();
+                    o.endpoint = pr.endpoints.empty() ? "" : pr.endpoints.front();
+                    o.complete = pr.complete;
+                    o.direct = pr.reachability_kind != "relay";
+                    o.relayed = pr.reachability_kind == "relay";
+                    o.ranges = pr.ranges;
+                    o.last_seen_ms = ConnNowMs();
+                    extra_obs[h.rec.model_id.Hex()].push_back(o);
+                }
+            }
+        }
+        lock.lock();
+        for (auto& kv : extra_obs) {
+            auto& obs = g_search_obs[kv.first];
+            for (const auto& o : kv.second) {
+                bool dup = false;
+                for (const auto& e : obs) {
+                    if (e.provider_id == o.provider_id) {
+                        dup = true;
+                        break;
+                    }
+                }
+                if (!dup) obs.push_back(o);
+            }
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("query_id", job.query_id);
+        result.pushKV("text", q.text);
+        result.pushKV("scope", SearchScopeName(q.scope));
+        UniValue cov(UniValue::VOBJ);
+        cov.pushKV("local", true);
+        cov.pushKV("connected_peers_queried", q.scope == SearchScope::LOCAL ? 0 : job.coverage.connected_peers_queried);
+        cov.pushKV("index_peers_queried", q.scope == SearchScope::LOCAL ? 0 : index_configured);
+        cov.pushKV("index_peers_configured", index_configured);
+        cov.pushKV("routing_peers_queried", q.scope == SearchScope::LOCAL ? 0 : std::min(routing_known, SEARCH_FANOUT_MAX));
+        cov.pushKV("responses_received", job.coverage.responses_received);
+        cov.pushKV("timed_out", job.coverage.timed_out);
+        cov.pushKV("complete", false);
+        cov.pushKV("global_complete", false);
+        result.pushKV("coverage", cov);
+        UniValue arr(UniValue::VARR);
+        for (auto& h : job.hits) {
+            auto it = g_search_obs.find(h.rec.model_id.Hex());
+            if (it != g_search_obs.end()) h.health = ComputeSwarmHealth(0, 0, it->second);
+            CatalogEntry e;
+            if (cat.Find(h.rec.model_id, e)) {
+                h.local.known = true;
+                h.local.seeded = e.seeded;
+                h.local.pinned = e.pinned;
+                h.local.partial = e.incomplete;
+                h.local.downloaded = e.bytes_verified;
+            }
+            arr.push_back(SearchResultCard(h));
+        }
+        result.pushKV("results", arr);
+        result.pushKV("results_returned", static_cast<int>(arr.size()));
+        result.pushKV("total_candidates_seen", static_cast<int>(job.hits.size()));
+        result.pushKV("applied_filters", AppliedFiltersJson(q.filters));
+        result.pushKV("unsupported_filters", UniValue(UniValue::VARR));
+        result.pushKV("remote_count", job.coverage.responses_received);
+        result.pushKV("note", "current network view; not a complete global directory");
+        return true;
+    }
+    if (method == "getmodelsearchrecord") {
+        EnsureSearchBound();
+        const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+        if (id.IsNull()) {
+            err_code = "INVALID_PARAMETER";
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        const auto* r = g_search_idx.Get(id);
+        if (!r) {
+            err_code = "NOT_FOUND";
+            err = "no search record";
+            return false;
+        }
+        result = SearchRecordToJson(*r);
+        result.pushKV("locally_cached", true);
+        return true;
+    }
+    if (method == "publishmodelsearchrecord" || method == "updatemodelsearchrecord") {
+        EnsureSearchBound();
+        ModelSearchRecord rec;
+        if (Arg(1).isObject()) {
+            if (!SearchRecordFromJson(Arg(1), rec, err)) {
+                err_code = "INVALID_PARAMETER";
+                return false;
+            }
+        }
+        rec.model_id = IdFromUser(Arg(0).isStr() ? Arg(0).get_str() : "", err);
+        if (rec.model_id.IsNull()) {
+            err_code = "INVALID_PARAMETER";
+            return false;
+        }
+        if (rec.canonical_name.empty()) rec.canonical_name = rec.display_name;
+        {
+            UniValue store;
+            ReadJsonFile(HelperDir(cat) / "identities.json", store);
+            if (store.exists("identities") && store["identities"].isArray() && !store["identities"].getValues().empty()) {
+                const UniValue& idj = store["identities"].getValues().front();
+                if (idj.exists("pubkey_hex") && idj.exists("id")) {
+                    rec.pubkey = ParseHex(idj["pubkey_hex"].get_str());
+                    const std::string hexid = idj["id"].get_str();
+                    const fs::path skpath = HelperDir(cat) / "tls" /
+                                            fs::PathFromString("identity-" + hexid.substr(0, 16) + ".sk");
+                    std::ifstream skf(fs::PathToString(skpath), std::ios::binary);
+                    std::vector<unsigned char> sk((std::istreambuf_iterator<char>(skf)), std::istreambuf_iterator<char>());
+                    std::string serr;
+                    if (!sk.empty() && SignSearchRecord(rec, Span<const unsigned char>{sk.data(), sk.size()}, serr)) {
+                        rec.signed_ok = true;
+                    } else {
+                        rec.pubkey.clear();
+                    }
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        if (method == "updatemodelsearchrecord") {
+            const auto* prev = g_search_idx.Get(rec.model_id);
+            if (prev) rec.metadata_sequence = prev->metadata_sequence + 1;
+        }
+        if (!g_search_idx.Put(rec, ConnNowMs(), err)) {
+            err_code = "REJECTED";
+            return false;
+        }
+        const auto* stored = g_search_idx.Get(rec.model_id);
+        result.pushKV("schema_version", 2);
+        result.pushKV("model_id", rec.model_id.Hex());
+        result.pushKV("sequence", stored ? static_cast<int64_t>(stored->metadata_sequence) : 1);
+        result.pushKV("automatic_spend_atoms", 0);
+        result.pushKV("wallet_key", false);
+        return true;
+    }
+    if (method == "removemodelsearchrecord") {
+        EnsureSearchBound();
+        const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+        if (id.IsNull()) {
+            err_code = "INVALID_PARAMETER";
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        if (!g_search_idx.Tombstone(id, 999999, ConnNowMs(), err)) {
+            err_code = "REJECTED";
+            return false;
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("tombstone", true);
+        result.pushKV("guaranteed_global_delete", false);
+        return true;
+    }
+    if (method == "listmodelsearchrecords" || method == "exportmodelindex") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        int limit = 100;
+        int64_t after = 0;
+        if (Arg(0).isObject()) {
+            if (Arg(0).exists("limit")) limit = Arg(0)["limit"].getInt<int>();
+            if (Arg(0).exists("updated_after")) after = Arg(0)["updated_after"].getInt<int64_t>();
+        }
+        if (limit > 100) limit = 100;
+        result = g_search_idx.ExportSince(0, limit);
+        result.pushKV("updated_after", after);
+        result.pushKV("next_cursor", "");
+        return true;
+    }
+    if (method == "importmodelindex") {
+        EnsureSearchBound();
+        if (!Arg(0).isObject() || !Arg(0).exists("records")) {
+            err_code = "INVALID_PARAMETER";
+            err = "records";
+            return false;
+        }
+        int ok = 0, bad = 0;
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        for (const auto& recj : Arg(0)["records"].getValues()) {
+            ModelSearchRecord rec;
+            std::string ierr;
+            if (!SearchRecordFromJson(recj, rec, ierr) || !g_search_idx.Put(rec, ConnNowMs(), err)) ++bad;
+            else ++ok;
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("imported", ok);
+        result.pushKV("rejected", bad);
+        result.pushKV("reverified", true);
+        return true;
+    }
+    if (method == "getmodeldirectoryentry" || method == "getmodeldirectory") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        IngestCatalogIntoSearch(cat);
+        if (method == "getmodeldirectory") {
+            SearchQuery q;
+            if (Arg(0).isObject()) ParseSearchQuery(Arg(0), q, err);
+            q.scope = SearchScope::ALL;
+            const auto hits = g_search_idx.Search(q, ConnNowMs());
+            UniValue arr(UniValue::VARR);
+            for (const auto& h : hits) arr.push_back(DirectoryEntryJson(h));
+            result.pushKV("schema_version", 2);
+            result.pushKV("results", arr);
+            result.pushKV("global_complete", false);
+            return true;
+        }
+        const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+        SearchHit h;
+        const auto* r = g_search_idx.Get(id);
+        if (r) h.rec = *r;
+        else h.rec.model_id = id;
+        auto it = g_search_obs.find(id.Hex());
+        if (it != g_search_obs.end()) h.health = ComputeSwarmHealth(0, 0, it->second);
+        CatalogEntry e;
+        if (cat.Find(id, e)) {
+            h.local.known = true;
+            h.local.seeded = e.seeded;
+            h.local.pinned = e.pinned;
+            h.local.partial = e.incomplete;
+        }
+        result = DirectoryEntryJson(h);
+        return true;
+    }
+    if (method == "getmodelproviders" || method == "getmodelavailability" || method == "getmodelpeercount") {
+        EnsureSearchBound();
+        const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        const auto obs = g_search_obs[id.Hex()];
+        const SwarmHealth h = ComputeSwarmHealth(0, 0, obs);
+        if (method == "getmodelproviders") {
+            UniValue arr(UniValue::VARR);
+            for (const auto& o : obs) {
+                UniValue p(UniValue::VOBJ);
+                p.pushKV("provider_id", o.provider_id);
+                p.pushKV("reachability", o.direct ? "direct" : "relay");
+                p.pushKV("complete", o.complete);
+                p.pushKV("last_seen", o.last_seen_ms);
+                p.pushKV("direct", o.direct);
+                p.pushKV("relayed", o.relayed);
+                arr.push_back(p);
+            }
+            result.pushKV("schema_version", 2);
+            result.pushKV("providers", arr);
+            return true;
+        }
+        if (method == "getmodelpeercount") {
+            result = PeerCountJson(h);
+            result.pushKV("schema_version", 2);
+            return true;
+        }
+        result = AvailabilityJson(h);
+        result.pushKV("schema_version", 2);
+        result.pushKV("model_id", id.Hex());
+        return true;
+    }
+    if (method == "getnetworkmodelstats") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        UniValue listed;
+        cat.List(listed);
+        result.pushKV("schema_version", 2);
+        result.pushKV("models_known", g_search_idx.Size());
+        result.pushKV("models_local", listed.exists("local_count") ? listed["local_count"].getInt<int>() : 0);
+        result.pushKV("search_records_known", static_cast<int>(g_search_idx.Size()));
+        result.pushKV("searches_running", g_search_rt.Running());
+        result.pushKV("searches_completed", g_search_rt.Completed());
+        result.pushKV("index_records", static_cast<int>(g_search_idx.Size()));
+        result.pushKV("coverage_disclaimer", "this node's observations only");
+        result.pushKV("global_complete", false);
+        result.pushKV("automatic_spend_atoms", 0);
+        return true;
+    }
+    if (method == "getmodelaliases") {
+        EnsureSearchBound();
+        const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        UniValue arr(UniValue::VARR);
+        if (const auto* r = g_search_idx.Get(id)) {
+            for (const auto& a : r->aliases) {
+                UniValue o(UniValue::VOBJ);
+                o.pushKV("alias", a);
+                o.pushKV("provenance", r->signed_ok ? "publisher_metadata" : "unsigned");
+                arr.push_back(o);
+            }
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("aliases", arr);
+        return true;
+    }
+    if (method == "searchpublishers" || method == "getpublisher") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        UniValue arr(UniValue::VARR);
+        SearchQuery q;
+        if (method == "searchpublishers" && Arg(0).isObject()) ParseSearchQuery(Arg(0), q, err);
+        else if (method == "searchpublishers" && Arg(0).isStr()) q.text = Arg(0).get_str();
+        const auto hits = g_search_idx.Search(q, ConnNowMs());
+        std::map<std::string, int> pubs;
+        for (const auto& h : hits) {
+            const std::string pid = h.rec.publisher_identity.Hex();
+            if (pid.empty() || pid == std::string(96, '0')) continue;
+            pubs[pid] += 1;
+            if (method == "getpublisher" && Arg(0).isStr() && Arg(0).get_str() == pid) {
+                result.pushKV("schema_version", 2);
+                result.pushKV("id", pid);
+                result.pushKV("display_name", h.rec.publisher_display_name);
+                result.pushKV("model_count_observed", 1);
+                return true;
+            }
+        }
+        for (const auto& kv : pubs) {
+            UniValue o(UniValue::VOBJ);
+            o.pushKV("id", kv.first);
+            o.pushKV("model_count_observed", kv.second);
+            arr.push_back(o);
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("publishers", arr);
+        return true;
+    }
+    if (method == "searchcollections" || method == "getcollection") {
+        result.pushKV("schema_version", 2);
+        result.pushKV("collections", UniValue(UniValue::VARR));
+        result.pushKV("note", "signed collections remain first-class; empty if none cached");
+        return true;
+    }
+    if (method == "browsemodels" || method == "gettrendingmodels" || method == "getsimilarmodels" ||
+        method == "getnewmodels" || method == "getrecentreleases") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        IngestCatalogIntoSearch(cat);
+        SearchQuery q;
+        if (Arg(0).isObject()) ParseSearchQuery(Arg(0), q, err);
+        if (method == "getnewmodels" || method == "browsemodels") q.sort = SearchSort::NEWEST;
+        if (method == "gettrendingmodels") q.sort = SearchSort::PROVIDERS;
+        if (method == "getsimilarmodels" && Arg(0).isObject()) {
+            if (Arg(0).exists("family")) q.filters.family = Arg(0)["family"].get_str();
+        }
+        const auto hits = g_search_idx.Search(q, ConnNowMs());
+        UniValue arr(UniValue::VARR);
+        for (const auto& h : hits) arr.push_back(SearchResultCard(h));
+        result.pushKV("schema_version", 2);
+        result.pushKV("results", arr);
+        result.pushKV("metric", method == "gettrendingmodels" ? "observed_provider_growth_local" : SearchSortName(q.sort));
+        result.pushKV("global_complete", false);
+        return true;
+    }
+    if (method == "getsearchstatus") {
+        EnsureSearchBound();
+        SearchJob job;
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        if (!Arg(0).isStr() || !g_search_rt.Status(Arg(0).get_str(), job)) {
+            err_code = "NOT_FOUND";
+            return false;
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("query_id", Arg(0).isStr() ? Arg(0).get_str() : "");
+        result.pushKV("state", job.state == SearchJobState::COMPLETE ? "COMPLETE" :
+                               (job.state == SearchJobState::CANCELLED ? "CANCELLED" :
+                                (job.state == SearchJobState::TIMED_OUT ? "TIMED_OUT" : "RUNNING")));
+        UniValue arr(UniValue::VARR);
+        for (const auto& h : job.hits) arr.push_back(SearchResultCard(h));
+        result.pushKV("results", arr);
+        result.pushKV("results_returned", static_cast<int>(job.hits.size()));
+        result.pushKV("complete", false);
+        result.pushKV("global_complete", false);
+        return true;
+    }
+    if (method == "cancelmodelsearch") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        result.pushKV("ok", g_search_rt.Cancel(Arg(0).get_str()));
+        return true;
+    }
+    if (method == "getsearchpeers") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        UniValue arr(UniValue::VARR);
+        for (const auto& p : g_search_idx.IndexPeers()) {
+            UniValue o(UniValue::VOBJ);
+            o.pushKV("endpoint", p);
+            o.pushKV("capability", "NODE_MODEL_INDEX");
+            o.pushKV("monetary_service_bit", false);
+            arr.push_back(o);
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("peers", arr);
+        return true;
+    }
+    if (method == "addmodelindex" || method == "removemodelindex") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        if (method == "addmodelindex") g_search_idx.AddIndexPeer(Arg(0).get_str());
+        else g_search_idx.RemoveIndexPeer(Arg(0).get_str());
+        result.pushKV("schema_version", 2);
+        result.pushKV("index_peers", static_cast<int>(g_search_idx.IndexPeers().size()));
+        result.pushKV("addrman", false);
+        return true;
+    }
+    if (method == "hidesearchmodel" || method == "unhidesearchmodel") {
+        EnsureSearchBound();
+        const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        g_search_idx.Hide(id, method == "hidesearchmodel");
+        result.pushKV("hidden", method == "hidesearchmodel");
+        return true;
+    }
+    if (method == "mutesearchpublisher" || method == "unmutesearchpublisher") {
+        EnsureSearchBound();
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        g_search_idx.MutePublisher(Arg(0).get_str(), method == "mutesearchpublisher");
+        result.pushKV("muted", method == "mutesearchpublisher");
         return true;
     }
     if (method == "getmodelmanifest") {
@@ -2090,6 +3115,27 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         }
         result.pushKV("schema_version", 2);
         result.pushKV("seeded", method == "seedmodel");
+        return true;
+    }
+    if (method == "pinmodel" || method == "unpinmodel") {
+        std::string derr;
+        const Digest48 id = IdFromUser(Arg(0).get_str(), derr);
+        if (id.IsNull()) {
+            err_code = "INVALID_PARAMETER";
+            err = derr;
+            return false;
+        }
+        if (!cat.PinModel(id, method == "pinmodel", err)) {
+            err_code = "NOT_FOUND";
+            return false;
+        }
+        result.pushKV("schema_version", 2);
+        result.pushKV("pinned", method == "pinmodel");
+        return true;
+    }
+    if (method == "stop") {
+        if (stop) stop->store(true);
+        result.pushKV("stopping", true);
         return true;
     }
     if (method == "qualifymodel") {
@@ -2885,7 +3931,7 @@ bool LoadPq1Identity(Pq1Context& pq, const fs::path& modeldir, std::string& err)
 
 bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& host, uint16_t port,
                           const Digest48& model_id, std::string& err, std::atomic<bool>* stop, const fs::path& pinfile,
-                          RetrieveProgress* progress)
+                          RetrieveProgress* progress, const std::vector<std::string>& extra_peers)
 {
     auto init_sess = [&](Pq1Session& sess) -> bool {
         sess.stop = stop;
@@ -2929,6 +3975,33 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
         total += f["size"].getInt<uint64_t>();
     }
     if (!cat.EnforceQuota(total, err)) return false;
+    {
+        std::string ierr;
+        (void)cat.InstallFromManifest(man, ierr, /*complete=*/false);
+    }
+    {
+        NativeRequest pexreq;
+        NativeResponse pexresp;
+        pexreq.method = "POST";
+        pexreq.path = std::string(MODEL_HTTP_ROOT) + "ext/pex";
+        const int64_t now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+        {
+            std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
+            pexreq.body = g_swarm.pex.Advertise(now, PEX_MAX_RECORDS_PER_MESSAGE).write();
+        }
+        std::string perr;
+        if (sess.Request(pexreq, pexresp, perr) && pexresp.status == 200) {
+            UniValue pexj;
+            if (pexj.read(pexresp.body) && pexj.isObject()) {
+                std::vector<ProviderHint> acc;
+                std::string ierr;
+                std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
+                (void)g_swarm.pex.Ingest(host + ":" + std::to_string(port), pexj, now, acc, ierr);
+                for (const auto& h : acc) cat.AddPeer(h.endpoint);
+            }
+        }
+    }
 
     std::vector<std::pair<std::string, std::string>> grant_headers;
     std::mutex grant_mu;
@@ -2960,6 +4033,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
         grant_headers.emplace_back("X-BTX-Grant-Payload", gj["payload_hex"].get_str());
         grant_headers.emplace_back("X-BTX-Grant-Sig", gj["sig_hex"].get_str());
         grant_headers.emplace_back("X-BTX-Grant-Pubkey", gj["pubkey_hex"].get_str());
+        s.piece_headers = grant_headers;
         return true;
     };
     err.clear();
@@ -3010,7 +4084,8 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                     std::to_string(file_index) + "/" + std::to_string(i);
         {
             std::lock_guard<std::mutex> lock(grant_mu);
-            preq.headers = grant_headers;
+            if (!s.piece_headers.empty()) preq.headers = s.piece_headers;
+            else preq.headers = grant_headers;
         }
         int grant_refreshes = 0;
         for (int attempt = 0; attempt < PQ1_PIECE_RETRIES; ++attempt) {
@@ -3039,7 +4114,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                     if (!issue_grant(s, file_index, local_err)) return false;
                     {
                         std::lock_guard<std::mutex> lock(grant_mu);
-                        preq.headers = grant_headers;
+                        preq.headers = s.piece_headers.empty() ? grant_headers : s.piece_headers;
                     }
                     --attempt;
                     continue;
@@ -3052,10 +4127,10 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
             s.Close();
             s.stop = stop;
             s.pinfile = pinfile;
-            if (!s.Connect(pq, host, port, local_err)) return false;
+            if (!s.Connect(pq, s.host.empty() ? host : s.host, s.port ? s.port : port, local_err)) return false;
             {
                 std::lock_guard<std::mutex> lock(grant_mu);
-                preq.headers = grant_headers;
+                preq.headers = s.piece_headers.empty() ? grant_headers : s.piece_headers;
             }
         }
         if (local_err.empty()) local_err = "piece fetch failed";
@@ -3097,6 +4172,87 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                 }
             } else {
                 missing.push_back(i);
+            }
+        }
+        std::vector<std::thread> extra_threads;
+        std::atomic<int> extra_ok{0};
+        if (!missing.empty() && !extra_peers.empty()) {
+            std::vector<SourceAvailability> sources;
+            std::map<std::string, PeerMetrics> metrics;
+            auto add_av = [&](const std::string& eh, uint16_t eport) {
+                Pq1Session av;
+                av.stop = stop;
+                av.pinfile = pinfile;
+                std::string aerr;
+                if (!av.Connect(pq, eh, eport, aerr)) return;
+                NativeRequest areq;
+                NativeResponse aresp;
+                areq.method = "POST";
+                areq.path = std::string(MODEL_HTTP_ROOT) + "availability";
+                areq.body = "{}";
+                if (!av.Request(areq, aresp, aerr) || aresp.status != 200) return;
+                UniValue aj;
+                if (!aj.read(aresp.body)) return;
+                PeerId pid;
+                pid.endpoint = eh + ":" + std::to_string(eport);
+                std::string perr;
+                (void)ParseAvailabilitySources(aj, pid.endpoint, pid, artifact, sources, perr);
+            };
+            add_av(host, port);
+            for (const auto& ep : extra_peers) {
+                std::string eh;
+                uint16_t eport = 0;
+                if (SplitHostPort(ep, eh, eport)) add_av(eh, eport);
+            }
+            std::vector<uint32_t> miss32;
+            for (auto i : missing) miss32.push_back(static_cast<uint32_t>(i));
+            PickConfig pcfg;
+            pcfg.rng_seed = static_cast<uint32_t>(file_index + 1) * 2654435761u;
+            pcfg.max_assignments = static_cast<int>(missing.size() * 2 + 1);
+            OutstandingSet none;
+            const auto picks = PickRarestFirst(file_index, static_cast<uint32_t>(n), miss32, sources, metrics, none, {}, pcfg);
+            g_swarm.current_endgame.store(EndgameActive(missing.size(), missing.size() * PIECE_SIZE, pcfg));
+            std::map<std::string, std::vector<uint64_t>> by_peer;
+            for (const auto& a : picks) {
+                by_peer[a.endpoint].push_back(a.piece_index);
+                if (a.endgame_duplicate) g_swarm.duplicate_endgame_requests.fetch_add(1);
+            }
+            const std::string self = host + ":" + std::to_string(port);
+            if (!by_peer.empty()) {
+                auto it = by_peer.find(self);
+                if (it != by_peer.end()) {
+                    missing = it->second;
+                }
+                for (const auto& kv : by_peer) {
+                    if (kv.first == self) continue;
+                    std::string eh;
+                    uint16_t eport = 0;
+                    if (!SplitHostPort(kv.first, eh, eport)) continue;
+                    extra_threads.emplace_back([&, eh, eport, assigned = kv.second, file_index, size, pieces_root]() {
+                        Pq1Session xs;
+                        xs.stop = stop;
+                        xs.pinfile = pinfile;
+                        std::string xerr;
+                        if (!xs.Connect(pq, eh, eport, xerr)) return;
+                        if (!issue_grant(xs, file_index, xerr)) return;
+                        for (uint64_t i : assigned) {
+                            if (stop && stop->load()) return;
+                            std::vector<unsigned char> raw;
+                            std::vector<Digest48> proof;
+                            uint64_t hs = size;
+                            Digest48 hr = pieces_root;
+                            if (fetch_one(xs, file_index, i, size, pieces_root, raw, proof, hs, hr, xerr)) {
+                                extra_ok.fetch_add(1);
+                                leaves[i] = ChunkLeaf(i, raw);
+                                if (progress) {
+                                    progress->piece_index.store(static_cast<uint32_t>(i));
+                                    progress->pieces_committed.fetch_add(1);
+                                    NoteRetrieveBytes(progress, cat.UsedBytes());
+                                }
+                            }
+                        }
+                    });
+                }
             }
         }
         if (!missing.empty()) {
@@ -3166,8 +4322,12 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
             worker(*pool[0]);
             for (auto& t : threads) t.join();
             if (progress) progress->inflight.store(0);
-            if (fail.load()) return false;
+            if (fail.load()) {
+                for (auto& t : extra_threads) if (t.joinable()) t.join();
+                return false;
+            }
         }
+        for (auto& t : extra_threads) if (t.joinable()) t.join();
         if (size > 0) {
             size_t width = 1;
             while (width < n) width <<= 1;
@@ -3334,6 +4494,50 @@ void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* 
         }
         const int wto = nreq.path.find("/pieces/") != std::string::npos ? PQ1_TRANSFER_MS : PQ1_IDLE_MS;
         if (!SslWriteAll(ssl, cfd, FormatHttpResponse(nresp), wto, stop, err)) break;
+        if (nresp.splice_tcp && !nresp.splice_host.empty() && nresp.splice_port) {
+            int dfd = -1;
+            addrinfo hints{};
+            hints.ai_socktype = SOCK_STREAM;
+            hints.ai_family = AF_UNSPEC;
+            addrinfo* res = nullptr;
+            if (getaddrinfo(nresp.splice_host.c_str(), std::to_string(nresp.splice_port).c_str(), &hints, &res) == 0 && res) {
+                dfd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+                if (dfd >= 0 && ::connect(dfd, res->ai_addr, res->ai_addrlen) != 0) {
+                    close(dfd);
+                    dfd = -1;
+                }
+                freeaddrinfo(res);
+            }
+            if (dfd >= 0) {
+                SetPq1SocketOpts(dfd, true);
+                uint64_t moved = 0;
+                while (!stop || !stop->load()) {
+                    if (moved > (uint64_t{1} << 30)) break;
+                    pollfd pf[2]{};
+                    pf[0].fd = cfd;
+                    pf[0].events = POLLIN;
+                    pf[1].fd = dfd;
+                    pf[1].events = POLLIN;
+                    const int pr = poll(pf, 2, 15000);
+                    if (pr <= 0) break;
+                    unsigned char buf[16384];
+                    if (pf[0].revents & POLLIN) {
+                        const int n = SSL_read(ssl, buf, sizeof(buf));
+                        if (n <= 0) break;
+                        if (::send(dfd, buf, n, 0) != n) break;
+                        moved += static_cast<uint64_t>(n);
+                    }
+                    if (pf[1].revents & POLLIN) {
+                        const int n = ::recv(dfd, buf, sizeof(buf), 0);
+                        if (n <= 0) break;
+                        if (SSL_write(ssl, buf, n) != n) break;
+                        moved += static_cast<uint64_t>(n);
+                    }
+                }
+                close(dfd);
+            }
+            break;
+        }
     }
     SSL_shutdown(ssl);
     SSL_free(ssl);
@@ -3360,8 +4564,54 @@ static PreservationPolicy PolicyFromConfig(const HelperConfig& cfg)
     return p;
 }
 
+static void RefreshAutoStorage(HelperConfig& cfg, ModelCatalog* cat)
+{
+    g_runtime.storage_mode = cfg.storage_mode;
+    g_runtime.demand_seed = cfg.seed == "auto";
+    g_runtime.preserve_rare = cfg.preserve_rare;
+    g_runtime.upload_bps = cfg.upload_bps;
+    g_runtime.advertised_host = cfg.host && cfg.public_host_reachable;
+    g_runtime.public_host_reachable = cfg.public_host_reachable;
+    if (cfg.storage_mode == StorageMode::DISABLED) {
+        cfg.quota_bytes = 0;
+        g_runtime.effective_quota = 0;
+        g_runtime.target_bytes = 0;
+        if (cat) cat->SetQuotaBytes(0);
+        return;
+    }
+    if (cfg.storage_mode == StorageMode::FIXED) {
+        g_runtime.effective_quota = cfg.quota_bytes;
+        g_runtime.target_bytes = cfg.quota_bytes;
+        if (cat) cat->SetQuotaBytes(cfg.quota_bytes);
+        return;
+    }
+    AutoStorageParams p;
+    if (cfg.auto_cap_bytes) p.max_auto = cfg.auto_cap_bytes;
+    if (cfg.free_space_reserve_bytes) p.reserve_override = cfg.free_space_reserve_bytes;
+    FsStats fs;
+    std::string err;
+    if (!StatFilesystem(cfg.modeldir, fs, err)) {
+        fs = {};
+    }
+    const AutoQuotaResult q = ComputeAutoQuota(fs, p);
+    cfg.quota_bytes = q.effective_bytes;
+    g_runtime.fs_capacity = fs.capacity;
+    g_runtime.fs_available = fs.available;
+    g_runtime.reserve_bytes = q.reserve_bytes;
+    g_runtime.target_bytes = q.target_bytes;
+    g_runtime.effective_quota = q.effective_bytes;
+    if (cat) {
+        cat->SetQuotaBytes(q.effective_bytes);
+        std::string qerr;
+        if (cat->UsedBytes() > q.effective_bytes) {
+            (void)cat->EnforceQuota(0, qerr);
+        }
+    }
+}
+
 static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::path& pinfile, std::atomic<bool>* stop)
 {
+    if (!PreservationPermitted(cat)) return;
     const auto pol = cat.Policy();
     if (!pol.preserve_rare || pol.storage_quota_bytes == 0) return;
     const uint64_t spare = pol.storage_quota_bytes > cat.UsedBytes() ? pol.storage_quota_bytes - cat.UsedBytes() : 0;
@@ -3450,6 +4700,8 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
     if (cfg.rpc_socket.empty()) cfg.rpc_socket = cfg.modeldir / "modeld.sock";
     if (cfg.tls_cert.empty()) cfg.tls_cert = cfg.modeldir / "tls" / "cert.pem";
     if (cfg.tls_key.empty()) cfg.tls_key = cfg.modeldir / "tls" / "key.pem";
+    cfg.public_host_reachable = false;
+    RefreshAutoStorage(cfg, nullptr);
 
     Pq1Context pq;
     if (!pq.Ready()) {
@@ -3471,6 +4723,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
     }
 
     ModelCatalog cat(cfg.modeldir, cfg.quota_bytes);
+    RefreshAutoStorage(cfg, &cat);
     for (const auto& p : cfg.peers) cat.AddPeer(p);
     cat.SetPolicy(PolicyFromConfig(cfg));
     {
@@ -3486,10 +4739,32 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
     if (!cfg.bind.empty()) {
         tcp_fd = ListenTcp(cfg.bind, err);
         if (tcp_fd < 0) {
-            close(unix_fd);
-            std::cerr << err << "\n";
-            return 2;
+            std::cerr << "btx-modeld: PQ1 bind " << cfg.bind << " failed (" << err
+                      << "); unix RPC continues, hosting stays NAT-limited\n";
+            cfg.public_host_reachable = false;
+            cfg.host = false;
+            tcp_fd = -1;
+            err.clear();
         }
+    }
+    g_swarm.bind = cfg.bind;
+    g_swarm.relay = cfg.relay;
+    g_swarm.host = cfg.host;
+    g_swarm.pex.NoteSelf(cfg.bind);
+    if (tcp_fd >= 0) {
+        g_swarm.nat = AttemptModelPortMap(cfg.bind, true);
+        const bool mapped = g_swarm.nat.status == ModelNatStatus::MAPPED;
+        const bool loopback = g_swarm.nat.status == ModelNatStatus::LOOPBACK;
+        cfg.public_host_reachable = mapped;
+        g_runtime.public_host_reachable = mapped;
+        g_swarm.reach.SetListen(cfg.bind);
+        if (mapped) g_swarm.reach.SetMapped(g_swarm.nat.external);
+        g_runtime.advertised_host = g_swarm.reach.MayAdvertiseHost(cfg.host) &&
+                                      MayAdvertiseModelHost(cfg.host, mapped, loopback);
+    } else {
+        g_swarm.nat.status = ModelNatStatus::DISABLED;
+        cfg.public_host_reachable = false;
+        g_runtime.advertised_host = false;
     }
     const fs::path pinfile = cfg.modeldir / "tls" / "pins.json";
     std::mutex qmu;
@@ -3525,6 +4800,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
         });
     }
     std::cout << "btx-modeld: PQ1 ready; unix=" << fs::PathToString(cfg.rpc_socket)
+              << " storage=" << StorageModeName(cfg.storage_mode)
               << " quota=" << cfg.quota_bytes
               << " seed=" << cfg.seed
               << " preserve_rare=" << (cfg.preserve_rare ? "1" : "0")
@@ -3538,6 +4814,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
 
     // Preserve-rare: first tick immediately, then every 5s (fail-fast e2e; not a 60s stall).
     auto last_preserve = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+    auto last_quota = std::chrono::steady_clock::now();
     while (!stop->load()) {
         pollfd fds[2]{};
         nfds_t nf = 1;
@@ -3549,6 +4826,11 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
             nf = 2;
         }
         const int pr = poll(fds, nf, 250);
+        if (cfg.storage_mode == StorageMode::AUTO &&
+            std::chrono::steady_clock::now() - last_quota >= std::chrono::seconds(60)) {
+            RefreshAutoStorage(cfg, &cat);
+            last_quota = std::chrono::steady_clock::now();
+        }
         if (cfg.preserve_rare &&
             std::chrono::steady_clock::now() - last_preserve >= std::chrono::seconds(5)) {
             TryPreserveRareTick(cat, pq, pinfile, stop);
@@ -3594,6 +4876,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
     JoinRetrieveJobs();
     close(unix_fd);
     if (tcp_fd >= 0) close(tcp_fd);
+    ReleaseModelPortMap(g_swarm.nat);
     ::unlink(fs::PathToString(cfg.rpc_socket).c_str());
     return 0;
 }

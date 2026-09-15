@@ -33,8 +33,8 @@ build-gcc13/bin/btx-modeld \
   -modelhost
 ```
 
-Unix RPC is one JSON line. Default quota is **0** until `-modelstorage` /
-`-modelcache` is positive.
+Unix RPC is one JSON line. Packaged default storage is **auto**. `-modelstorage=0`
+is the explicit no-payload setting.
 
 ## Two-helper retrieve
 

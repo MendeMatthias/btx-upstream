@@ -17,6 +17,7 @@ void RegisterMempoolRPCCommands(CRPCTable&);
 void RegisterMiningRPCCommands(CRPCTable &tableRPC);
 void RegisterMatMulTrustedRPCCommands(CRPCTable&);
 void RegisterNodeRPCCommands(CRPCTable&);
+void RegisterResourceGovernorRPCCommands(CRPCTable&);
 void RegisterNetRPCCommands(CRPCTable&);
 void RegisterOutputScriptRPCCommands(CRPCTable&);
 void RegisterRawTransactionRPCCommands(CRPCTable &tableRPC);
@@ -36,6 +37,7 @@ static inline void RegisterAllCoreRPCCommands(CRPCTable &t)
     RegisterMiningRPCCommands(t);
     RegisterMatMulTrustedRPCCommands(t);
     RegisterNodeRPCCommands(t);
+    RegisterResourceGovernorRPCCommands(t);
     RegisterNetRPCCommands(t);
     RegisterOutputScriptRPCCommands(t);
     RegisterRawTransactionRPCCommands(t);

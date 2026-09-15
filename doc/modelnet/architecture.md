@@ -9,7 +9,7 @@ btx-open / btx-cli / btx-qt
    btx-modeld  <---- PQ1 TLS 1.3 /btx-model/2/ ----> peer btx-modeld
         ^
         |  optional proxy
-      btxd  (-modelrpcsocket, -modelnet introduction hints only)
+      btxd  (owns btx-modeld lifecycle by default; -modelrpcsocket for an external helper)
 ```
 
 ## Why two processes
@@ -28,10 +28,10 @@ insert artifact endpoints into AddrMan.
 | Flag | Meaning |
 |---|---|
 | `-modeldir=` | Catalog and piece store. Never wallet or chainstate. |
-| `-modelstorage=` / `-modelcache=` | Payload quota. Default **0**. Accepts `80GiB` or raw bytes. Zero: no payload, no seeding, no preserve-rare. |
+| `-modelstorage=` / `-modelcache=` | Payload quota. Packaged default **auto** (bounded 10% of the model-store filesystem, 32 GiB–512 GiB, never below the free-space reserve). `0` is explicit no-payload. Explicit sizes (`80GiB`) are FIXED. |
 | `-modelseed=` | `auto` (default): demand-seed after intentional import/retrieve. `manual` / `off` disable auto-advertise. |
 | `-modelpreserverare` | Opt-in fetch of qualified under-replicated models into spare quota. |
-| `-modelbind=` | PQ1 listen `host:port`. Empty = unix RPC only. `-modelhost` defaults to `127.0.0.1:29447`. |
+| `-modelbind=` | PQ1 listen `host:port`. Packaged `btxd` default is `0.0.0.0:29447` (participant listen). Bind failure is unix-only, not a monetary failure. Empty/`off` = unix RPC only. Standalone `btx-modeld` without `-modelbind` stays unix-only. `-modelhost` still does not imply `NODE_MODEL_HOST`. |
 | `-modelrpcsocket=` | Unix JSON-RPC socket. |
 | `-modeltransport=pq1` | Only accepted value; anything else fail-closes. |
 | `-modeltlscert=` / `-modeltlskey=` | Self-signed ML-DSA-44 material (generated if missing). |
@@ -39,8 +39,32 @@ insert artifact endpoints into AddrMan.
 | `-modelrelay` | CPU-only discovery relay: no GPU, no wallet, no payload required. |
 | `-decode=` | Decode a URI and exit. |
 
-`btxd -modelrpcsocket=` defaults to `<datadir>/modelnet/modeld.sock`. If the
-helper is down, model RPCs fail closed; monetary RPCs are unaffected.
+`btxd -modelrpcsocket=` defaults to `<datadir>/modelnet/modeld.sock`.
+Packaged 0.34.7 `btxd` **starts and supervises** `btx-modeld` (`-modelnet=1`)
+unless `-modelnet=0` or an explicit `-modelrpcsocket` already names an
+external helper. If the owned helper is down, model RPCs fail closed;
+monetary RPCs are unaffected. `-modelnetrequired=1` is the only way helper
+failure becomes a chain startup failure.
+
+`NODE_MODEL_HOST` is advertised only when `-modelhost` is set after proven
+reachability. A running helper does not by itself make the node a public host.
+
+## NAT / reachability (0.34.7)
+
+PQ1 native HTTP is **client connects, server responds**. A NATed participant
+that cannot accept inbound TCP can still:
+
+- retrieve over outbound sessions
+- serve pieces to peers that already connected inbound
+- keep demand-seeded bytes for later
+
+It cannot accept a *new* WAN inbound without a successful mapping or an explicit
+public endpoint. Automatic monetary PCP/NAT-PMP maps the **monetary** P2P
+port only; it is not reused for the model plane (wallet RPC and monetary
+hidden/private endpoints are never published as model contacts). Model-plane
+PCP mapping is a remaining limitation: `public_host_reachable` stays false
+and `nat_limited` is true until an operator proves reachability (`-modelhost`
+after a working public endpoint). Strict PQ1 is never weakened for traversal.
 
 ## Native HTTP (`/btx-model/2/`)
 

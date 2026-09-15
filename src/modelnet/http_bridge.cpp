@@ -28,6 +28,10 @@ constexpr const char* PUBLIC_DOWNLOAD_ENV = "BTX_BRIDGE_PUBLIC_DOWNLOAD";
 constexpr const char* WEB_COMPAT =
     "WEB COMPATIBILITY - NOT NATIVE END-TO-END PQ";
 
+constexpr const char* API_V1_RPC_NOTE =
+    "Browser bridge has no catalog. Use btx-modeld unix RPC "
+    "(searchmodels, getmodeldirectoryentry, getmodeldirectory, getnetworkmodelstats, ...).";
+
 std::string TrimCopy(std::string s);
 std::string PathOnly(const std::string& path);
 std::string QueryParam(const std::string& path, const std::string& key);
@@ -293,6 +297,128 @@ UniValue DecodeObject(const Resource& r)
     return obj;
 }
 
+UniValue ApiV1Shell()
+{
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("schema_version", 2);
+    obj.pushKV("authoritative", false);
+    obj.pushKV("coverage", "incomplete");
+    obj.pushKV("global_complete", false);
+    obj.pushKV("coverage_note",
+               "Observed providers and indexed records only; not a global directory.");
+    obj.pushKV("note", API_V1_RPC_NOTE);
+    return obj;
+}
+
+bool TryAppendDecodeResult(UniValue& results, const std::string& text)
+{
+    if (text.empty()) return false;
+    Resource r;
+    std::string err;
+    if (!DecodeResource(text, r, err) && !DecodeResource("btx://" + text, r, err)) {
+        return false;
+    }
+    results.push_back(DecodeObject(r));
+    return true;
+}
+
+bool RouteIsApiV1(const std::string& route)
+{
+    if (route.size() < 7 || route.compare(0, 7, "/api/v1") != 0) return false;
+    return route.size() == 7 || route[7] == '/';
+}
+
+/**
+ * Optional read-only /api/v1 JSON (no catalog, no unix RPC from this TU).
+ * Returns true when route is under /api/v1 (including 404 for unknown paths).
+ */
+bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
+{
+    const std::string route = NormalizedRoute(path);
+    if (!RouteIsApiV1(route)) return false;
+
+    auto finish = [&](UniValue obj, int status, bool ok, std::string canonical = {}) {
+        return FillJson(out, status, std::move(obj), ok, std::move(canonical));
+    };
+
+    if (route == "/api/v1/search") {
+        UniValue obj = ApiV1Shell();
+        const std::string q = QueryParam(path, "q");
+        obj.pushKV("text", q);
+        UniValue results(UniValue::VARR);
+        TryAppendDecodeResult(results, q);
+        obj.pushKV("results", results);
+        obj.pushKV("remote_count", 0);
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route == "/api/v1/models") {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("results", UniValue(UniValue::VARR));
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route.rfind("/api/v1/models/", 0) == 0) {
+        const std::string id = route.substr(std::string_view{"/api/v1/models/"}.size());
+        if (id.empty() || id.find('/') != std::string::npos) {
+            UniValue obj = ApiV1Shell();
+            obj.pushKV("error", "not found");
+            return finish(std::move(obj), 404, false);
+        }
+        Resource r;
+        std::string err;
+        if (DecodeResource(id, r, err) || DecodeResource("btx://" + id, r, err)) {
+            UniValue obj = DecodeObject(r);
+            obj.pushKV("schema_version", 2);
+            obj.pushKV("authoritative", false);
+            obj.pushKV("coverage", "incomplete");
+            obj.pushKV("global_complete", false);
+            obj.pushKV("model_id", r.digest.Hex());
+            return finish(std::move(obj), 200, true, r.Uri());
+        }
+        Digest48 hex_id;
+        if (Digest48::FromHex(id, hex_id, err) && !hex_id.IsNull()) {
+            UniValue obj = ApiV1Shell();
+            obj.pushKV("error", "non-btx id; HTTP bridge decodes btx:// tokens only");
+            return finish(std::move(obj), 400, false);
+        }
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("error", "malformed id");
+        return finish(std::move(obj), 400, false);
+    }
+
+    if (route == "/api/v1/publishers") {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("publishers", UniValue(UniValue::VARR));
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route == "/api/v1/collections") {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("collections", UniValue(UniValue::VARR));
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route == "/api/v1/releases") {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("results", UniValue(UniValue::VARR));
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route == "/api/v1/network/stats") {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("models_known", 0);
+        obj.pushKV("models_local", 0);
+        obj.pushKV("search_records_known", 0);
+        obj.pushKV("coverage_disclaimer", "this node's observations only");
+        return finish(std::move(obj), 200, true);
+    }
+
+    UniValue obj = ApiV1Shell();
+    obj.pushKV("error", "not found");
+    return finish(std::move(obj), 404, false);
+}
+
 } // namespace
 
 int BridgeTlsMaxWildcardDepth()
@@ -405,6 +531,8 @@ bool HandleBridgeGet(const std::string& path, BrowserBridgeResponse& out,
         if (WantsHtml(path, headers)) return FillHtml(out, r);
         return FillJson(out, 200, DecodeObject(r), true, r.Uri());
     }
+
+    if (HandleApiV1Get(path, out)) return true;
 
     std::string token = PathOnly(path);
     if (!token.empty() && token.front() == '/') token.erase(0, 1);

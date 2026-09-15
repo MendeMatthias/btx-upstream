@@ -697,6 +697,7 @@ int GuiMain(int argc, char* argv[])
         app.InitPruneSetting(intro->getPruneMiB());
         gArgs.ForceSetArg("-assumevalid", intro->getAssumeValid().toStdString());
 #ifdef ENABLE_MODELNET
+        gArgs.ForceSetArg("-modelnet", intro->getModelNetParticipateChecked() ? "1" : "0");
         gArgs.ForceSetArg("-modelstorage", intro->getModelStorageArg().toStdString());
         if (intro->getDemandSeedChecked()) {
             gArgs.ForceSetArg("-modelseed", "auto");
@@ -706,11 +707,17 @@ int GuiMain(int argc, char* argv[])
         if (intro->getPreserveRareChecked()) {
             gArgs.ForceSetArg("-modelpreserverare", "1");
         }
+        gArgs.ForceSetArg("-resourcegovernor", intro->getSpareResourcesChecked() ? "auto" : "off");
+        gArgs.ForceSetArg("-automining", intro->getMiningIdleChecked() ? "1" : "0");
         {
             modelnet::FirstRunConsent consent;
-            consent.storage_bytes = intro->getModelStorageBytes();
+            consent.storage_bytes = intro->getModelStorageAutoChecked() ? 0 : intro->getModelStorageBytes();
+            consent.storage_mode = intro->getModelStorageAutoChecked() ? modelnet::StorageMode::AUTO :
+                (consent.storage_bytes == 0 ? modelnet::StorageMode::DISABLED : modelnet::StorageMode::FIXED);
             consent.seed = intro->getDemandSeedChecked() ? modelnet::SeedMode::AUTO : modelnet::SeedMode::OFF;
             consent.preserve_rare = intro->getPreserveRareChecked();
+            consent.resource_governor_auto = intro->getSpareResourcesChecked();
+            consent.mining_idle = intro->getMiningIdleChecked();
             consent.consented_unix = GetTime();
             std::string consent_err;
             const fs::path consent_path = modelnet::FirstRunConsentPath(gArgs.GetDataDirNet());

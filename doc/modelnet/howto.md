@@ -14,14 +14,17 @@ A BTX node already has compute. `btx-modeld` gives it **models**; `btxd`
 gives it **money**. They are two processes. Strict PQ1 or the helper
 fail-closes. If the helper dies, monetary BTX stays up.
 
-Defaults after a **positive** `-modelstorage` / `-modelcache`:
+Defaults for a packaged install (`-modelnet=1`, `-modelstorage=auto`):
 
 | Knob | Default | Meaning |
 |---|---|---|
+| helper | `btxd` starts `btx-modeld` | `-modelnet=0` / `-nomodelnet` disables. `-modelhelper=` missing does not spawn a substitute. |
+| `-modelbind` | `0.0.0.0:29447` when `btxd` owns the helper | Participant listen. `NODE_MODEL_HOST` stays off until proven reachability. |
 | `-modelseed` | `auto` | Demand-seed: an intentional `importmodel` / `getmodel` is retained and re-advertised inside quota |
 | `-modelseedupondownload` | B0 **alias** of seed off/auto | **Not** a second opt-in gate |
 | preserve-rare | off | Unsolicited fetch of under-replicated models stays explicit (`-modelpreserverare`) |
 | automatic spend | 0 | `FREE_ONLY` never becomes paid because a timer expired |
+| resource governor | `AUTO` | Spare GPU/network/disk only. See [resource-governor/README.md](../resource-governor/README.md). `-automining` does not enable mining by itself. |
 
 `seedmodel` is only for `-modelseed=manual`.
 

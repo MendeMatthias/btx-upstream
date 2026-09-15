@@ -137,6 +137,45 @@ private:
     std::optional<std::string> m_prev;
 };
 
+BOOST_AUTO_TEST_CASE(api_v1_search_readonly_json)
+{
+    modelnet::BrowserBridgeResponse br;
+    BOOST_REQUIRE(modelnet::HandleBridgeGet("/api/v1/search?q=test", br));
+    BOOST_CHECK_EQUAL(br.http_status, 200);
+    BOOST_CHECK(br.ok);
+    UniValue obj = ParseBody(br);
+    CheckDisclosure(obj);
+    BOOST_CHECK_EQUAL(obj["schema_version"].getInt<int>(), 2);
+    BOOST_CHECK(HasBoolCI(obj, "authoritative", false));
+    BOOST_CHECK(HasBoolCI(obj, "global_complete", false));
+    BOOST_REQUIRE(obj.exists("results"));
+    BOOST_CHECK(obj["results"].isArray());
+    BOOST_CHECK_EQUAL(obj["results"].size(), 0U);
+
+    const std::string uri = FirstVectorUri();
+    BOOST_REQUIRE(modelnet::HandleBridgeGet("/api/v1/search?q=" + uri, br));
+    BOOST_CHECK_EQUAL(br.http_status, 200);
+    obj = ParseBody(br);
+    CheckDisclosure(obj);
+    BOOST_REQUIRE(obj["results"].isArray());
+    BOOST_CHECK_EQUAL(obj["results"].size(), 1U);
+    BOOST_CHECK_EQUAL(obj["results"][0]["canonical"].get_str(), uri);
+}
+
+BOOST_AUTO_TEST_CASE(api_v1_models_hex_id_non_btx_is_400)
+{
+    const std::string uri = FirstVectorUri();
+    modelnet::BrowserBridgeResponse decoded;
+    BOOST_REQUIRE(modelnet::HandleBridgeGet("/open?uri=" + uri, decoded));
+    const std::string hex_id = ParseBody(decoded)["digest"].get_str();
+
+    modelnet::BrowserBridgeResponse br;
+    BOOST_REQUIRE(modelnet::HandleBridgeGet("/api/v1/models/" + hex_id, br));
+    BOOST_CHECK_EQUAL(br.http_status, 400);
+    BOOST_CHECK(!br.ok);
+    CheckDisclosure(ParseBody(br));
+}
+
 BOOST_AUTO_TEST_CASE(malformed_uri_is_400)
 {
     modelnet::BrowserBridgeResponse br;

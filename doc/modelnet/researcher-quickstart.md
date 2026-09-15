@@ -18,13 +18,15 @@ btx://pqwy06q0q7wwzy70aeq45sxnlvq3mr067yt4jzphzvnfn2c4zc24zxz665zdprf0nwgskvqq9c
 
 ## First-run storage consent
 
-A fresh install stores **no payload** until you allocate a finite disk
-budget. Financial controls are not a prerequisite.
+A fresh packaged install participates in the model network with **automatic
+bounded storage**. `-modelstorage=0` stores no payload. Financial controls
+are not a prerequisite.
 
-- **CLI:** `-modelstorage=80GiB` (or `-modelcache`) enables demand-seed
-  (`-modelseed=auto`) without preserve-rare unless you also pass
-  `-modelpreserverare`. Parse `80GiB` the same way as the helper.
-  Zero budget refuses payload. Automatic spend stays 0.
+- **CLI:** `-modelstorage=auto` (packaged default) or `-modelstorage=80GiB`.
+  `-modelseed=auto` demand-seeds after import/getmodel. Preserve-rare stays
+  off unless `-modelpreserverare`. Automatic spend stays 0.
+- **Keep / pin:** `pinmodel` / `unpinmodel`. Pinned models are never
+  automatically evicted.
 - **btx-open:** still one URI argument, preview only, never opens the
   wallet. Prints `storage_consent_required=true` when `BTX_MODEL_STORAGE`
   is unset, empty, or zero.

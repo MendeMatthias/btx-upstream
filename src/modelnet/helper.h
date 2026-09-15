@@ -5,6 +5,7 @@
 #ifndef BITCOIN_MODELNET_HELPER_H
 #define BITCOIN_MODELNET_HELPER_H
 
+#include <modelnet/auto_storage.h>
 #include <modelnet/catalog.h>
 #include <modelnet/transport_pq.h>
 #include <univalue.h>
@@ -31,17 +32,24 @@ struct NativeResponse {
     std::vector<unsigned char> raw;
     bool binary{false};
     std::vector<std::pair<std::string, std::string>> headers;
+    bool splice_tcp{false};
+    std::string splice_host;
+    uint16_t splice_port{0};
 };
 
 struct HelperConfig {
     fs::path modeldir;
+    StorageMode storage_mode{StorageMode::AUTO};
     uint64_t quota_bytes{0};
+    uint64_t auto_cap_bytes{0};
+    uint64_t free_space_reserve_bytes{0};
     std::string bind; // host:port; empty = unix RPC only
     fs::path rpc_socket;
     fs::path tls_cert;
     fs::path tls_key;
     bool relay{false};
     bool host{false};
+    bool public_host_reachable{false};
     std::string seed{"auto"};
     bool preserve_rare{false};
     bool allow_encrypted{false};
@@ -90,7 +98,8 @@ inline bool RetrieveJobIsNewer(int64_t created_a, const std::string& id_a,
 
 bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& host, uint16_t port,
                            const Digest48& model_id, std::string& err, std::atomic<bool>* stop = nullptr,
-                           const fs::path& pinfile = {}, RetrieveProgress* progress = nullptr);
+                           const fs::path& pinfile = {}, RetrieveProgress* progress = nullptr,
+                           const std::vector<std::string>& extra_peers = {});
 
 } // namespace modelnet
 

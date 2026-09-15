@@ -1,8 +1,8 @@
 # BTX 0.34.7 — Native Model Network (RC)
 
-**Status:** 0.34.7 release. Packaged
-`planning/acceptance-matrix.csv` is the production bar. `CLIENT_VERSION` is
-**0.34.7** with `CLIENT_VERSION_IS_RELEASE=true`.
+**Status:** 0.34.7 RC. Packaged `planning/acceptance-matrix.csv` is the
+production bar. `CLIENT_VERSION` is **0.34.7** with
+`CLIENT_VERSION_IS_RELEASE=false` until remaining GOV/search/lab gates run.
 
 A BTX node already has compute. 0.34.7 gives it **models and money** on an
 isolated plane. Inference is **local after acquisition**. Remote/paid
@@ -21,6 +21,9 @@ never `cudaSetDevice` inside `btxd`. Default `-modelruntimecheck=0` is
 - Demand-seed default once a storage budget is allocated (D11); unsolicited fetch remains opt-in
 - Default automatic spend **0**; paid funding RPCs freeze `htlc_sha256`
 - HTLC reuse of 0.34.6 `htlc_sha256` / `buildhtlcclaim` / `buildhtlcrefund`
+- Install-and-forget resource governor (`AUTO` default): spare GPU/network/disk
+  with yield to foreground AI and ExactReplay. See
+  [doc/resource-governor/README.md](../resource-governor/README.md).
 
 ## What did not change
 

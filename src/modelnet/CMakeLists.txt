@@ -34,8 +34,18 @@ add_library(bitcoin_modelnet STATIC
   http_bridge.cpp
   cores.cpp
   catalog.cpp
-    helper.cpp
-    pq1_runtime.cpp
+  helper.cpp
+  pq1_runtime.cpp
+  piece_picker.cpp
+  provider_exchange.cpp
+  model_nat.cpp
+  auto_storage.cpp
+  piece_ranges.cpp
+  supervisor.cpp
+  reachability.cpp
+  relay_reserve.cpp
+  provider_route.cpp
+  search.cpp
 )
 target_link_libraries(bitcoin_modelnet
   PUBLIC

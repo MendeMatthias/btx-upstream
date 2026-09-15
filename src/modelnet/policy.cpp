@@ -366,8 +366,13 @@ bool SelectPreserveRare(const std::vector<PreserveCandidate>& observed,
 int EvictPriority(const EvictItem& item)
 {
     if (item.pinned) return 1000;
+    if (item.incomplete) return -40;
+    if (item.expired_ciphertext) return -30;
+    if (item.failed_unqualified) return -20;
+    if (item.recently_protected) return 90;
     if (item.observed_sources > 0 && item.observed_sources <= 2) return 80;
     if (item.seeded) return 40;
+    if (item.giveback_complete) return -10;
     return 0;
 }
 

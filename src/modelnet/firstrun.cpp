@@ -25,6 +25,7 @@ bool ParseStorageBudget(const std::string& in, uint64_t& out, std::string& err)
 
 bool AllowPayloadStorage(const FirstRunConsent& in)
 {
+    if (in.storage_mode == StorageMode::AUTO) return true;
     return in.storage_bytes > 0;
 }
 
@@ -58,6 +59,16 @@ bool LoadFirstRunConsent(const fs::path& path, FirstRunConsent& out, std::string
                 out.storage_bytes = v.getInt<uint64_t>();
             }
         }
+        if (obj.exists("storage_mode") && obj["storage_mode"].isStr()) {
+            StorageMode mode;
+            if (StorageModeFromName(obj["storage_mode"].get_str(), mode)) {
+                out.storage_mode = mode;
+            }
+        } else if (out.storage_bytes > 0) {
+            out.storage_mode = StorageMode::FIXED;
+        } else {
+            out.storage_mode = StorageMode::DISABLED;
+        }
         if (obj.exists("seed") && obj["seed"].isStr()) {
             if (!SeedModeFromName(obj["seed"].get_str(), out.seed)) {
                 err = "seed must be auto, manual, or off";
@@ -65,6 +76,10 @@ bool LoadFirstRunConsent(const fs::path& path, FirstRunConsent& out, std::string
             }
         }
         if (obj.exists("preserve_rare")) out.preserve_rare = obj["preserve_rare"].get_bool();
+        if (obj.exists("resource_governor_auto")) {
+            out.resource_governor_auto = obj["resource_governor_auto"].get_bool();
+        }
+        if (obj.exists("mining_idle")) out.mining_idle = obj["mining_idle"].get_bool();
         if (obj.exists("consented_unix")) out.consented_unix = obj["consented_unix"].getInt<int64_t>();
     } catch (const std::exception& e) {
         err = e.what();
@@ -86,8 +101,11 @@ bool SaveFirstRunConsent(const fs::path& path, const FirstRunConsent& in, std::s
     }
     UniValue o(UniValue::VOBJ);
     o.pushKV("storage_bytes", in.storage_bytes);
+    o.pushKV("storage_mode", StorageModeName(in.storage_mode));
     o.pushKV("seed", SeedModeName(in.seed));
     o.pushKV("preserve_rare", in.preserve_rare);
+    o.pushKV("resource_governor_auto", in.resource_governor_auto);
+    o.pushKV("mining_idle", in.mining_idle);
     o.pushKV("consented_unix", in.consented_unix);
     if (!WriteBinaryFile(path, o.write() + "\n")) {
         err = "failed to write first-run consent";

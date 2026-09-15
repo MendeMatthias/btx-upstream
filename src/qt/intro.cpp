@@ -172,8 +172,13 @@ Intro::Intro(QWidget *parent, int64_t blockchain_size_gb, int64_t chain_state_si
     ui->modelStorageSpin->setRange(0, 1048576);
     ui->modelStorageSpin->setValue(500);
     ui->modelStorageUnit->setCurrentIndex(1); // GiB
+    ui->modelNetParticipate->setChecked(true);
+    ui->modelStorageAuto->setChecked(true);
     ui->modelDemandSeed->setChecked(true);
-    ui->modelPreserveRare->setChecked(true);
+    ui->modelResourceGovernor->setChecked(true);
+    ui->modelMiningIdle->setChecked(false);
+    ui->modelPreserveRare->setChecked(false);
+    ui->lblResourceMode->setText(tr("Resource mode: Automatic"));
     ui->installOsHandler->setChecked(true);
     ui->installOsHandlerSystem->setChecked(false);
 #if defined(Q_OS_LINUX)
@@ -181,6 +186,9 @@ Intro::Intro(QWidget *parent, int64_t blockchain_size_gb, int64_t chain_state_si
     connect(ui->installOsHandler, &QCheckBox::toggled, this, [this](bool on) {
         ui->installOsHandlerSystem->setEnabled(on);
         if (!on) ui->installOsHandlerSystem->setChecked(false);
+    });
+    connect(ui->modelResourceGovernor, &QCheckBox::toggled, this, [this](bool on) {
+        ui->lblResourceMode->setText(on ? tr("Resource mode: Automatic") : tr("Resource mode: Off"));
     });
 #else
     ui->installOsHandler->setVisible(false);
@@ -304,6 +312,7 @@ uint64_t Intro::getModelStorageBytes() const
 
 QString Intro::getModelStorageArg() const
 {
+    if (ui->modelStorageAuto->isChecked()) return QStringLiteral("auto");
     const int n = std::max(0, ui->modelStorageSpin->value());
     if (n == 0) return QStringLiteral("0");
     static const char* units[] = {"MiB", "GiB", "TiB"};
@@ -311,9 +320,29 @@ QString Intro::getModelStorageArg() const
     return QString::number(n) + QLatin1String(units[idx]);
 }
 
+bool Intro::getModelNetParticipateChecked() const
+{
+    return ui->modelNetParticipate->isChecked();
+}
+
+bool Intro::getModelStorageAutoChecked() const
+{
+    return ui->modelStorageAuto->isChecked();
+}
+
 bool Intro::getDemandSeedChecked() const
 {
     return ui->modelDemandSeed->isChecked();
+}
+
+bool Intro::getSpareResourcesChecked() const
+{
+    return ui->modelResourceGovernor->isChecked();
+}
+
+bool Intro::getMiningIdleChecked() const
+{
+    return ui->modelMiningIdle->isChecked();
 }
 
 bool Intro::getPreserveRareChecked() const

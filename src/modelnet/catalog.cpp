@@ -5,9 +5,11 @@
 #include <modelnet/catalog.h>
 
 #include <modelnet/crypto.h>
+#include <modelnet/piece_ranges.h>
 #include <modelnet/resource_uri.h>
 #include <crypto/sha384.h>
 #include <util/strencodings.h>
+#include <util/time.h>
 
 #include <algorithm>
 #include <cstring>
@@ -129,6 +131,9 @@ UniValue CapabilitiesObject()
     c.pushKV("remote_inference", false);
     c.pushKV("cuda_qualification", true);  // isolated posix worker; QualifyFile never cudaSetDevice
     c.pushKV("browser_bridge", false);        // optional separate process, not native PQ
+    c.pushKV("node_model_index", true);       // model-plane only; not a monetary NODE_* bit
+    c.pushKV("searchmodels", true);
+    c.pushKV("decentralized_search", true);
     c.pushKV("automatic_spend_atoms", 0);
     c.pushKV("demand_seed_default", true);
     c.pushKV("preserve_rare", true);
@@ -145,7 +150,11 @@ UniValue CapabilitiesObject()
              "POST /transfers/{id}/payment", "GET /transfers/{id}/pieces/{file}/{piece}",
              "POST /releases/{id}/pledges", "POST /releases/{id}/rounds", "POST /releases/{id}/signatures",
              "POST /ext/caps", "POST /ext/resolve", "POST /ext/objects/get", "POST /ext/objects/announce",
-             "POST /ext/free/grant", "POST /ext/receipts"}) {
+             "POST /ext/free/grant", "POST /ext/receipts",
+             "POST /ext/pex", "POST /ext/rendezvous", "POST /ext/relay/connect",
+             "POST /ext/autonat/probe", "POST /ext/autonat/report", "POST /ext/relay/reserve",
+             "POST /ext/holepunch", "POST /ext/providers/put", "POST /ext/providers/get",
+             "POST /ext/search"}) {
         http.push_back(p);
     }
     c.pushKV("http", http);
@@ -259,6 +268,7 @@ void ModelCatalog::DemandSeedLocked(CatalogEntry& e)
         e.bytes_verified = true;
     }
     e.seeded = true;
+    if (!e.seeding_started_at) e.seeding_started_at = GetTime();
     if (e.admission != AdmissionLevel::PINNED && e.admission != AdmissionLevel::ENCRYPTED_UNQUALIFIED) {
         e.admission = AdmissionLevel::SEEDING;
     }
@@ -294,14 +304,17 @@ bool ModelCatalog::ApplyDemandSeed(const Digest48& model_id, std::string& err)
 bool ModelCatalog::EnforceQuota(uint64_t need_bytes, std::string& err)
 {
     std::lock_guard<std::mutex> lock(m_mu);
+    m_store.EvictUnpinned();
     const uint64_t cap = m_policy.storage_quota_bytes ? std::min(m_policy.storage_quota_bytes, m_store.QuotaBytes()) : m_store.QuotaBytes();
     if (!cap) {
         err = "payload storage is 0 until -modelstorage / -modelcache allocates a quota";
         return false;
     }
     if (m_store.UsedBytes() + need_bytes <= cap) return true;
+    const int64_t now = GetTime();
     std::vector<EvictItem> items;
     items.reserve(m_models.size());
+    uint64_t pinned_bytes = 0;
     for (const auto& m : m_models) {
         EvictItem it;
         it.model_id = m.model_id;
@@ -309,15 +322,31 @@ bool ModelCatalog::EnforceQuota(uint64_t need_bytes, std::string& err)
         it.pinned = m.pinned;
         it.seeded = m.seeded;
         it.observed_sources = m.observed_sources;
+        it.incomplete = m.incomplete || m.admission == AdmissionLevel::FETCHING;
+        it.failed_unqualified = m.admission == AdmissionLevel::FAILED || m.admission == AdmissionLevel::ENCRYPTED_UNQUALIFIED;
+        it.expired_ciphertext = m.admission == AdmissionLevel::ENCRYPTED_UNQUALIFIED;
+        it.giveback_complete = GiveBackComplete(m_policy, m.useful_bytes_served, m.useful_bytes_received,
+                                               m.seeding_started_at ? m.seeding_started_at : m.imported_at, now);
+        const int64_t protect_from = m.completed_at ? m.completed_at : m.imported_at;
+        it.recently_protected = !m.pinned && protect_from > 0 && (now - protect_from) < m_policy.retain_seconds &&
+                               !it.giveback_complete;
+        it.last_access_at = m.last_access_at ? m.last_access_at : m.imported_at;
         for (const auto& f : m.core.files) it.bytes += f.size;
+        if (m.pinned) pinned_bytes += it.bytes;
         items.push_back(it);
     }
     std::sort(items.begin(), items.end(), [](const EvictItem& a, const EvictItem& b) {
-        return EvictPriority(a) < EvictPriority(b);
+        const int pa = EvictPriority(a);
+        const int pb = EvictPriority(b);
+        if (pa != pb) return pa < pb;
+        if (a.last_access_at != b.last_access_at) return a.last_access_at < b.last_access_at;
+        if (a.observed_sources != b.observed_sources) return a.observed_sources > b.observed_sources;
+        return a.bytes > b.bytes;
     });
     for (const auto& it : items) {
         if (m_store.UsedBytes() + need_bytes <= cap) break;
         if (it.pinned) continue;
+        if (m_active_artifacts.count(it.artifact_id)) continue;
         if (!m_store.RemoveArtifact(it.artifact_id, err)) return false;
         DropPieceTreeCache(it.artifact_id);
         m_models.erase(std::remove_if(m_models.begin(), m_models.end(), [&](const CatalogEntry& m) {
@@ -325,7 +354,11 @@ bool ModelCatalog::EnforceQuota(uint64_t need_bytes, std::string& err)
         }), m_models.end());
     }
     if (m_store.UsedBytes() + need_bytes > cap) {
-        err = "disk quota";
+        if (pinned_bytes >= cap) {
+            err = "PINNED_STORAGE_PRESSURE";
+        } else {
+            err = "disk quota";
+        }
         return false;
     }
     return PersistLocked(err);
@@ -345,6 +378,14 @@ bool ModelCatalog::PersistLocked(std::string& err)
         o.pushKV("admission", AdmissionLevelName(m.admission));
         o.pushKV("bytes_verified", m.bytes_verified);
         o.pushKV("source_path", m.source_path);
+        o.pushKV("imported_at", m.imported_at);
+        o.pushKV("completed_at", m.completed_at);
+        o.pushKV("last_access_at", m.last_access_at);
+        o.pushKV("last_served_at", m.last_served_at);
+        o.pushKV("useful_bytes_served", m.useful_bytes_served);
+        o.pushKV("useful_bytes_received", m.useful_bytes_received);
+        o.pushKV("seeding_started_at", m.seeding_started_at);
+        o.pushKV("incomplete", m.incomplete);
         o.pushKV("format_profile", m.core.format_profile);
         o.pushKV("execution_profile", m.core.execution_profile);
         o.pushKV("config_sha384", m.core.config_sha384.Hex());
@@ -402,6 +443,14 @@ bool ModelCatalog::LoadLocked(std::string& err)
         e.pinned = o["pinned"].get_bool();
         if (o.exists("observed_sources")) e.observed_sources = o["observed_sources"].getInt<int>();
         e.source_path = o["source_path"].get_str();
+        if (o.exists("imported_at")) e.imported_at = o["imported_at"].getInt<int64_t>();
+        if (o.exists("completed_at")) e.completed_at = o["completed_at"].getInt<int64_t>();
+        if (o.exists("last_access_at")) e.last_access_at = o["last_access_at"].getInt<int64_t>();
+        if (o.exists("last_served_at")) e.last_served_at = o["last_served_at"].getInt<int64_t>();
+        if (o.exists("useful_bytes_served")) e.useful_bytes_served = o["useful_bytes_served"].getInt<int64_t>();
+        if (o.exists("useful_bytes_received")) e.useful_bytes_received = o["useful_bytes_received"].getInt<int64_t>();
+        if (o.exists("seeding_started_at")) e.seeding_started_at = o["seeding_started_at"].getInt<int64_t>();
+        if (o.exists("incomplete")) e.incomplete = o["incomplete"].get_bool();
         e.core.version = 2;
         e.core.format_profile = static_cast<uint16_t>(o["format_profile"].getInt<int>());
         e.core.execution_profile = static_cast<uint16_t>(o["execution_profile"].getInt<int>());
@@ -420,6 +469,10 @@ bool ModelCatalog::LoadLocked(std::string& err)
                       (e.seeded ? AdmissionLevel::SEEDING : AdmissionLevel::STRUCTURE_VERIFIED);
         if (o.exists("bytes_verified")) e.bytes_verified = o["bytes_verified"].get_bool();
         else e.bytes_verified = e.seeded || e.pinned || AdmissionImpliesBytesVerified(e.admission);
+        if (e.pinned) {
+            std::string pin_err;
+            m_store.Pin(e.model_id, pin_err);
+        }
         m_models.push_back(std::move(e));
     }
     return true;
@@ -522,6 +575,10 @@ bool ModelCatalog::ImportPath(const std::string& path, bool pin, CatalogEntry& o
     out.core = std::move(mc);
     out.artifact = std::move(ac);
     out.source_path = path;
+    out.imported_at = GetTime();
+    out.completed_at = out.imported_at;
+    out.last_access_at = out.imported_at;
+    out.incomplete = false;
     if (pin) {
         std::string pin_err;
         m_store.Pin(model_id, pin_err);
@@ -548,6 +605,94 @@ bool ModelCatalog::Seed(const Digest48& model_id, bool on, std::string& err)
     }
     err = "unknown model";
     return false;
+}
+
+bool ModelCatalog::PinModel(const Digest48& model_id, bool on, std::string& err)
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    for (auto& m : m_models) {
+        if (m.model_id == model_id || m.artifact_id == model_id) {
+            m.pinned = on;
+            if (on) {
+                m.admission = AdmissionLevel::PINNED;
+                std::string pin_err;
+                m_store.Pin(m.model_id, pin_err);
+            } else {
+                m_store.Unpin(m.model_id);
+                if (m.seeded) m.admission = AdmissionLevel::SEEDING;
+                else m.admission = AdmissionLevel::STRUCTURE_VERIFIED;
+            }
+            return PersistLocked(err);
+        }
+    }
+    err = "unknown model";
+    return false;
+}
+
+void ModelCatalog::SetQuotaBytes(uint64_t bytes)
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    m_store.SetQuotaBytes(bytes);
+    m_policy.storage_quota_bytes = bytes;
+}
+
+void ModelCatalog::BeginTransfer(const Digest48& artifact)
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    m_active_artifacts.insert(artifact);
+}
+
+void ModelCatalog::EndTransfer(const Digest48& artifact)
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    m_active_artifacts.erase(artifact);
+}
+
+UniValue ModelCatalog::FileAvailabilityJson(const Digest48& artifact, const ModelCore& core) const
+{
+    UniValue files(UniValue::VARR);
+    uint32_t fi = 0;
+    for (const auto& f : core.files) {
+        UniValue one(UniValue::VOBJ);
+        one.pushKV("file_index", static_cast<int>(fi));
+        one.pushKV("file_size", f.size);
+        std::vector<uint32_t> have;
+        m_store.ListCommittedPieces(artifact, fi, have);
+        std::string rerr;
+        std::vector<PieceRange> ranges;
+        CompactPieceRanges(have, ranges, rerr);
+        one.pushKV("ranges", PieceRangesToJson(ranges));
+        const uint32_t n = f.size == 0 ? 0u : static_cast<uint32_t>((f.size + PIECE_SIZE - 1) / PIECE_SIZE);
+        const bool complete = PieceComplete(f.size, static_cast<uint32_t>(have.size())) && have.size() == n;
+        one.pushKV("complete", complete);
+        one.pushKV("piece_count", static_cast<int>(have.size()));
+        one.pushKV("pieces_total", static_cast<int>(n));
+        files.push_back(one);
+        ++fi;
+    }
+    return files;
+}
+
+uint64_t ModelCatalog::PinnedBytes() const
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    uint64_t n = 0;
+    for (const auto& m : m_models) {
+        if (!m.pinned) continue;
+        for (const auto& f : m.core.files) n += f.size;
+    }
+    return n;
+}
+
+uint64_t ModelCatalog::ReclaimableBytes() const
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    uint64_t n = 0;
+    for (const auto& m : m_models) {
+        if (m.pinned) continue;
+        for (const auto& f : m.core.files) n += f.size;
+    }
+    return n;
 }
 
 bool ModelCatalog::List(UniValue& out) const
@@ -578,6 +723,15 @@ bool ModelCatalog::List(UniValue& out) const
         uint64_t bytes = 0;
         for (const auto& f : m.core.files) bytes += f.size;
         o.pushKV("bytes", bytes);
+        o.pushKV("incomplete", m.incomplete);
+        UniValue files = FileAvailabilityJson(m.artifact_id, m.core);
+        bool all_complete = !files.getValues().empty() || m.core.files.empty();
+        for (const auto& f : files.getValues()) {
+            if (!f["complete"].get_bool()) all_complete = false;
+        }
+        if (m.core.files.empty()) all_complete = !m.incomplete;
+        o.pushKV("complete", all_complete && !m.incomplete);
+        o.pushKV("files", files);
         arr.push_back(o);
     }
     out.pushKV("models", arr);
@@ -614,6 +768,13 @@ bool ModelCatalog::GetManifest(const Digest48& id, UniValue& out, std::string& e
         out.pushKV("content_admission", "BYTES_VERIFIED");
     }
     out.pushKV("qualification", "structure only; not usefulness, safety, or alignment");
+    UniValue files_av = FileAvailabilityJson(e.artifact_id, e.core);
+    bool all_complete = !e.incomplete;
+    for (const auto& f : files_av.getValues()) {
+        if (!f["complete"].get_bool()) all_complete = false;
+    }
+    out.pushKV("complete", all_complete && !e.incomplete);
+    out.pushKV("incomplete", e.incomplete);
     return true;
 }
 
@@ -689,27 +850,41 @@ bool ModelCatalog::GetVerifiedPiece(const Digest48& artifact, uint32_t file_inde
     }
 
     PieceIndex idx;
-    if (!m_store.LoadPieceIndex(artifact, file_index, idx, err)) return false;
-    file_size = idx.file_size;
-    auto rows = BuildChunkTreeFromLeaves(idx.leaves);
-    if (rows.empty()) {
-        err = "chunk tree";
+    std::string index_err;
+    if (m_store.LoadPieceIndex(artifact, file_index, idx, index_err)) {
+        file_size = idx.file_size;
+        auto rows = BuildChunkTreeFromLeaves(idx.leaves);
+        if (rows.empty()) {
+            err = "chunk tree";
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_piece_tree_mu);
+            CachedPieceTree entry;
+            entry.pieces_root = idx.pieces_root;
+            entry.file_size = idx.file_size;
+            entry.leaves = std::move(idx.leaves);
+            entry.rows = rows;
+            m_piece_trees[PieceTreeKey{artifact, file_index}] = std::move(entry);
+        }
+        if (!m_store.GetPiece(artifact, file_index, piece_index, bytes, err)) return false;
+        proof = PieceProof(rows, piece_index);
+        if (!VerifyPiece(idx.pieces_root, file_size, piece_index, bytes, proof)) {
+            err = "local piece proof failed";
+            DropPieceTreeCache(artifact, file_index);
+            return false;
+        }
+        return true;
+    }
+
+    Digest48 proof_root;
+    if (!m_store.LoadPieceProof(artifact, file_index, piece_index, file_size, proof_root, proof, err)) {
+        if (err.empty()) err = index_err;
         return false;
     }
-    {
-        std::lock_guard<std::mutex> lock(m_piece_tree_mu);
-        CachedPieceTree entry;
-        entry.pieces_root = idx.pieces_root;
-        entry.file_size = idx.file_size;
-        entry.leaves = std::move(idx.leaves);
-        entry.rows = rows;
-        m_piece_trees[PieceTreeKey{artifact, file_index}] = std::move(entry);
-    }
     if (!m_store.GetPiece(artifact, file_index, piece_index, bytes, err)) return false;
-    proof = PieceProof(rows, piece_index);
-    if (!VerifyPiece(idx.pieces_root, file_size, piece_index, bytes, proof)) {
+    if (!VerifyPiece(proof_root, file_size, piece_index, bytes, proof)) {
         err = "local piece proof failed";
-        DropPieceTreeCache(artifact, file_index);
         return false;
     }
     return true;
@@ -723,8 +898,45 @@ bool ModelCatalog::PutFetchedPiece(const Digest48& artifact, uint32_t file_index
         err = "corrupt chunk";
         return false;
     }
+    {
+        std::lock_guard<std::mutex> lock(m_mu);
+        for (const auto& m : m_models) {
+            if (!(m.artifact_id == artifact)) continue;
+            if (file_index >= m.core.files.size()) {
+                err = "wrong file index";
+                return false;
+            }
+            if (m.core.files[file_index].pieces_root != pieces_root) {
+                err = "wrong file index";
+                return false;
+            }
+            if (m.core.files[file_index].size != file_size) {
+                err = "file size mismatch";
+                return false;
+            }
+            break;
+        }
+    }
     const Digest48 leaf = ChunkLeaf(piece_index, bytes);
     if (!m_store.PutVerifiedPiece(artifact, file_index, piece_index, bytes, leaf, err)) return false;
+    {
+        std::string perr;
+        (void)m_store.SavePieceProof(artifact, file_index, piece_index, file_size, pieces_root, proof, perr);
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_mu);
+        for (auto& m : m_models) {
+            if (!(m.artifact_id == artifact)) continue;
+            m.incomplete = true;
+            if (ShouldDemandSeed(m_policy, m.admission) || m.seeded) {
+                m.seeded = true;
+                if (!m.seeding_started_at) m.seeding_started_at = GetTime();
+            }
+            m.last_access_at = GetTime();
+            break;
+        }
+        PersistLocked(err);
+    }
     {
         std::lock_guard<std::mutex> lock(m_piece_tree_mu);
         const auto it = m_piece_trees.find(PieceTreeKey{artifact, file_index});
@@ -771,7 +983,7 @@ bool ModelCatalog::VerifyFileDigest(const Digest48& artifact, uint32_t file_inde
     return true;
 }
 
-bool ModelCatalog::InstallFromManifest(const UniValue& manifest, std::string& err)
+bool ModelCatalog::InstallFromManifest(const UniValue& manifest, std::string& err, bool complete)
 {
     std::lock_guard<std::mutex> lock(m_mu);
     CatalogEntry e;
@@ -797,16 +1009,32 @@ bool ModelCatalog::InstallFromManifest(const UniValue& manifest, std::string& er
     e.artifact.codec = 1;
     e.artifact.model_id = e.model_id;
     e.artifact.files = e.core.files;
-    e.admission = AdmissionLevel::BYTES_VERIFIED;
-    e.bytes_verified = true;
-    e.seeded = false;
-    DemandSeedLocked(e);
+    if (complete) {
+        e.admission = AdmissionLevel::BYTES_VERIFIED;
+        e.bytes_verified = true;
+        e.incomplete = false;
+        e.completed_at = GetTime();
+        DemandSeedLocked(e);
+    } else {
+        e.admission = AdmissionLevel::FETCHING;
+        e.bytes_verified = false;
+        e.incomplete = true;
+        if (ShouldDemandSeed(m_policy, e.admission)) {
+            e.seeded = true;
+            if (!e.seeding_started_at) e.seeding_started_at = GetTime();
+        }
+    }
     for (auto& existing : m_models) {
         if (existing.model_id == e.model_id) {
+            const bool pinned = existing.pinned;
+            const int64_t imported = existing.imported_at;
             existing = e;
+            existing.pinned = pinned;
+            existing.imported_at = imported ? imported : GetTime();
             return PersistLocked(err);
         }
     }
+    e.imported_at = GetTime();
     m_models.push_back(e);
     return PersistLocked(err);
 }

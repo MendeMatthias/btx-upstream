@@ -203,15 +203,41 @@
    <item>
     <widget class="QGroupBox" name="groupModelStorage">
      <property name="title">
-      <string>Model Network Storage</string>
+      <string>Open Model Network</string>
      </property>
      <layout class="QVBoxLayout" name="verticalLayoutModelStorage">
       <item>
        <widget class="QLabel" name="lblModelStorageIntro">
         <property name="text">
-         <string>Allocate a finite disk budget before any model payload is stored. Zero means no download, no seeding, and no preserve-rare. This does not open a wallet, spend coins, or fetch models.</string>
+         <string>Participate in the BTX Open Model Network. Storage is automatic and bounded. Downloaded public models are kept and shared. This never spends BTX and never mixes models with your wallet.</string>
         </property>
         <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="modelNetParticipate">
+        <property name="toolTip">
+         <string>Launch the isolated model helper with btxd. Uncheck for -nomodelnet. Money still works if the helper fails.</string>
+        </property>
+        <property name="text">
+         <string>Participate in the BTX Open Model Network</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="modelStorageAuto">
+        <property name="toolTip">
+         <string>Automatic bounded storage on the model-store disk. Uncheck to set a fixed size, or set 0 for no payload.</string>
+        </property>
+        <property name="text">
+         <string>Automatic storage (recommended)</string>
+        </property>
+        <property name="checked">
          <bool>true</bool>
         </property>
        </widget>
@@ -293,10 +319,43 @@
          <string>Demand propagation: keep and re-advertise qualified public models you intentionally import or download (-modelseed=auto). Uncheck for -modelseed=off. GUI default is checked after a positive budget.</string>
         </property>
         <property name="text">
-         <string>Help preserve downloaded models</string>
+         <string>Help distribute models</string>
         </property>
         <property name="checked">
          <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="modelResourceGovernor">
+        <property name="toolTip">
+         <string>Let the resource governor use spare CPU, GPU, network, and disk for background model work (-resourcegovernor=auto). Uncheck for -resourcegovernor=off. Does not spend BTX or start wallet mining.</string>
+        </property>
+        <property name="text">
+         <string>Use spare resources automatically</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="modelMiningIdle">
+        <property name="toolTip">
+         <string>When checked, the governor may start GPU mining only while the system is idle (-automining=1). Unchecked by default so mining never starts without explicit consent. Does not enable -gen.</string>
+        </property>
+        <property name="text">
+         <string>Mining when idle</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="lblResourceMode">
+        <property name="text">
+         <string>Resource mode: Automatic</string>
         </property>
        </widget>
       </item>
@@ -309,7 +368,7 @@
          <string>Help preserve rare models</string>
         </property>
         <property name="checked">
-         <bool>true</bool>
+         <bool>false</bool>
         </property>
        </widget>
       </item>

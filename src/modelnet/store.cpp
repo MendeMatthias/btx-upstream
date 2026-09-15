@@ -17,8 +17,9 @@
 #include <fstream>
 #include <iterator>
 #include <regex>
-#include <stdexcept>
+#include <limits>
 #include <system_error>
+#include <chrono>
 
 namespace modelnet {
 namespace {
@@ -312,9 +313,67 @@ bool ModelStore::Unpin(const Digest48& model_id)
     return m_pinned.erase(model_id.Hex()) > 0;
 }
 
+bool ModelStore::IsPinned(const Digest48& model_id) const
+{
+    return m_pinned.count(model_id.Hex()) > 0;
+}
+
+void ModelStore::SetQuotaBytes(uint64_t bytes)
+{
+    m_quota.max_bytes = bytes;
+}
+
 void ModelStore::EvictUnpinned()
 {
-    // Pinned models are never deleted here. Unpinned LRU is a follow-up journal.
+    const fs::path tmp = m_root / "tmp";
+    if (!fs::exists(tmp)) return;
+    std::error_code ec;
+    const auto now = std::chrono::file_clock::now();
+    for (auto it = std::filesystem::directory_iterator(tmp, ec), end = std::filesystem::directory_iterator();
+         it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || ec) continue;
+        const auto ftime = std::filesystem::last_write_time(it->path(), ec);
+        if (ec) continue;
+        const auto age = std::chrono::duration_cast<std::chrono::hours>(now - ftime);
+        if (age.count() >= 24) {
+            std::filesystem::remove(it->path(), ec);
+        }
+    }
+}
+
+bool ModelStore::ListCommittedPieces(const Digest48& artifact, uint32_t file_index, std::vector<uint32_t>& out) const
+{
+    out.clear();
+    const fs::path dir = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str();
+    if (!fs::exists(dir)) return true;
+    std::error_code ec;
+    for (auto it = std::filesystem::directory_iterator(dir, ec), end = std::filesystem::directory_iterator();
+         it != end && !ec; it.increment(ec)) {
+        if (!it->is_regular_file(ec) || ec) continue;
+        const std::string name = fs::PathToString(it->path().filename());
+        if (name.size() < 7 || name.compare(name.size() - 6, 6, ".piece") != 0) continue;
+        const std::string num = name.substr(0, name.size() - 6);
+        try {
+            const unsigned long v = std::stoul(num);
+            if (v <= std::numeric_limits<uint32_t>::max()) out.push_back(static_cast<uint32_t>(v));
+        } catch (...) {
+            continue;
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return true;
+}
+
+int64_t ModelStore::PieceMtime(const Digest48& artifact, uint32_t file_index, uint32_t piece_index) const
+{
+    const fs::path path = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str() /
+                           (std::to_string(piece_index) + ".piece").c_str();
+    std::error_code ec;
+    const auto ftime = std::filesystem::last_write_time(path, ec);
+    if (ec) return 0;
+    const auto secs = std::chrono::duration_cast<std::chrono::seconds>(ftime.time_since_epoch());
+    return static_cast<int64_t>(secs.count());
 }
 
 bool ModelStore::SavePieceIndex(const Digest48& artifact, uint32_t file_index, const PieceIndex& idx, std::string& err)
@@ -377,6 +436,74 @@ bool ModelStore::LoadPieceIndex(const Digest48& artifact, uint32_t file_index, P
         Digest48 d;
         if (!Digest48::FromHex(leaf.get_str(), d, err)) return false;
         idx.leaves.push_back(d);
+    }
+    return true;
+}
+
+bool ModelStore::SavePieceProof(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
+                                 uint64_t file_size, const Digest48& pieces_root,
+                                 const std::vector<Digest48>& siblings, std::string& err)
+{
+    const fs::path dir = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str();
+    fs::create_directories(dir);
+    UniValue obj(UniValue::VOBJ);
+    obj.pushKV("file_size", file_size);
+    obj.pushKV("pieces_root", pieces_root.Hex());
+    UniValue sibs(UniValue::VARR);
+    for (const auto& d : siblings) sibs.push_back(d.Hex());
+    obj.pushKV("siblings", sibs);
+    const fs::path final_path = dir / (std::to_string(piece_index) + ".proof.json").c_str();
+    const fs::path tmp = m_root / "tmp" / (artifact.Hex() + "-" + std::to_string(file_index) + "-" +
+                                            std::to_string(piece_index) + "-proof.tmp").c_str();
+    fs::create_directories(tmp.parent_path());
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out) {
+            err = "proof tmp write failed";
+            return false;
+        }
+        out << obj.write() << "\n";
+        out.flush();
+        if (!out) {
+            err = "proof tmp write failed";
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, final_path, ec);
+    if (ec) {
+        err = "proof rename failed";
+        return false;
+    }
+    return true;
+}
+
+bool ModelStore::LoadPieceProof(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
+                                 uint64_t& file_size, Digest48& pieces_root,
+                                 std::vector<Digest48>& siblings, std::string& err) const
+{
+    siblings.clear();
+    const fs::path path = ArtifactDir(m_root, artifact) / std::to_string(file_index).c_str() /
+                           (std::to_string(piece_index) + ".proof.json").c_str();
+    std::ifstream in(path);
+    if (!in) {
+        err = "missing piece proof";
+        return false;
+    }
+    std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    UniValue obj;
+    if (!obj.read(raw) || !obj.isObject()) {
+        err = "piece proof json";
+        return false;
+    }
+    file_size = obj["file_size"].getInt<uint64_t>();
+    if (!Digest48::FromHex(obj["pieces_root"].get_str(), pieces_root, err)) return false;
+    if (obj.exists("siblings") && obj["siblings"].isArray()) {
+        for (const auto& s : obj["siblings"].getValues()) {
+            Digest48 d;
+            if (!Digest48::FromHex(s.get_str(), d, err)) return false;
+            siblings.push_back(d);
+        }
     }
     return true;
 }

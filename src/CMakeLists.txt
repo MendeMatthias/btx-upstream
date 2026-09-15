@@ -909,6 +909,7 @@ add_library(bitcoin_common STATIC EXCLUDE_FROM_ALL
   policy/feerate.cpp
   policy/policy.cpp
   pow.cpp
+  node/resource_governor.cpp
   protocol.cpp
   psbt.cpp
   rpc/rawtransaction_util.cpp
@@ -1969,6 +1970,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   rpc/matmul_trusted.cpp
   rpc/net.cpp
   rpc/node.cpp
+  rpc/resource_governor.cpp
   rpc/output_script.cpp
   rpc/rawtransaction.cpp
   rpc/server.cpp

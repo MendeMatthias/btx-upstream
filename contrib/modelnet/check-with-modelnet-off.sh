@@ -104,7 +104,7 @@ extract_ifdef_on_branches() {
 
 {
   printf '%s\n' '// Copied ENABLE_MODELNET ON-branch excerpts (~20 lines)'
-  extract_ifdef_on_branches "$init" 2
+  extract_ifdef_on_branches "$init" 4
   extract_ifdef_on_branches "$rpc" 1
 } > "$WORKDIR/excerpts.inc"
 excerpt_lines=$(grep -c . "$WORKDIR/excerpts.inc" || true)

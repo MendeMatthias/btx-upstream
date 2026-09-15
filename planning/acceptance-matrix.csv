@@ -227,3 +227,247 @@ GPU-05,GPU,PASS,contrib/modelnet/cuda-isolated-e2e.sh GPU-05 crash-isolated work
 GPU-06,GPU,PASS,contrib/modelnet/cuda-isolated-e2e.sh GPU-06 backend_hash_observation
 GPU-isolation-library,GPU,PASS,src/test/modelnet_b0_remaining_tests.cpp gpu_01_06_isolation_library; src/test/modelnet_cuda_qual_tests.cpp (default runtime_check=0 => NOT_RUN_CUDA_ISOLATION; no in-process cudaSetDevice)
 OPENSSL-358,OPENSSL,PASS,contrib/modelnet/relink-openssl-358.sh; contrib/modelnet/e2e-openssl-358.sh (second-process wrap; never production btxd.real)
+START-01,HOSTING,PASS,contrib/modelnet/e2e-hosting-default.sh stock btxd starts owned helper
+START-02,HOSTING,PASS,contrib/modelnet/e2e-hosting-default.sh -nomodelnet
+START-03,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp start_03_*; contrib/modelnet/e2e-hosting-default.sh missing -modelhelper
+START-06,HOSTING,PASS,contrib/modelnet/e2e-hosting-lifecycle.sh /bin/false helper; money stays up
+START-08,HOSTING,PASS,contrib/modelnet/e2e-hosting-lifecycle.sh owned helper PID stops with btxd
+START-09,HOSTING,PASS,contrib/modelnet/e2e-hosting-lifecycle.sh external -modelrpcsocket not killed
+START-10,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp start_10_*
+START-11,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp start_10_sanitize_env_strips_wallet
+START-12,HOSTING,PASS,contrib/modelnet/check-with-modelnet-off.sh 8 checks (no second cmake tree; disk rule)
+START-13,HOSTING,PASS,src/test/matmul_params_tests.cpp 16 cases after hosting patch; GPU ExactReplay not run (no NVIDIA driver on this host)
+START-14,HOSTING,PASS,contrib/modelnet/e2e-hosting-lifecycle.sh restart no duplicate helper
+START-15,HOSTING,PASS,contrib/modelnet/e2e-hosting-lifecycle.sh stale unix socket
+CACHE-01,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp cache_01_auto_quota_matrix
+CACHE-02,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp cache_02_quota_shrinks_under_external_pressure
+CACHE-03,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp cache_03_quota_grows_when_safe
+CACHE-04,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp cache_04_pinned_never_evicted
+CACHE-06,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp cache_06_common_before_rare
+CACHE-09,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp cache_09_restart_preserves_retention
+CACHE-10,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp cache_10_active_transfer_not_gc
+PIN-A,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp pin_a_survives_restart
+PIN-F,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp pin_f_unpin_makes_eligible
+PIN-GH,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp pin_g_h_pinned_pressure
+SHARD-01,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_01_02_03_deterministic_pieces
+SHARD-08,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_08_three_disjoint_ranges; contrib/modelnet/e2e-shard-disjoint.sh
+SHARD-14,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_14_15_17_partial_ranges
+SHARD-19,HOSTING,NOT_RUN,opt-in BTX_SHARD19=1 13GiB artifact; disk reserve rule
+E2E-28,HOSTING,PASS,contrib/modelnet/e2e-hosting-abc.sh stock C retrieve+pin+restart
+APPLE-PKG,HOSTING,NOT_RUN,no Darwin builder in this session
+IS_RELEASE,HOSTING,NOT_RUN,CLIENT_VERSION_IS_RELEASE stays false until remaining NOT_RUN rows have evidence
+SWARM-RF-01,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_01_rare_before_common
+SWARM-RF-02,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_02_ties_randomized
+SWARM-RF-03,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_03_stale_source_changes_rarity
+SWARM-EG,SWARM,PASS,src/test/modelnet_swarm_tests.cpp endgame/snub/window cases
+SWARM-PEX,SWARM,PASS,src/test/modelnet_swarm_tests.cpp pex TTL/rate/control-port
+SWARM-NAT-POLICY,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_nat_01_10_control_plane
+SWARM-E2E-3PEER,SWARM,PASS,contrib/modelnet/e2e-swarm-three-peer.sh helpers + getmodelnetworkinfo swarm/reachability fields
+SWARM-CHAOS,SWARM,NOT_RUN,random kill/roam during retrieve not executed
+SWARM-13GIB,SWARM,NOT_RUN,same opt-in as SHARD-19
+CONN-REACH-01,CONN,PASS,src/test/modelnet_conn_tests.cpp conn_reach_01_to_10 listen != PUBLIC
+CONN-REACH-02,CONN,PASS,src/test/modelnet_conn_tests.cpp one dial-back insufficient
+CONN-REACH-03,CONN,PASS,src/test/modelnet_conn_tests.cpp two independent -> PUBLIC_DIRECT
+CONN-REACH-04,CONN,PASS,src/test/modelnet_conn_tests.cpp failed probe -> PRIVATE
+CONN-REACH-05,CONN,PASS,src/test/modelnet_conn_tests.cpp stale proof expires
+CONN-REACH-06,CONN,PASS,src/test/modelnet_conn_tests.cpp NoteEpoch -> DEGRADED
+CONN-REACH-07,CONN,PASS,src/test/modelnet_conn_tests.cpp malicious 8332 observation ignored
+CONN-REACH-08,CONN,PASS,src/test/modelnet_conn_tests.cpp IPv6 candidate PUBLIC_DIRECT
+CONN-REACH-09,CONN,PASS,src/test/modelnet_conn_tests.cpp mapped + two probes PUBLIC_MAPPED
+CONN-REACH-10,CONN,PASS,src/test/modelnet_conn_tests.cpp WithdrawHost
+CONN-NAT-01,CONN,NOT_RUN,PCP/NAT-PMP success needs a gateway; AttemptModelPortMap fail-soft unit-tested
+CONN-NAT-02,CONN,PASS,src/test/modelnet_conn_tests.cpp wallet RPC 8332 never mapped
+CONN-NAT-03,CONN,PASS,src/test/modelnet_conn_tests.cpp monetary RPC 18443 never mapped
+CONN-NAT-04,CONN,PASS,src/test/modelnet_conn_tests.cpp attestor/control 8334 never mapped
+CONN-NAT-05,CONN,PASS,src/test/modelnet_conn_tests.cpp MappingRenewalDue
+CONN-NAT-06,CONN,PASS,src/test/modelnet_conn_tests.cpp ReleaseModelPortMap clears owned_mapping
+CONN-NAT-07,CONN,PASS,src/test/modelnet_conn_tests.cpp conn_roam_01_to_09 gateway/address epoch
+CONN-NAT-08,CONN,PASS,src/test/modelnet_conn_tests.cpp mapping failure UNMAPPED/LOOPBACK leaves helper path
+CONN-NAT-09,CONN,PASS,src/test/modelnet_conn_tests.cpp SetMapped without dial-back does not advertise
+CONN-RLY-01,CONN,PASS,src/test/modelnet_conn_tests.cpp Reserve
+CONN-RLY-02,CONN,PASS,src/test/modelnet_conn_tests.cpp TTL expire
+CONN-RLY-03,CONN,PASS,src/test/modelnet_conn_tests.cpp byte ceiling
+CONN-RLY-04,CONN,PASS,src/test/modelnet_conn_tests.cpp connection ceiling
+CONN-RLY-05,CONN,PASS,src/test/modelnet_conn_tests.cpp idle timeout
+CONN-RLY-06,CONN,PASS,src/test/modelnet_conn_tests.cpp PunchIdentityIndependentOfRelay
+CONN-RLY-07,CONN,PASS,src/test/modelnet_conn_tests.cpp ValidateRelayConnect identity mismatch
+CONN-RLY-08,CONN,PASS,src/test/modelnet_conn_tests.cpp Alternate relay
+CONN-RLY-09,CONN,PASS,src/test/modelnet_conn_tests.cpp two reservations independent
+CONN-RLY-10,CONN,PASS,contrib/modelnet/e2e-hosting-lifecycle.sh helper crash; monetary stays up
+CONN-HP-01,CONN,PASS,src/test/modelnet_conn_tests.cpp PlanHolePunch
+CONN-HP-02,CONN,PASS,src/test/modelnet_conn_tests.cpp candidates in PunchPlan
+CONN-HP-03,CONN,PASS,src/test/modelnet_conn_tests.cpp attempt_at_ms from RTT
+CONN-HP-04,CONN,PASS,src/test/modelnet_conn_tests.cpp DIRECT_OK
+CONN-HP-05,CONN,PASS,src/test/modelnet_conn_tests.cpp PQ1+identity required
+CONN-HP-06,CONN,PASS,src/test/modelnet_conn_tests.cpp RETAIN_RELAY
+CONN-HP-07,CONN,PASS,src/test/modelnet_conn_tests.cpp max 3 attempts
+CONN-HP-08,CONN,PASS,src/test/modelnet_conn_tests.cpp network_changed retries
+CONN-HP-09,CONN,PASS,src/test/modelnet_conn_tests.cpp relay cannot skip identity
+CONN-HP-10,CONN,PASS,src/test/modelnet_conn_tests.cpp no classical fallback (ConnectionFullyReady)
+CONN-ROUTE-01,CONN,PASS,src/test/modelnet_conn_tests.cpp signed provider accepted
+CONN-ROUTE-02,CONN,PASS,src/test/modelnet_conn_tests.cpp forged rejected
+CONN-ROUTE-03,CONN,PASS,src/test/modelnet_conn_tests.cpp expired rejected
+CONN-ROUTE-04,CONN,PASS,src/test/modelnet_conn_tests.cpp sequence rollback rejected
+CONN-ROUTE-05,CONN,PASS,src/test/modelnet_conn_tests.cpp LookupStep cache hit
+CONN-ROUTE-06,CONN,PASS,src/test/modelnet_conn_tests.cpp query cap
+CONN-ROUTE-07,CONN,PASS,src/test/modelnet_conn_tests.cpp netgroup cap
+CONN-ROUTE-08,CONN,PASS,src/test/modelnet_conn_tests.cpp cache expire
+CONN-ROUTE-09,CONN,PASS,src/test/modelnet_conn_tests.cpp range cap
+CONN-ROUTE-10,CONN,PASS,src/test/modelnet_conn_tests.cpp LivePieceRangesRequireDirectQuery
+CONN-ROUTE-11,CONN,PASS,src/test/modelnet_conn_tests.cpp RoutingTouchesAddrMan false
+CONN-ROUTE-12,CONN,PASS,src/test/modelnet_conn_tests.cpp unknown type rejected
+CONN-BOOT-01,CONN,PASS,src/test/modelnet_conn_tests.cpp insert bootstrap contacts
+CONN-BOOT-02,CONN,PASS,src/test/modelnet_conn_tests.cpp table size 3
+CONN-BOOT-03,CONN,PASS,src/test/modelnet_conn_tests.cpp Drop bootstrap
+CONN-BOOT-04,CONN,PASS,src/test/modelnet_conn_tests.cpp BootstrapIndependent
+CONN-BOOT-05,CONN,PASS,src/test/modelnet_conn_tests.cpp lookup after bootstrap drop
+CONN-BOOT-06,CONN,PASS,src/test/modelnet_conn_tests.cpp LoadPersistedContacts
+CONN-BOOT-07,CONN,PASS,src/test/modelnet_conn_tests.cpp stale persist skipped
+CONN-ROAM-01,CONN,PASS,src/test/modelnet_conn_tests.cpp IPv4 change epoch
+CONN-ROAM-02,CONN,PASS,src/test/modelnet_conn_tests.cpp IPv6 prefix change epoch
+CONN-ROAM-03,CONN,PASS,src/test/modelnet_conn_tests.cpp epoch on address change (wifi/eth stand-in)
+CONN-ROAM-04,CONN,PASS,src/test/modelnet_conn_tests.cpp reverse address change
+CONN-ROAM-05,CONN,PASS,src/test/modelnet_conn_tests.cpp Sleep/Wake
+CONN-ROAM-06,CONN,PASS,src/test/modelnet_conn_tests.cpp reservation expire after idle/sleep
+CONN-ROAM-07,CONN,PASS,src/test/modelnet_hosting_tests.cpp + store piece proofs survive reconnect
+CONN-ROAM-08,CONN,PASS,src/test/modelnet_conn_tests.cpp reachability reruns on epoch
+CONN-ROAM-09,CONN,PASS,src/test/modelnet_conn_tests.cpp provider records remain signed/versioned (seq)
+CONN-LAB-A,CONN,PASS,contrib/modelnet/e2e-connectivity-lab.sh loopback helper; listen != PUBLIC (UNKNOWN)
+CONN-LAB-B-H,CONN,NOT_RUN,needs CAP_NET_ADMIN netns/nft topologies
+CONN-COMBINED,CONN,NOT_RUN,combined swarm+connectivity 20-step scenario
+CONN-13GIB,CONN,NOT_RUN,granite 13.8 GiB fixture opt-in
+CONN-CHAOS,CONN,NOT_RUN,chaos connectivity not executed
+CONN-MODELNET-OFF,CONN,PASS,contrib/modelnet/check-with-modelnet-off.sh 8 checks 2026-09-15
+CONN-QUIC,CONN,NOT_RUN,QUIC deferred; cannot carry strict PQ1 cleanly in 0.34.7
+SEARCH-LOCAL-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_local_01_to_15 exact name
+SEARCH-LOCAL-02,SEARCH,PASS,src/test/modelnet_search_tests.cpp alias qwencoder
+SEARCH-LOCAL-03,SEARCH,PASS,src/test/modelnet_search_tests.cpp tags coding
+SEARCH-LOCAL-04,SEARCH,PASS,src/test/modelnet_search_tests.cpp language ja
+SEARCH-LOCAL-05,SEARCH,PASS,src/test/modelnet_search_tests.cpp publisher alice
+SEARCH-LOCAL-06,SEARCH,PASS,src/test/modelnet_search_tests.cpp architecture qwen2
+SEARCH-LOCAL-07,SEARCH,PASS,src/test/modelnet_search_tests.cpp format GGUF
+SEARCH-LOCAL-08,SEARCH,PASS,src/test/modelnet_search_tests.cpp quantization Q4_K_M
+SEARCH-LOCAL-09,SEARCH,PASS,src/test/modelnet_search_tests.cpp size filter
+SEARCH-LOCAL-10,SEARCH,PASS,src/test/modelnet_search_tests.cpp duplicate model_id dedupe
+SEARCH-LOCAL-11,SEARCH,PASS,src/test/modelnet_search_tests.cpp pagination offset/limit
+SEARCH-LOCAL-12,SEARCH,PASS,src/test/modelnet_search_tests.cpp malformed scope PLANET rejected
+SEARCH-LOCAL-13,SEARCH,PASS,src/test/modelnet_search_tests.cpp description bound
+SEARCH-LOCAL-14,SEARCH,PASS,src/test/modelnet_search_tests.cpp Unicode/normalize
+SEARCH-LOCAL-15,SEARCH,PASS,src/test/modelnet_search_tests.cpp ranking deterministic
+SEARCH-SIG-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_sig_01_to_08 valid signed
+SEARCH-SIG-02,SEARCH,PASS,src/test/modelnet_search_tests.cpp bad signature rejected
+SEARCH-SIG-03,SEARCH,PASS,src/test/modelnet_search_tests.cpp wrong signer rejected
+SEARCH-SIG-04,SEARCH,PASS,src/test/modelnet_search_tests.cpp sequence rollback rejected
+SEARCH-SIG-05,SEARCH,PASS,src/test/modelnet_search_tests.cpp expired ignored at search time
+SEARCH-SIG-06,SEARCH,PASS,src/test/modelnet_search_tests.cpp tombstone honored locally
+SEARCH-SIG-07,SEARCH,PASS,src/test/modelnet_search_tests.cpp unsigned low-confidence / signed_ok false
+SEARCH-SIG-08,SEARCH,PASS,src/test/modelnet_search_tests.cpp unsigned cannot override signed
+SEARCH-NET-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp SearchRuntime extras peer result
+SEARCH-NET-02,SEARCH,PASS,src/test/modelnet_search_tests.cpp multi-index extras aggregated
+SEARCH-NET-03,SEARCH,PASS,src/test/modelnet_search_tests.cpp 10 copies dedupe to one model_id
+SEARCH-NET-04,SEARCH,PASS,src/test/modelnet_search_tests.cpp ComputeSwarmHealth provider counts
+SEARCH-NET-05,SEARCH,PASS,src/test/modelnet_search_tests.cpp ShouldForwardSearch TTL
+SEARCH-NET-06,SEARCH,PASS,src/test/modelnet_search_tests.cpp QueryDedupe query_id
+SEARCH-NET-07,SEARCH,NOT_RUN,slow peer timeout not lab-executed
+SEARCH-NET-08,SEARCH,PASS,src/test/modelnet_search_tests.cpp coverage.complete always false
+SEARCH-NET-09,SEARCH,PASS,src/test/modelnet_search_tests.cpp SEARCH_ALIASES_MAX / record bounds
+SEARCH-NET-10,SEARCH,PASS,src/test/modelnet_search_tests.cpp Cancel
+SEARCH-NET-11,SEARCH,PASS,src/test/modelnet_search_tests.cpp LOCAL extras not queried
+SEARCH-NET-12,SEARCH,NOT_RUN,PEX-discovered search peer live PQ1
+SEARCH-NET-13,SEARCH,PASS,src/test/modelnet_search_tests.cpp + CONN-BOOT BootstrapIndependent; search has no bootstrap dependency
+DIR-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_dir providers_observed
+DIR-02,SEARCH,PASS,src/test/modelnet_search_tests.cpp complete/partial split
+DIR-03,SEARCH,PASS,src/test/modelnet_search_tests.cpp reconstructable partial-only union
+DIR-04,SEARCH,PASS,src/test/modelnet_search_tests.cpp FRAGILE single source
+DIR-05,SEARCH,PASS,src/test/modelnet_search_tests.cpp empty obs UNKNOWN not fabricated
+DIR-06,SEARCH,PASS,src/test/modelnet_search_tests.cpp reconstructable_known honest
+DIR-07,SEARCH,PASS,src/test/modelnet_search_tests.cpp DirectoryEntryJson local.pinned
+DIR-08,SEARCH,PASS,src/test/modelnet_search_tests.cpp release.state PUBLIC
+SEARCH-DIR-09,SEARCH,PASS,src/test/modelnet_search_tests.cpp aliases on card
+DIR-10,SEARCH,PASS,src/test/modelnet_search_tests.cpp publisher object
+INDEX-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp ingest signed Put
+INDEX-02,SEARCH,PASS,src/test/modelnet_search_tests.cpp model_id dedupe
+INDEX-03,SEARCH,PASS,src/test/modelnet_search_tests.cpp sequence update
+INDEX-04,SEARCH,PASS,src/test/modelnet_search_tests.cpp expiration at query time
+INDEX-05,SEARCH,PASS,src/test/modelnet_search_tests.cpp cap 100000; 2k unsigned Put
+INDEX-06,SEARCH,PASS,src/modelnet/search.cpp publisher window >64 rejected
+INDEX-07,SEARCH,PASS,src/test/modelnet_search_tests.cpp pagination + list RPC
+INDEX-08,SEARCH,PASS,src/test/modelnet_search_tests.cpp ExportSince/import JSON
+INDEX-09,SEARCH,PASS,src/test/modelnet_search_tests.cpp imported signatures re-Put
+INDEX-10,SEARCH,PASS,src/test/modelnet_search_tests.cpp unknown type rejected
+SEARCH-RPC,SEARCH,PASS,src/test/modelnet_search_tests.cpp DispatchHelperRpc searchmodels/browsemodels/getnetworkmodelstats
+SEARCH-HTTP-EXT,SEARCH,PASS,src/test/modelnet_search_tests.cpp POST /btx-model/2/ext/search 200
+SEARCH-E2E-DIR,SEARCH,PASS,contrib/modelnet/e2e-search-directory.sh 2026-09-15 Qwen Coder A/B; coverage.complete=false; LOCAL after indexer SIGTERM
+SEARCH-SCALE-2K,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_scale_unsigned_2k 21ms
+SEARCH-SCALE-100K,SEARCH,NOT_RUN,contrib/modelnet/e2e-search-scale.sh needs BTX_SEARCH_SCALE_RUN=1
+SEARCH-CHAOS,SEARCH,NOT_RUN,contrib/modelnet/e2e-search-chaos.sh BTX_SEARCH_CHAOS not set
+SEARCH-CREATOR-E2E,SEARCH,NOT_RUN,GUI creator publish flow; BUILD_GUI=OFF this host
+SEARCH-RELEASE-E2E,SEARCH,NOT_RUN,encrypted release campaign search not executed
+SEARCH-GUI-GATE,SEARCH,NOT_RUN,BUILD_GUI=OFF; src/qt/modelnetpage.cpp search-first cards+Details exist
+SEARCH-API-REF,SEARCH,PASS,contrib/modelnet/reference-directory-client unix RPC only; e2e used searchmodels/importmodelindex
+SEARCH-BRIDGE-API,SEARCH,PASS,src/test/modelnet_bridge_tests.cpp GET /api/v1 stubs; not authoritative
+SEARCH-MODELNET-OFF,SEARCH,PASS,contrib/modelnet/check-with-modelnet-off.sh 8/8 2026-09-15
+SEARCH-MONETARY,SEARCH,PASS,src/test/modelnet_search_tests.cpp SearchTouchesMonetaryConsensus false; CLIENT_VERSION_IS_RELEASE false
+SEARCH-EXACTREPLAY,SEARCH,NOT_RUN,no new ExactReplay run this slice; search is model-plane only
+GOV-POL-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_01_idle_gpu_permits_mining
+GOV-POL-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_02_foreground_gpu_blocks_mining
+GOV-POL-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_03_validation_blocks_immediately
+GOV-POL-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_04_thermal_hot_blocks_mining
+GOV-POL-05,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_05_battery_blocks_mining
+GOV-POL-06,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_06_network_busy_throttles_seeding
+GOV-POL-07,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_07_foreground_download_outranks_seeding
+GOV-POL-08,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_08_preservation_lowest_network_priority
+GOV-POL-09,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_09_fixed_operator_limits_override_auto
+GOV-POL-10,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_10_off_prevents_optional_background
+GOV-HYS-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_hys_01_short_spike_does_not_flap
+GOV-HYS-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_hys_02_sustained_pressure_pauses
+GOV-HYS-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_hys_03_brief_idle_does_not_resume
+GOV-HYS-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_hys_04_sustained_idle_resumes
+GOV-HYS-05,GOV,PASS,src/test/resource_governor_tests.cpp gov_hys_05_cooldown_enforced
+GOV-HYS-06,GOV,PASS,src/test/resource_governor_tests.cpp gov_hys_06_rapid_alternating_samples_stable
+GOV-MINE-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_01_starts_after_idle_threshold
+GOV-MINE-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_02_ramps_intensity
+GOV-MINE-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_03_foreground_ai_pauses
+GOV-MINE-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_04_validation_signal_pauses
+GOV-MINE-05,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_05_cancel_does_not_leave_active
+GOV-MINE-06,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_06_intensity_zero_on_stop
+GOV-MINE-07,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_07_resumes_cleanly
+GOV-MINE-08,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_08_policy_has_no_stale_submit_flag
+GOV-MINE-09,GOV,PASS,src/test/resource_governor_tests.cpp gov_mine_09_reserved_validator_never_mined
+GOV-NET-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_01_idle_link_increases_allowance
+GOV-NET-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_02_busy_link_reduces_allowance
+GOV-NET-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_03_latency_inflation_reduces_upload
+GOV-NET-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_04_explicit_cap_always_respected
+GOV-NET-05,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_05_foreground_retrieval_retains_bandwidth
+GOV-NET-06,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_06_seeding_resumes_after_pressure
+GOV-NET-07,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_07_preservation_throttled_before_seeding
+GOV-NET-08,GOV,PASS,src/test/resource_governor_tests.cpp gov_net_08_no_thread_explosion_in_permit
+GOV-PWR-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_pwr_01_desktop_ac_permits
+GOV-PWR-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_pwr_02_laptop_battery_pauses_mining
+GOV-PWR-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_pwr_03_ac_restore_permits_later_resume
+GOV-PWR-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_pwr_04_hot_reduces_background
+GOV-PWR-05,GOV,PASS,src/test/resource_governor_tests.cpp gov_pwr_05_critical_stops_optional
+GOV-PWR-06,GOV,PASS,src/test/resource_governor_tests.cpp gov_pwr_06_thermal_recovery_obeys_cooldown
+GOV-MEM-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_mem_01_memory_pressure_reduces_concurrency
+GOV-MEM-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_mem_02_swap_pressure_pauses_heavy
+GOV-DISK-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_disk_01_high_io_reduces_preservation
+GOV-DISK-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_disk_02_emergency_storage_allows_gc
+GOV-DISK-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_disk_03_governor_does_not_evict_pins
+GOV-DISK-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_disk_04_gc_bounded_vs_foreground
+GOV-FAIL-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_01_unavailable_pauses_mining
+GOV-FAIL-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_02_unavailable_does_not_touch_consensus
+GOV-FAIL-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_03_modeld_independence_documented
+GOV-FAIL-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_04_unknown_gpu_conservative_intensity
+GOV-FAIL-05,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_05_malformed_policy_rejected
+GOV-CONSENSUS,GOV,PASS,src/test/resource_governor_tests.cpp gov_consensus_and_spend_never
+GOV-NVIDIA-E2E,GOV,NOT_RUN,contrib/modelnet/e2e-governor-nvidia.sh needs BTX_GOV_NVIDIA_E2E=1
+GOV-APPLE-E2E,GOV,NOT_RUN,contrib/modelnet/e2e-governor-apple.sh needs BTX_GOV_APPLE_E2E=1
+GOV-OVERNIGHT,GOV,NOT_RUN,8-12h idle not executed this slice
+GOV-ACTIVE-DAY,GOV,NOT_RUN,workstation-day mix not executed
+GOV-VAL-LAT,GOV,NOT_RUN,validation-latency regression vs mining-active not measured
+GOV-RETRIEVE-REG,GOV,NOT_RUN,retrieval vs heavy seeding not measured
+GOV-BUFFERBLOAT,GOV,NOT_RUN,shaped-uplink bufferbloat not executed
+GOV-BATTERY-HW,GOV,NOT_RUN,no laptop unplug this host
+GOV-GUI,GOV,NOT_RUN,BUILD_GUI=OFF; intro + modelnetpage source exist
+GOV-MODELNET-OFF,GOV,NOT_RUN,check-with-modelnet-off.sh after this slice
+

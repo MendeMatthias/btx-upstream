@@ -144,11 +144,15 @@ bool GiveBackComplete(const PreservationPolicy& p,
                       int64_t now);
 
 enum class EvictClass : uint8_t {
-    EXPIRED_CIPHERTEXT = 0,
-    COMMON_UNPINNED = 1,
-    DEMAND_SEEDED = 2,
-    RARE_SEEDED = 3,
-    PINNED = 4,
+    STALE_PARTIAL = 0,
+    EXPIRED_CIPHERTEXT = 1,
+    FAILED_UNQUALIFIED = 2,
+    COMMON_GIVEBACK_DONE = 3,
+    COMMON_UNPINNED = 4,
+    DEMAND_SEEDED = 5,
+    RARE_SEEDED = 6,
+    RECENT = 7,
+    PINNED = 8,
 };
 
 /** Parse 85899345920, 80GiB, 500G. Binary prefixes (1024). Empty/invalid fails. */
@@ -192,9 +196,16 @@ struct EvictItem {
     bool seeded{false};
     int observed_sources{0};
     uint64_t bytes{0};
+    bool incomplete{false};
+    bool expired_ciphertext{false};
+    bool failed_unqualified{false};
+    bool giveback_complete{false};
+    bool recently_protected{false};
+    int64_t last_access_at{0};
 };
 
-/** Lower is evicted first. Pinned is never selected. */
+/** Lower is evicted first. Pinned is never selected. Numeric values for
+ *  unpinned-common / rare / seeded / pin stay stable for existing tests. */
 int EvictPriority(const EvictItem& item);
 
 UniValue PolicyToJson(const PreservationPolicy& p);

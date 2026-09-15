@@ -1,8 +1,9 @@
 # Propagation — demand default, bounded preserve-rare
 
-v1.1 **D11**. Payload storage stays **0** until the operator allocates a
-budget. That is the DoS bound: BTX MUST NOT autonomously retrieve arbitrary
-advertised models.
+v1.1 **D11**. Unsolicited fetch of arbitrary advertised models stays off.
+Packaged installs allocate a **bounded AUTO** cache (`-modelstorage=auto`)
+on the model-store filesystem. `-modelstorage=0` is the explicit no-payload
+setting. Explicit numeric quotas remain FIXED.
 
 Once a user **intentionally** retrieves or imports a qualified
 redistributable public model, the default policy **retains and
@@ -27,14 +28,14 @@ download / import M
 | Kind | Trigger | Default |
 |---|---|---|
 | **Demand** | Intentional `importmodel` / `getmodel` | On when storage > 0 and `-modelseed=auto` |
-| **Preservation** | Spare quota + observed sources ≤ 2 | Off on CLI; GUI first-run SHOULD check the box |
+| **Preservation** | Spare quota + observed sources ≤ 2 | Off unless `-modelpreserverare` |
 | **Release** | Local decrypt of a qualified public artifact after key reveal | Demand-seed the **plaintext** identity |
 
 ## Flags (`btx-modeld`)
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-modelstorage=` / `-modelcache=` | `0` | Quota in bytes or `80GiB`. Zero: no payload, no seed, no preserve-rare |
+| `-modelstorage=` / `-modelcache=` | `auto` | AUTO budget, `0` (no payload), or `80GiB` (FIXED) |
 | `-modelseed=auto\|manual\|off` | `auto` | Auto = seed on intentional download. `manual` = only `seedmodel`. `off` = never auto-advertise |
 | `-modelseedupondownload=0\|1` | B0 alias | `1` → auto, `0` → off. **Not** a second opt-in; ignored when `-modelseed` is set |
 | `-modelpreserverare` | off | Unsolicited fetch of under-replicated **qualified** public models into spare space. At most one job per minute |

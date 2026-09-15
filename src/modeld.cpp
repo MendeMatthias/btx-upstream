@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/license/mit/.
 
+#include <modelnet/auto_storage.h>
 #include <modelnet/helper.h>
 #include <modelnet/policy.h>
 #include <modelnet/resource_uri.h>
@@ -41,8 +42,10 @@ static void Usage()
         "\n"
         "  -decode=<uri>          decode a btx:// resource and exit\n"
         "  -modeldir=<dir>        catalog/store directory (never wallet/chainstate)\n"
-        "  -modelstorage=<size>  payload quota (0, 80GiB, 85899345920). Alias: -modelcache\n"
-        "  -modelcache=<size>   alias of -modelstorage; default 0 (no payload)\n"
+        "  -modelstorage=<size>  payload quota: auto (default), 0, 80GiB. Alias: -modelcache\n"
+        "  -modelcache=<size>   alias of -modelstorage; packaged default auto\n"
+        "  -modelstorageautocap=<size>  AUTO hard cap (default 512GiB)\n"
+        "  -modelfreespacereserve=<size>  AUTO free-space reserve override\n"
         "  -modelseed=auto|manual|off  default auto (demand-seed after import/getmodel)\n"
         "  -modelseedupondownload=0|1  B0 alias of -modelseed=off|auto; not a second opt-in\n"
         "  -modelpreserverare     fetch qualified under-replicated models into spare quota\n"
@@ -90,13 +93,25 @@ int main(int argc, char* argv[])
         else if (auto v = take("-modeldir"); !v.empty()) cfg.modeldir = v.c_str();
         else if (auto v = take("-modelstorage"); !v.empty()) {
             std::string err;
-            if (!modelnet::ParseModelBytes(v, cfg.quota_bytes, err)) {
+            if (!modelnet::ParseModelStorage(v, cfg.storage_mode, cfg.quota_bytes, err)) {
                 std::cerr << err << "\n";
                 return 1;
             }
         } else if (auto v = take("-modelcache"); !v.empty()) {
             std::string err;
-            if (!modelnet::ParseModelBytes(v, cfg.quota_bytes, err)) {
+            if (!modelnet::ParseModelStorage(v, cfg.storage_mode, cfg.quota_bytes, err)) {
+                std::cerr << err << "\n";
+                return 1;
+            }
+        } else if (auto v = take("-modelstorageautocap"); !v.empty()) {
+            std::string err;
+            if (!modelnet::ParseModelBytes(v, cfg.auto_cap_bytes, err)) {
+                std::cerr << err << "\n";
+                return 1;
+            }
+        } else if (auto v = take("-modelfreespacereserve"); !v.empty()) {
+            std::string err;
+            if (!modelnet::ParseModelBytes(v, cfg.free_space_reserve_bytes, err)) {
                 std::cerr << err << "\n";
                 return 1;
             }

@@ -10,6 +10,7 @@
 #include <modelnet/bridge.h>
 #include <modelnet/policy.h>
 #include <modelnet/resource_uri.h>
+#include <modelnet/supervisor.h>
 #include <core_io.h>
 #include <node/context.h>
 #include <node/transaction.h>
@@ -54,14 +55,22 @@ bool HelperCall(const std::string& method, const UniValue& params, UniValue& res
 UniValue LocalNetworkInfo()
 {
     const auto st = modelnet::GetModelBridge().SnapshotStatus();
+    const auto helper = modelnet::SnapshotManagedHelper();
     UniValue r(UniValue::VOBJ);
     r.pushKV("schema_version", 2);
-    r.pushKV("enabled", true);
-    r.pushKV("helper_ready", false);
+    r.pushKV("enabled", gArgs.GetBoolArg("-modelnet", true));
+    r.pushKV("helper_ready", helper.state == modelnet::HelperState::READY);
+    r.pushKV("helper_managed_by_btxd", helper.managed_by_btxd);
+    r.pushKV("helper_state", modelnet::HelperStateName(helper.state));
+    r.pushKV("helper_pid", helper.pid);
+    r.pushKV("helper_restart_count", helper.restart_count);
     r.pushKV("pq1_ready", st.pq1_ready);
-    r.pushKV("error", "btx-modeld not connected");
+    r.pushKV("error", helper.error.empty() ? "btx-modeld not connected" : helper.error);
     r.pushKV("retrieval_default", "FREE_ONLY");
     r.pushKV("automatic_spend_atoms", 0);
+    r.pushKV("public_host_reachable", helper.public_host_reachable);
+    r.pushKV("advertised_host", helper.advertised_host);
+    r.pushKV("nat_limited", !helper.public_host_reachable);
     r.pushKV("capabilities", modelnet::CapabilitiesObject());
     r.pushKV("note", "A BTX node already has compute. BTX gives it models and money. Not inference-as-a-service.");
     r.pushKV("htlc", "reuses final 0.34.6 htlc_sha256 / buildhtlcclaim / buildhtlcrefund; HASH160 htlc_tx is recovery-only");
@@ -120,7 +129,26 @@ RPCHelpMan ProxyOrLocal(const std::string& name, const std::string& help, std::v
             req.pushKV("params", params);
             UniValue result;
             std::string err;
-            if (HelperCall(name, params, result, err)) return result;
+            if (HelperCall(name, params, result, err)) {
+                if (name == "getmodelnetworkinfo") {
+                    const auto helper = modelnet::SnapshotManagedHelper();
+                    result.pushKV("helper_managed_by_btxd", helper.managed_by_btxd);
+                    result.pushKV("helper_restart_count", helper.restart_count);
+                    if (helper.pid > 0) result.pushKV("owner_helper_pid", helper.pid);
+                    if (helper.state != modelnet::HelperState::DISABLED) {
+                        result.pushKV("helper_state", modelnet::HelperStateName(helper.state));
+                    }
+                    // Unix RPC succeeded: the helper is answering even if the
+                    // supervisor has not yet latched READY.
+                    result.pushKV("helper_ready", true);
+                    result.pushKV("enabled", gArgs.GetBoolArg("-modelnet", true));
+                    if (!result.exists("nat_limited")) {
+                        const bool reachable = result.exists("public_host_reachable") && result["public_host_reachable"].isTrue();
+                        result.pushKV("nat_limited", !reachable);
+                    }
+                }
+                return result;
+            }
             if (err.find("WALLET_REQUIRED") != std::string::npos) {
                 throw JSONRPCError(RPC_WALLET_ERROR, err);
             }
@@ -238,11 +266,170 @@ static RPCHelpMan listmodels()
 
 static RPCHelpMan searchmodels()
 {
-    return ProxyOrLocal("searchmodels", "Bounded local/remote search. Coverage is always incomplete.\n",
-                        {{"query", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "query object", {
-                            {"text", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "search text"},
-                            {"limit", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "max results"},
-                        }}});
+    return ProxyOrLocal("searchmodels",
+                        "Bounded decentralized model search. Coverage is always incomplete (current network view, not a global directory).\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "query object or text string", RPCArgOptions{.skip_type_check = true}}});
+}
+
+static RPCHelpMan getmodelsearchrecord()
+{
+    return ProxyOrLocal("getmodelsearchrecord", "Return signed searchable metadata for a model.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"}});
+}
+static RPCHelpMan publishmodelsearchrecord()
+{
+    return ProxyOrLocal("publishmodelsearchrecord", "Sign and announce ModelSearchRecord. Not a wallet spend.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"},
+                         {"metadata", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "searchable metadata object", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan updatemodelsearchrecord()
+{
+    return ProxyOrLocal("updatemodelsearchrecord", "Publish next sequence of ModelSearchRecord. Does not mutate in place.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"},
+                         {"patch", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "metadata patch object", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan removemodelsearchrecord()
+{
+    return ProxyOrLocal("removemodelsearchrecord", "Publish a local tombstone. Global delete is not guaranteed.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"}});
+}
+static RPCHelpMan listmodelsearchrecords()
+{
+    return ProxyOrLocal("listmodelsearchrecords", "Paginated local search index.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "cursor/limit/updated_after", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getmodeldirectoryentry()
+{
+    return ProxyOrLocal("getmodeldirectoryentry", "Normalized directory card: identity, metadata, swarm, local, release.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"}});
+}
+static RPCHelpMan getmodeldirectory()
+{
+    return ProxyOrLocal("getmodeldirectory", "Browse directory view (current network view).\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "filters/sort/cursor", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getmodelproviders()
+{
+    return ProxyOrLocal("getmodelproviders", "Observed providers for a model. Not a global census.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"}});
+}
+static RPCHelpMan getmodelavailability()
+{
+    return ProxyOrLocal("getmodelavailability", "Aggregate swarm health from this node's observations.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"}});
+}
+static RPCHelpMan getmodelpeercount()
+{
+    return ProxyOrLocal("getmodelpeercount", "Observed complete/partial provider counts.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"}});
+}
+static RPCHelpMan getnetworkmodelstats()
+{
+    return ProxyOrLocal("getnetworkmodelstats", "This node's model-plane observations only. No central telemetry.\n", {});
+}
+static RPCHelpMan getmodelaliases()
+{
+    return ProxyOrLocal("getmodelaliases", "Aliases with provenance.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id or btx://"}});
+}
+static RPCHelpMan searchpublishers()
+{
+    return ProxyOrLocal("searchpublishers", "Search publisher/research identities in the local index.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "text/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getpublisher()
+{
+    return ProxyOrLocal("getpublisher", "Public signed publisher profile only.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "identity id hex"}});
+}
+static RPCHelpMan searchcollections()
+{
+    return ProxyOrLocal("searchcollections", "Search signed collections.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "text/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getcollection()
+{
+    return ProxyOrLocal("getcollection", "Signed collection detail.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "collection id"}});
+}
+static RPCHelpMan browsemodels()
+{
+    return ProxyOrLocal("browsemodels", "Directory browse without requiring a text query. Popularity is local observation, not global truth.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "sort/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan gettrendingmodels()
+{
+    return ProxyOrLocal("gettrendingmodels", "Local/network-sample trend. No user telemetry.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getsimilarmodels()
+{
+    return ProxyOrLocal("getsimilarmodels", "Metadata similarity only (family/tags/arch). No remote embeddings.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "family/tags", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getnewmodels()
+{
+    return ProxyOrLocal("getnewmodels", "Recently published models from this node's index.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "since/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getrecentreleases()
+{
+    return ProxyOrLocal("getrecentreleases", "Public release-campaign coordination data only.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getsearchstatus()
+{
+    return ProxyOrLocal("getsearchstatus", "Async search job status. complete is never global-true.\n",
+                        {{"query_id", RPCArg::Type::STR, RPCArg::Optional::NO, "query_id"}});
+}
+static RPCHelpMan cancelmodelsearch()
+{
+    return ProxyOrLocal("cancelmodelsearch", "Stop additional search forwarding for query_id.\n",
+                        {{"query_id", RPCArg::Type::STR, RPCArg::Optional::NO, "query_id"}});
+}
+static RPCHelpMan getsearchpeers()
+{
+    return ProxyOrLocal("getsearchpeers", "Known search/index peers. Model-plane only.\n", {});
+}
+static RPCHelpMan addmodelindex()
+{
+    return ProxyOrLocal("addmodelindex", "Add a preferred search/index endpoint. Not monetary addnode.\n",
+                        {{"endpoint", RPCArg::Type::STR, RPCArg::Optional::NO, "endpoint or identity"}});
+}
+static RPCHelpMan removemodelindex()
+{
+    return ProxyOrLocal("removemodelindex", "Remove a local index preference. Not a global blacklist.\n",
+                        {{"endpoint", RPCArg::Type::STR, RPCArg::Optional::NO, "endpoint or identity"}});
+}
+static RPCHelpMan exportmodelindex()
+{
+    return ProxyOrLocal("exportmodelindex", "Export public signed search records. No secrets.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "since/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan importmodelindex()
+{
+    return ProxyOrLocal("importmodelindex", "Import signed records; every signature is revalidated.\n",
+                        {{"snapshot", RPCArg::Type::STR, RPCArg::Optional::NO, "records snapshot object", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan hidesearchmodel()
+{
+    return ProxyOrLocal("hidesearchmodel", "Local hide. Not global moderation.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id"}});
+}
+static RPCHelpMan unhidesearchmodel()
+{
+    return ProxyOrLocal("unhidesearchmodel", "Undo local hide.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id"}});
+}
+static RPCHelpMan mutesearchpublisher()
+{
+    return ProxyOrLocal("mutesearchpublisher", "Local mute publisher. Not global moderation.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "publisher identity hex"}});
+}
+static RPCHelpMan unmutesearchpublisher()
+{
+    return ProxyOrLocal("unmutesearchpublisher", "Undo local publisher mute.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "publisher identity hex"}});
 }
 
 static RPCHelpMan getmodelmanifest()
@@ -271,6 +458,18 @@ static RPCHelpMan seedmodel()
 static RPCHelpMan unseedmodel()
 {
     return ProxyOrLocal("unseedmodel", "Withdraw a previously published hosting offer.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "btx:// MODEL URI or hex"}});
+}
+
+static RPCHelpMan pinmodel()
+{
+    return ProxyOrLocal("pinmodel", "Keep this model. Pinned pieces are never automatically evicted.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "btx:// MODEL URI or hex"}});
+}
+
+static RPCHelpMan unpinmodel()
+{
+    return ProxyOrLocal("unpinmodel", "Remove Keep. The model becomes eligible for automatic cache eviction.\n",
                         {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "btx:// MODEL URI or hex"}});
 }
 
@@ -895,10 +1094,44 @@ void RegisterModelNetRPCCommands(CRPCTable& t)
         {"modelnet", &getmodel},
         {"modelnet", &listmodels},
         {"modelnet", &searchmodels},
+        {"modelnet", &getmodelsearchrecord},
+        {"modelnet", &publishmodelsearchrecord},
+        {"modelnet", &updatemodelsearchrecord},
+        {"modelnet", &removemodelsearchrecord},
+        {"modelnet", &listmodelsearchrecords},
+        {"modelnet", &getmodeldirectoryentry},
+        {"modelnet", &getmodeldirectory},
+        {"modelnet", &getmodelproviders},
+        {"modelnet", &getmodelavailability},
+        {"modelnet", &getmodelpeercount},
+        {"modelnet", &getnetworkmodelstats},
+        {"modelnet", &getmodelaliases},
+        {"modelnet", &searchpublishers},
+        {"modelnet", &getpublisher},
+        {"modelnet", &searchcollections},
+        {"modelnet", &getcollection},
+        {"modelnet", &browsemodels},
+        {"modelnet", &gettrendingmodels},
+        {"modelnet", &getsimilarmodels},
+        {"modelnet", &getnewmodels},
+        {"modelnet", &getrecentreleases},
+        {"modelnet", &getsearchstatus},
+        {"modelnet", &cancelmodelsearch},
+        {"modelnet", &getsearchpeers},
+        {"modelnet", &addmodelindex},
+        {"modelnet", &removemodelindex},
+        {"modelnet", &exportmodelindex},
+        {"modelnet", &importmodelindex},
+        {"modelnet", &hidesearchmodel},
+        {"modelnet", &unhidesearchmodel},
+        {"modelnet", &mutesearchpublisher},
+        {"modelnet", &unmutesearchpublisher},
         {"modelnet", &getmodelmanifest},
         {"modelnet", &importmodel},
         {"modelnet", &seedmodel},
         {"modelnet", &unseedmodel},
+        {"modelnet", &pinmodel},
+        {"modelnet", &unpinmodel},
         {"modelnet", &qualifymodel},
         {"modelnet", &addmodelnode},
         {"modelnet", &getmodelpeers},

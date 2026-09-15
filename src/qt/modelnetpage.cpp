@@ -19,20 +19,304 @@
 #include <modelnet/resource_uri.h>
 #endif
 
+#include <QComboBox>
+#include <QHBoxLayout>
+#include <QObject>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QTimer>
+#include <QVBoxLayout>
 
 #include <stdexcept>
+
+namespace {
+
+QString FormatProfileLabel(const UniValue& model)
+{
+    if (model.exists("format") && model["format"].isStr()) {
+        return QString::fromStdString(model["format"].get_str());
+    }
+    if (model.exists("format_profile")) {
+        const int fp = model["format_profile"].getInt<int>();
+        if (fp == 2) return QStringLiteral("GGUF");
+        if (fp == 1) return QStringLiteral("SafeTensors");
+    }
+    return QStringLiteral("—");
+}
+
+QString HumanBytes(int64_t bytes)
+{
+    if (bytes < 0) return QStringLiteral("—");
+    if (bytes < 1024) return QString::number(bytes) + QStringLiteral(" B");
+    const double kb = bytes / 1024.0;
+    if (kb < 1024.0) return QString::number(kb, 'f', 1) + QStringLiteral(" KiB");
+    const double mb = kb / 1024.0;
+    if (mb < 1024.0) return QString::number(mb, 'f', 1) + QStringLiteral(" MiB");
+    const double gb = mb / 1024.0;
+    return QString::number(gb, 'f', 2) + QStringLiteral(" GiB");
+}
+
+int64_t ModelByteSize(const UniValue& model)
+{
+    if (model.exists("size_bytes")) return model["size_bytes"].getInt<int64_t>();
+    if (model.exists("bytes")) return model["bytes"].getInt<int>();
+    if (model.exists("size")) return model["size"].getInt<int>();
+    return -1;
+}
+
+const UniValue* NestedAvailability(const UniValue& model)
+{
+    if (model.exists("availability") && model["availability"].isObject()) {
+        return &model["availability"];
+    }
+    return nullptr;
+}
+
+QString ModelDisplayName(const UniValue& model)
+{
+    if (model.exists("name") && model["name"].isStr()) {
+        return QString::fromStdString(model["name"].get_str());
+    }
+    if (model.exists("label") && model["label"].isStr()) {
+        return QString::fromStdString(model["label"].get_str());
+    }
+    return QStringLiteral("—");
+}
+
+QString ProvidersLine(const UniValue& model)
+{
+    if (const UniValue* av = NestedAvailability(model)) {
+        const int total = av->exists("providers_total") ? (*av)["providers_total"].getInt<int>() : 0;
+        const int complete = av->exists("providers_complete") ? (*av)["providers_complete"].getInt<int>() : 0;
+        const int partial = av->exists("providers_partial") ? (*av)["providers_partial"].getInt<int>() : 0;
+        return QObject::tr("providers %1 (complete %2, partial %3)").arg(total).arg(complete).arg(partial);
+    }
+    if (model.exists("providers_total")) {
+        const int total = model["providers_total"].getInt<int>();
+        const int complete = model.exists("providers_complete") ? model["providers_complete"].getInt<int>() : 0;
+        const int partial = model.exists("providers_partial") ? model["providers_partial"].getInt<int>() : 0;
+        return QObject::tr("providers %1 (complete %2, partial %3)").arg(total).arg(complete).arg(partial);
+    }
+    if (model.exists("observed_sources")) {
+        return QObject::tr("observed_sources %1").arg(model["observed_sources"].getInt<int>());
+    }
+    return QStringLiteral("—");
+}
+
+QString AvailabilityLine(const UniValue& model)
+{
+    if (const UniValue* av = NestedAvailability(model)) {
+        if (av->exists("class") && (*av)["class"].isStr()) {
+            return QString::fromStdString((*av)["class"].get_str());
+        }
+        if (av->exists("reconstructable")) {
+            const bool recon = (*av)["reconstructable"].get_bool();
+            const bool fragile = av->exists("fragile") && (*av)["fragile"].get_bool();
+            if (fragile) return QStringLiteral("fragile");
+            return recon ? QStringLiteral("reconstructable") : QStringLiteral("partial");
+        }
+    }
+    if (model.exists("availability_class") && model["availability_class"].isStr()) {
+        return QString::fromStdString(model["availability_class"].get_str());
+    }
+    if (model.exists("availability") && model["availability"].isStr()) {
+        return QString::fromStdString(model["availability"].get_str());
+    }
+    if (model.exists("complete")) {
+        return model["complete"].get_bool() ? QStringLiteral("complete") : QStringLiteral("partial");
+    }
+    return QStringLiteral("—");
+}
+
+QString PublisherLine(const UniValue& model)
+{
+    if (model.exists("publisher") && model["publisher"].isObject()) {
+        const UniValue& pub = model["publisher"];
+        if (pub.exists("display_name") && pub["display_name"].isStr()) {
+            const std::string dn = pub["display_name"].get_str();
+            if (!dn.empty()) return QString::fromStdString(dn);
+        }
+        if (pub.exists("id") && pub["id"].isStr()) {
+            return QString::fromStdString(pub["id"].get_str());
+        }
+    }
+    if (model.exists("publisher") && model["publisher"].isStr()) {
+        return QString::fromStdString(model["publisher"].get_str());
+    }
+    return QStringLiteral("—");
+}
+
+bool ModelMatchesFormatFilter(const UniValue& model, const std::string& filter)
+{
+    const QString fmt = FormatProfileLabel(model);
+    if (filter == "GGUF") return fmt.compare(QStringLiteral("GGUF"), Qt::CaseInsensitive) == 0;
+    if (filter == "SafeTensors") {
+        return fmt.compare(QStringLiteral("SafeTensors"), Qt::CaseInsensitive) == 0;
+    }
+    return true;
+}
+
+bool ModelMatchesNeedle(const UniValue& model, const QString& needle_lower)
+{
+    if (needle_lower.isEmpty()) return true;
+    const QString name = ModelDisplayName(model).toLower();
+    if (name.contains(needle_lower)) return true;
+    const QString uri = QString::fromStdString(model.write()).toLower();
+    return uri.contains(needle_lower);
+}
+
+UniValue FilterModelsArray(const UniValue& models, const QString& needle_lower, const std::optional<std::string>& format_filter)
+{
+    UniValue out(UniValue::VARR);
+    if (!models.isArray()) return out;
+    for (const auto& m : models.getValues()) {
+        if (format_filter && !ModelMatchesFormatFilter(m, *format_filter)) continue;
+        if (!ModelMatchesNeedle(m, needle_lower)) continue;
+        out.push_back(m);
+    }
+    return out;
+}
+
+QString UniStrField(const UniValue& obj, const char* key)
+{
+    if (obj.exists(key) && obj[key].isStr()) {
+        return QString::fromStdString(obj[key].get_str());
+    }
+    return {};
+}
+
+QString FormatJobLine(const UniValue& job, const QString& label)
+{
+    if (job.isStr()) {
+        const QString state = QString::fromStdString(job.get_str());
+        if (state.compare(QStringLiteral("stopped"), Qt::CaseInsensitive) == 0 ||
+            state.compare(QStringLiteral("idle"), Qt::CaseInsensitive) == 0) {
+            return label + QStringLiteral(": ") + state;
+        }
+        return label + QStringLiteral(": ") + state;
+    }
+    if (!job.isObject()) return {};
+    QString line = label + QStringLiteral(": ");
+    if (job.exists("active") && job["active"].get_bool()) {
+        line += QStringLiteral("active");
+    } else if (job.exists("running") && job["running"].get_bool()) {
+        line += QStringLiteral("running");
+    } else if (job.exists("state") && job["state"].isStr()) {
+        line += QString::fromStdString(job["state"].get_str());
+    } else {
+        line += QStringLiteral("paused");
+    }
+    const QString reason = UniStrField(job, "pause_reason");
+    if (!reason.isEmpty()) {
+        line += QStringLiteral(" (") + reason + QLatin1Char(')');
+    }
+    return line;
+}
+
+QString FormatResourceGovernorStatus(const UniValue& info)
+{
+    QStringList lines;
+    lines << QObject::tr("Resource governor");
+    if (info.exists("mode") && info["mode"].isStr()) {
+        lines << QObject::tr("Mode: %1").arg(QString::fromStdString(info["mode"].get_str()));
+    }
+    if (info.exists("enabled")) {
+        lines << QObject::tr("Enabled: %1").arg(info["enabled"].get_bool() ? QStringLiteral("yes")
+                                                                           : QStringLiteral("no"));
+    }
+    if (info.exists("system_idle_state") && info["system_idle_state"].isStr()) {
+        lines << QObject::tr("System idle: %1")
+                     .arg(QString::fromStdString(info["system_idle_state"].get_str()));
+    }
+    if (info.exists("gpu") && info["gpu"].isArray()) {
+        int idx = 0;
+        for (const UniValue& gpu : info["gpu"].getValues()) {
+            if (!gpu.isObject()) continue;
+            QString gpu_line = QObject::tr("GPU %1").arg(idx++);
+            if (gpu.exists("id") && gpu["id"].isStr()) {
+                gpu_line = QString::fromStdString(gpu["id"].get_str());
+            }
+            if (gpu.exists("mining_active") && gpu["mining_active"].get_bool()) {
+                gpu_line += QStringLiteral(" mining");
+                if (gpu.exists("mining_intensity")) {
+                    gpu_line += QStringLiteral(" @") + QString::number(gpu["mining_intensity"].getInt<int>()) +
+                                QStringLiteral("%");
+                }
+            } else if (gpu.exists("mining_allowed") && !gpu["mining_allowed"].get_bool()) {
+                gpu_line += QStringLiteral(" mining disallowed");
+            }
+            const QString pause = UniStrField(gpu, "pause_reason");
+            if (!pause.isEmpty()) {
+                gpu_line += QStringLiteral(" — ") + pause;
+            } else if (gpu.exists("thermal_state") && gpu["thermal_state"].isStr()) {
+                gpu_line += QStringLiteral(" — ") + QString::fromStdString(gpu["thermal_state"].get_str());
+            }
+            lines << gpu_line;
+        }
+    }
+    if (info.exists("network") && info["network"].isObject()) {
+        const UniValue& net = info["network"];
+        const QString pressure = UniStrField(net, "pressure_state");
+        if (!pressure.isEmpty()) {
+            lines << QObject::tr("Network: %1").arg(pressure);
+        }
+        const QString throttle = UniStrField(net, "throttle_reason");
+        if (!throttle.isEmpty()) {
+            lines << QObject::tr("Network throttle: %1").arg(throttle);
+        }
+    }
+    if (info.exists("jobs") && info["jobs"].isObject()) {
+        const UniValue& jobs = info["jobs"];
+        if (jobs.exists("mining")) {
+            const QString mining_line = FormatJobLine(jobs["mining"], QObject::tr("Mining"));
+            if (!mining_line.isEmpty()) lines << mining_line;
+        }
+        if (jobs.exists("seeding")) {
+            const QString seed_line = FormatJobLine(jobs["seeding"], QObject::tr("Seeding"));
+            if (!seed_line.isEmpty()) lines << seed_line;
+        }
+        if (jobs.exists("preservation")) {
+            const QString pres_line = FormatJobLine(jobs["preservation"], QObject::tr("Preservation"));
+            if (!pres_line.isEmpty()) lines << pres_line;
+        }
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+} // namespace
 
 ModelNetPage::ModelNetPage(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::ModelNetPage)
 {
     ui->setupUi(this);
+
+    ui->sortCombo->addItem(tr("Relevance"), QStringLiteral("RELEVANCE"));
+    ui->sortCombo->addItem(tr("Availability"), QStringLiteral("AVAILABILITY"));
+    ui->sortCombo->addItem(tr("Newest"), QStringLiteral("NEWEST"));
+    ui->sortCombo->addItem(tr("Size (desc)"), QStringLiteral("SIZE_DESC"));
+    ui->sortCombo->addItem(tr("Providers"), QStringLiteral("PROVIDERS"));
+
+    ui->formatCombo->addItem(tr("Any"), QString());
+    ui->formatCombo->addItem(QStringLiteral("GGUF"), QStringLiteral("GGUF"));
+    ui->formatCombo->addItem(tr("SafeTensors"), QStringLiteral("SafeTensors"));
+
     connect(ui->refreshButton, &QPushButton::clicked, this, &ModelNetPage::refresh);
     connect(ui->copyUriButton, &QPushButton::clicked, this, &ModelNetPage::copyOpenedUri);
+    connect(ui->searchButton, &QPushButton::clicked, this, &ModelNetPage::runModelSearch);
+    connect(ui->searchLineEdit, &QLineEdit::returnPressed, this, &ModelNetPage::runModelSearch);
+    connect(ui->searchLineEdit, &QLineEdit::textChanged, this, &ModelNetPage::onSearchTextChanged);
+    connect(ui->modelsScopeTabWidget, &QTabWidget::currentChanged, this, [this](int) {
+        ui->searchCoverageLabel->setText(
+            tr("Scope changed — run Search to refresh results (coverage always incomplete)."));
+    });
+
     ui->uriDisplayLabel->installEventFilter(this);
     ui->uriRowWidget->setVisible(false);
     refresh();
@@ -86,7 +370,7 @@ bool ModelNetPage::eventFilter(QObject* obj, QEvent* ev)
     return QWidget::eventFilter(obj, ev);
 }
 
-QString ModelNetPage::callRpc(const std::string& method) const
+QString ModelNetPage::callRpc(const std::string& method, const UniValue& params) const
 {
 #ifdef ENABLE_MODELNET
     if (!m_client_model) {
@@ -94,7 +378,6 @@ QString ModelNetPage::callRpc(const std::string& method) const
             .arg(QString::fromStdString(method));
     }
     try {
-        UniValue params(UniValue::VARR);
         const UniValue result = m_client_model->node().executeRpc(method, params, /*uri=*/"");
         return QString::fromStdString(result.write(2));
     } catch (const UniValue& e) {
@@ -107,8 +390,25 @@ QString ModelNetPage::callRpc(const std::string& method) const
                    .arg(QString::fromStdString(method));
     }
 #else
+    (void)params;
     return tr("Model network support was not compiled into this GUI. Use btx-cli %1.")
         .arg(QString::fromStdString(method));
+#endif
+}
+
+std::optional<UniValue> ModelNetPage::tryRpc(const std::string& method, const UniValue& params) const
+{
+#ifdef ENABLE_MODELNET
+    if (!m_client_model) return std::nullopt;
+    try {
+        return m_client_model->node().executeRpc(method, params, /*uri=*/"");
+    } catch (...) {
+        return std::nullopt;
+    }
+#else
+    (void)method;
+    (void)params;
+    return std::nullopt;
 #endif
 }
 
@@ -125,11 +425,13 @@ void ModelNetPage::refreshConsent()
     const bool payload_ok = (loaded && modelnet::AllowPayloadStorage(consent)) || env_budget;
     QString text;
     if (loaded) {
-        text = tr("Consent file: %1\nStorage: %2 bytes | seed=%3 | preserve_rare=%4 | consented_unix=%5")
+        text = tr("Consent file: %1\nStorage: %2 bytes | seed=%3 | preserve_rare=%4 | governor_auto=%5 | mining_idle=%6 | consented_unix=%7")
                    .arg(GUIUtil::PathToQString(path),
                         QString::number(consent.storage_bytes),
                         QString::fromUtf8(modelnet::SeedModeName(consent.seed)),
                         consent.preserve_rare ? QStringLiteral("true") : QStringLiteral("false"),
+                        consent.resource_governor_auto ? QStringLiteral("true") : QStringLiteral("false"),
+                        consent.mining_idle ? QStringLiteral("true") : QStringLiteral("false"),
                         QString::number(consent.consented_unix));
     } else {
         text = tr("No first-run consent file (%1). Payload storage stays 0 until a finite budget is allocated.")
@@ -147,14 +449,404 @@ void ModelNetPage::refreshConsent()
 #endif
 }
 
+void ModelNetPage::refreshResourceGovernorStatus()
+{
+#ifdef ENABLE_MODELNET
+    QString text;
+    if (!m_client_model) {
+        text = tr("Resource governor: connect the wallet to btxd to read live status. "
+                  "When RPC is available, this panel uses getresourcegovernorinfo (same name as btx-cli).");
+    } else {
+        const auto info = tryRpc("getresourcegovernorinfo", UniValue(UniValue::VARR));
+        if (info) {
+            text = FormatResourceGovernorStatus(*info);
+        } else {
+            text = tr("Resource governor: getresourcegovernorinfo is not available on this node yet. "
+                      "Upgrade btxd or query btx-cli getresourcegovernorinfo when the RPC is enabled.");
+        }
+    }
+    ui->resourceGovernorStatusLabel->setText(text);
+#else
+    ui->resourceGovernorStatusLabel->setVisible(false);
+#endif
+}
+
+void ModelNetPage::refreshLocalCatalogCache()
+{
+    m_have_local_cache = false;
+    m_cached_listmodels = UniValue(UniValue::VARR);
+    const auto parsed = tryRpc("listmodels", UniValue(UniValue::VARR));
+    if (!parsed || !parsed->exists("models") || !(*parsed)["models"].isArray()) return;
+    m_cached_listmodels = (*parsed)["models"];
+    m_have_local_cache = true;
+}
+
+int ModelNetPage::modelsScopeTabIndex() const
+{
+    return ui->modelsScopeTabWidget->currentIndex();
+}
+
+UniValue ModelNetPage::buildSearchQueryObject(const std::optional<std::string>& scope,
+                                              const std::optional<std::string>& sort_override) const
+{
+    UniValue query(UniValue::VOBJ);
+    query.pushKV("text", ui->searchLineEdit->text().trimmed().toStdString());
+    query.pushKV("limit", 25);
+    if (scope) {
+        query.pushKV("scope", *scope);
+    }
+    const std::string sort = sort_override ? *sort_override : currentSortKey();
+    query.pushKV("sort", sort);
+    if (const auto fmt = currentFormatFilter()) {
+        UniValue filters(UniValue::VOBJ);
+        filters.pushKV("format", *fmt);
+        query.pushKV("filters", filters);
+    }
+    return query;
+}
+
+std::string ModelNetPage::currentSortKey() const
+{
+    return ui->sortCombo->currentData().toString().toStdString();
+}
+
+std::optional<std::string> ModelNetPage::currentFormatFilter() const
+{
+    const QString data = ui->formatCombo->currentData().toString();
+    if (data.isEmpty()) return std::nullopt;
+    return data.toStdString();
+}
+
+QString ModelNetPage::modelFullUri(const UniValue& model) const
+{
+    std::string raw;
+    if (model.exists("uri") && model["uri"].isStr()) raw = model["uri"].get_str();
+    else if (model.exists("model_uri") && model["model_uri"].isStr()) raw = model["model_uri"].get_str();
+#ifdef ENABLE_MODELNET
+    if (!raw.empty()) {
+        const std::string full = modelnet::CopyUri(raw);
+        if (!full.empty()) return QString::fromStdString(full);
+    }
+#else
+    if (!raw.empty()) return QString::fromStdString(raw);
+#endif
+    if (model.exists("model_id") && model["model_id"].isStr()) {
+        return QStringLiteral("btx://") + QString::fromStdString(model["model_id"].get_str());
+    }
+    return QString();
+}
+
+void ModelNetPage::clearResultsList()
+{
+    ui->resultsList->clear();
+}
+
+void ModelNetPage::updateCoverageLabel(int result_count, const UniValue* meta)
+{
+    int connected_peers = 0;
+    int index_peers = 0;
+    bool local_only = false;
+    if (meta) {
+        if (meta->exists("coverage") && (*meta)["coverage"].isObject()) {
+            const UniValue& cov = (*meta)["coverage"];
+            if (cov.exists("connected_peers_queried")) {
+                connected_peers = cov["connected_peers_queried"].getInt<int>();
+            }
+            if (cov.exists("index_peers_queried")) {
+                index_peers = cov["index_peers_queried"].getInt<int>();
+            }
+            if (cov.exists("local") && cov["local"].get_bool()) {
+                local_only = true;
+            }
+        } else if (meta->exists("coverage") && (*meta)["coverage"].isStr()) {
+            local_only = (*meta)["coverage"].get_str() == "local-only preview";
+        }
+    }
+    QString text = tr("%1 results found from current network view").arg(result_count);
+    if (local_only) {
+        text = tr("%1 local matches (preview only; not a network search)").arg(result_count);
+    } else if (connected_peers > 0 || index_peers > 0) {
+        text += tr(" — %1 connected peer(s) queried").arg(connected_peers);
+        if (index_peers > 0) {
+            text += tr(", %1 index peer(s)").arg(index_peers);
+        }
+    }
+    text += tr(". Partial view only; not a complete global directory.");
+    ui->searchCoverageLabel->setText(text);
+}
+
+void ModelNetPage::renderModelCards(const UniValue& models, const UniValue* meta)
+{
+    clearResultsList();
+    if (!models.isArray()) {
+        updateCoverageLabel(0, meta);
+        return;
+    }
+
+    const int n = static_cast<int>(models.getValues().size());
+    updateCoverageLabel(n, meta);
+
+    for (const auto& m : models.getValues()) {
+        const QString full_uri = modelFullUri(m);
+#ifdef ENABLE_MODELNET
+        const QString uri_display = full_uri.isEmpty()
+            ? QStringLiteral("—")
+            : QString::fromStdString(modelnet::ShortDisplayUri(full_uri.toStdString()));
+#else
+        const QString uri_display = full_uri.isEmpty() ? QStringLiteral("—") : full_uri;
+#endif
+
+        auto* item = new QListWidgetItem();
+        item->setData(Qt::UserRole, full_uri);
+        ui->resultsList->addItem(item);
+
+        auto* card = new QWidget();
+        auto* layout = new QVBoxLayout(card);
+        layout->setContentsMargins(6, 4, 6, 4);
+
+        auto* title = new QLabel(
+            QStringLiteral("<b>%1</b> · %2 · %3")
+                .arg(ModelDisplayName(m).toHtmlEscaped(),
+                     FormatProfileLabel(m).toHtmlEscaped(),
+                     HumanBytes(ModelByteSize(m)).toHtmlEscaped()));
+        title->setWordWrap(true);
+        layout->addWidget(title);
+
+        auto* meta_line = new QLabel(
+            QStringLiteral("%1 · availability: %2 · publisher: %3")
+                .arg(ProvidersLine(m).toHtmlEscaped(),
+                     AvailabilityLine(m).toHtmlEscaped(),
+                     PublisherLine(m).toHtmlEscaped()));
+        meta_line->setWordWrap(true);
+        layout->addWidget(meta_line);
+
+        auto* uri_line = new QLabel(tr("URI: %1").arg(uri_display.toHtmlEscaped()));
+        uri_line->setWordWrap(true);
+        uri_line->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        layout->addWidget(uri_line);
+
+        auto* btn_row = new QHBoxLayout();
+        auto* download_btn = new QPushButton(tr("Download"));
+        download_btn->setProperty("modelUri", full_uri);
+        connect(download_btn, &QPushButton::clicked, this, &ModelNetPage::onResultDownload);
+        btn_row->addWidget(download_btn);
+
+        auto* copy_btn = new QPushButton(tr("Copy btx://"));
+        copy_btn->setProperty("modelUri", full_uri);
+        connect(copy_btn, &QPushButton::clicked, this, &ModelNetPage::onResultCopyUri);
+        btn_row->addWidget(copy_btn);
+
+        auto* details_btn = new QPushButton(tr("Details"));
+        details_btn->setProperty("modelUri", full_uri);
+        connect(details_btn, &QPushButton::clicked, this, &ModelNetPage::onResultDetails);
+        btn_row->addWidget(details_btn);
+        btn_row->addStretch();
+        layout->addLayout(btn_row);
+
+        item->setSizeHint(card->sizeHint());
+        ui->resultsList->setItemWidget(item, card);
+    }
+}
+
+void ModelNetPage::renderSearchResponse(const UniValue& result)
+{
+    UniValue models(UniValue::VARR);
+    if (result.exists("results") && result["results"].isArray()) {
+        models = result["results"];
+    } else if (result.exists("models") && result["models"].isArray()) {
+        models = result["models"];
+    }
+    const auto fmt = currentFormatFilter();
+    const QString needle = ui->searchLineEdit->text().trimmed().toLower();
+    if (fmt || !needle.isEmpty()) {
+        models = FilterModelsArray(models, needle, fmt);
+    }
+    if (result.exists("results_returned")) {
+        m_last_results_returned = result["results_returned"].getInt<int>();
+    } else {
+        m_last_results_returned = static_cast<int>(models.isArray() ? models.getValues().size() : 0);
+    }
+    renderModelCards(models, &result);
+
+    if (result.exists("query_id") && result["query_id"].isStr()) {
+        pollSearchStatus(result["query_id"].get_str(), 0);
+    }
+}
+
+void ModelNetPage::pollSearchStatus(const std::string& query_id, int attempt)
+{
+    if (attempt >= 12 || query_id.empty() || m_last_search_method.empty()) return;
+    UniValue params(UniValue::VARR);
+    params.push_back(query_id);
+    const auto status = tryRpc("getsearchstatus", params);
+    if (!status) return;
+
+    const std::string state = status->exists("state") ? (*status)["state"].get_str() : std::string{};
+    const int returned = status->exists("results_returned") ? (*status)["results_returned"].getInt<int>() : 0;
+    const bool more_results = returned > m_last_results_returned;
+
+    if (more_results) {
+        const auto refreshed = tryRpc(m_last_search_method, m_last_search_params);
+        if (refreshed) {
+            renderSearchResponse(*refreshed);
+        }
+    }
+
+    if (state == "RUNNING") {
+        QTimer::singleShot(600, this, [this, query_id, attempt]() { pollSearchStatus(query_id, attempt + 1); });
+    }
+}
+
+void ModelNetPage::renderLocalTypeahead(const QString& needle)
+{
+    if (!m_have_local_cache) {
+        ui->searchCoverageLabel->setText(tr("Local preview (≤2 chars) — no local catalog cached yet."));
+        clearResultsList();
+        return;
+    }
+    const QString lower = needle.trimmed().toLower();
+    const UniValue filtered = FilterModelsArray(m_cached_listmodels, lower, currentFormatFilter());
+    UniValue meta(UniValue::VOBJ);
+    UniValue cov(UniValue::VOBJ);
+    cov.pushKV("local", true);
+    cov.pushKV("complete", false);
+    meta.pushKV("coverage", cov);
+    renderModelCards(filtered, &meta);
+}
+
+void ModelNetPage::onSearchTextChanged(const QString& text)
+{
+    const int len = text.trimmed().size();
+    if (len == 0) {
+        clearResultsList();
+        ui->searchCoverageLabel->setText(
+            tr("Search to discover models. Coverage is always incomplete until you run Search."));
+        return;
+    }
+    if (len <= 2) {
+        renderLocalTypeahead(text);
+    }
+}
+
+void ModelNetPage::runModelSearch()
+{
+#ifdef ENABLE_MODELNET
+    if (!m_client_model) {
+        ui->modelsOutput->setPlainText(
+            tr("Node RPC is not connected. Connect the wallet to a node, or use btx-cli searchmodels."));
+        return;
+    }
+
+    std::string method = "searchmodels";
+    std::optional<std::string> scope;
+    std::optional<std::string> sort_override;
+    switch (modelsScopeTabIndex()) {
+    case 1:
+        method = "getnewmodels";
+        break;
+    case 2:
+        method = "browsemodels";
+        sort_override = "AVAILABILITY";
+        break;
+    case 3:
+        scope = "LOCAL";
+        break;
+    case 0:
+    default:
+        scope = "NETWORK";
+        break;
+    }
+
+    const UniValue query = buildSearchQueryObject(scope, sort_override);
+    UniValue params(UniValue::VARR);
+    params.push_back(query);
+
+    m_last_search_method = method;
+    m_last_search_params = params;
+    m_last_results_returned = 0;
+
+    ui->modelsOutput->setPlainText(QString::fromStdString(method) + QStringLiteral(" …"));
+    const auto result = tryRpc(method, params);
+    if (!result) {
+        ui->modelsOutput->setPlainText(callRpc(method, params));
+        ui->searchCoverageLabel->setText(tr("Search failed — see detail pane."));
+        return;
+    }
+
+    renderSearchResponse(*result);
+    ui->modelsOutput->setPlainText(
+        tr("%1 (read-only; no auto-fetch)\n").arg(QString::fromStdString(method)) +
+        QString::fromStdString(result->write(2)));
+#else
+    ui->modelsOutput->setPlainText(tr("Model network support was not compiled into this GUI."));
+#endif
+}
+
+void ModelNetPage::onResultDownload()
+{
+    const auto* btn = qobject_cast<QPushButton*>(sender());
+    if (!btn) return;
+    const QString uri = btn->property("modelUri").toString();
+    showModelPlan(uri);
+}
+
+void ModelNetPage::onResultCopyUri()
+{
+    const auto* btn = qobject_cast<QPushButton*>(sender());
+    if (!btn) return;
+    const QString uri = btn->property("modelUri").toString();
+    if (uri.isEmpty()) return;
+#ifdef ENABLE_MODELNET
+    GUIUtil::setClipboard(QString::fromStdString(modelnet::CopyUri(uri.toStdString())));
+#else
+    GUIUtil::setClipboard(uri);
+#endif
+}
+
+void ModelNetPage::showModelPlan(const QString& full_uri)
+{
+    if (full_uri.isEmpty()) {
+        ui->modelsOutput->setPlainText(tr("No btx:// URI for this result."));
+        return;
+    }
+    UniValue params(UniValue::VARR);
+    params.push_back(full_uri.toStdString());
+    ui->modelsOutput->setPlainText(
+        tr("getmodel (plan only — does not spend or fetch until you approve elsewhere)\n") +
+        callRpc("getmodel", params));
+}
+
+void ModelNetPage::onResultDetails()
+{
+    const auto* btn = qobject_cast<QPushButton*>(sender());
+    if (!btn) return;
+    showModelDetails(btn->property("modelUri").toString());
+}
+
+void ModelNetPage::showModelDetails(const QString& full_uri)
+{
+    if (full_uri.isEmpty()) {
+        ui->modelsOutput->setPlainText(tr("No btx:// URI for this result."));
+        return;
+    }
+    UniValue params(UniValue::VARR);
+    params.push_back(full_uri.toStdString());
+    ui->modelsOutput->setPlainText(
+        tr("getmodeldirectoryentry (read-only directory view)\n") + callRpc("getmodeldirectoryentry", params));
+}
+
 void ModelNetPage::refresh()
 {
+    refreshResourceGovernorStatus();
     refreshConsent();
+    refreshLocalCatalogCache();
+
     const QString rpc_note = tr("\n\nRPC: %1 (same name as CLI). This page never calls getmodel/importmodel automatically.");
-    ui->modelsOutput->setPlainText(
-        tr("getmodelnetworkinfo") + QLatin1Char('\n') + callRpc("getmodelnetworkinfo") +
-        QLatin1String("\n\n") + tr("listmodels") + QLatin1Char('\n') + callRpc("listmodels") +
-        rpc_note.arg(QStringLiteral("getmodelnetworkinfo, listmodels")));
+    if (ui->resultsList->count() == 0) {
+        ui->modelsOutput->setPlainText(
+            tr("getmodelnetworkinfo") + QLatin1Char('\n') + callRpc("getmodelnetworkinfo") +
+            rpc_note.arg(QStringLiteral("searchmodels, getmodel")));
+    }
     ui->downloadsOutput->setPlainText(
         tr("getmodeljob") + QLatin1Char('\n') + callRpc("getmodeljob") +
         rpc_note.arg(QStringLiteral("getmodeljob")));

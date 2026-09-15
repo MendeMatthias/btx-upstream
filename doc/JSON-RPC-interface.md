@@ -118,9 +118,12 @@ Useful operational additions in the current BTX RPC surface:
 
 When built with `-DWITH_MODELNET=ON` (default), `btxd` exposes model-plane
 JSON-RPC methods that **proxy** to `btx-modeld` over `-modelrpcsocket` (default
-`<datadir>/modelnet/modeld.sock`). `btxd` never starts the helper. If the helper
-is down, PQ1 is unavailable, or the store is corrupt, model RPCs **fail closed**
-with an error; monetary RPCs, P2P, and chain validation continue unchanged.
+`<datadir>/modelnet/modeld.sock`). Packaged `btxd` **starts and supervises**
+`btx-modeld` by default (`-modelnet=1`). Disable with `-modelnet=0`. If
+`-modelrpcsocket` is set explicitly, `btxd` connects to that helper and does not
+spawn or kill it. A helper crash, missing binary, bad PQ library, or corrupt
+store **never** stops monetary consensus unless `-modelnetrequired=1`. Model
+RPCs fail closed when the helper is down; chain validation continues.
 
 Product contract: a BTX node already has compute; BTX gives it models and
 money. Inference is **local after acquire** — there is no inference endpoint,
@@ -141,9 +144,9 @@ are not a separate inference-payment API. Model-specific HTLC builders
 (`buildmodelhtlcclaim` / `buildmodelhtlcrefund`) freeze unsigned 0.34.6
 `htlc_sha256` templates. HASH160 `htlc_tx` is recovery-only.
 
-Enable the introduction bridge with `-modelnet=1` only when you intend to use
-model RPCs through `btxd`; researchers may call the helper unix socket directly
-without a synced chain.
+Enable the introduction bridge with `-modelnet` (default on in packaged 0.34.7
+builds). Researchers may still call the helper unix socket directly without a
+synced chain, or point `-modelrpcsocket` at an already-running helper.
 
 ## Parameter passing
 

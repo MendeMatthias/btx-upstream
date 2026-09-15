@@ -15,6 +15,16 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
+    <widget class="QLabel" name="resourceGovernorStatusLabel">
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="textInteractionFlags">
+      <set>Qt::TextSelectableByMouse</set>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="QLabel" name="consentLabel">
      <property name="wordWrap">
       <bool>true</bool>
@@ -111,9 +121,123 @@
       </attribute>
       <layout class="QVBoxLayout" name="verticalLayoutModels">
        <item>
+        <widget class="QTabWidget" name="modelsScopeTabWidget">
+         <property name="currentIndex">
+          <number>0</number>
+         </property>
+         <widget class="QWidget" name="tabScopeNetwork">
+          <attribute name="title">
+           <string>Network</string>
+          </attribute>
+         </widget>
+         <widget class="QWidget" name="tabScopeNew">
+          <attribute name="title">
+           <string>New</string>
+          </attribute>
+         </widget>
+         <widget class="QWidget" name="tabScopeAvailable">
+          <attribute name="title">
+           <string>Available</string>
+          </attribute>
+         </widget>
+         <widget class="QWidget" name="tabScopeLocal">
+          <attribute name="title">
+           <string>Local</string>
+          </attribute>
+         </widget>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="searchRowLayout">
+         <item>
+          <widget class="QLineEdit" name="searchLineEdit">
+           <property name="placeholderText">
+            <string>Search open models...</string>
+           </property>
+           <property name="clearButtonEnabled">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="searchButton">
+           <property name="text">
+            <string>Search</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="filterRowLayout">
+         <item>
+          <widget class="QLabel" name="sortLabel">
+           <property name="text">
+            <string>Sort</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="sortCombo"/>
+         </item>
+         <item>
+          <widget class="QLabel" name="formatLabel">
+           <property name="text">
+            <string>Format</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="formatCombo"/>
+         </item>
+         <item>
+          <spacer name="filterRowSpacer">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="searchCoverageLabel">
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="text">
+          <string>Search to discover models. Coverage is always incomplete until you run Search.</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QListWidget" name="resultsList">
+         <property name="alternatingRowColors">
+          <bool>true</bool>
+         </property>
+         <property name="selectionMode">
+          <enum>QAbstractItemView::SingleSelection</enum>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QPlainTextEdit" name="modelsOutput">
+         <property name="maximumSize">
+          <size>
+           <width>16777215</width>
+           <height>140</height>
+          </size>
+         </property>
          <property name="readOnly">
           <bool>true</bool>
+         </property>
+         <property name="placeholderText">
+          <string>Detail / RPC status (getmodel plan on Download click only).</string>
          </property>
         </widget>
        </item>

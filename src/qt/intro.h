@@ -44,9 +44,13 @@ public:
 
     /** First-run Model Network storage. 0 = no payload. */
     uint64_t getModelStorageBytes() const;
-    /** ParseModelBytes-compatible token (`0`, `500GiB`). */
+    /** `auto`, `0`, or `500GiB`. */
     QString getModelStorageArg() const;
+    bool getModelNetParticipateChecked() const;
+    bool getModelStorageAutoChecked() const;
     bool getDemandSeedChecked() const;
+    bool getSpareResourcesChecked() const;
+    bool getMiningIdleChecked() const;
     bool getPreserveRareChecked() const;
     bool getInstallOsHandlerChecked() const;
     bool getInstallOsHandlerSystemChecked() const;

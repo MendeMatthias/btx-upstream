@@ -69,13 +69,23 @@ public:
     bool HasPiece(const Digest48& artifact, uint32_t file_index, uint32_t piece_index) const;
     bool SavePieceIndex(const Digest48& artifact, uint32_t file_index, const PieceIndex& idx, std::string& err);
     bool LoadPieceIndex(const Digest48& artifact, uint32_t file_index, PieceIndex& idx, std::string& err) const;
+    bool SavePieceProof(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
+                         uint64_t file_size, const Digest48& pieces_root,
+                         const std::vector<Digest48>& siblings, std::string& err);
+    bool LoadPieceProof(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
+                         uint64_t& file_size, Digest48& pieces_root,
+                         std::vector<Digest48>& siblings, std::string& err) const;
     bool RenameArtifact(const Digest48& from, const Digest48& to, std::string& err);
     bool Pin(const Digest48& model_id, std::string& err);
     bool Unpin(const Digest48& model_id);
+    bool IsPinned(const Digest48& model_id) const;
     uint64_t UsedBytes() const { return m_quota.used_bytes; }
+    void SetQuotaBytes(uint64_t bytes);
     void RecountUsed();
     bool RemoveArtifact(const Digest48& artifact, std::string& err);
     void EvictUnpinned();
+    bool ListCommittedPieces(const Digest48& artifact, uint32_t file_index, std::vector<uint32_t>& out) const;
+    int64_t PieceMtime(const Digest48& artifact, uint32_t file_index, uint32_t piece_index) const;
 };
 
 } // namespace modelnet
