@@ -74,7 +74,7 @@ namespace modelnet {
 namespace {
 
 constexpr size_t MAX_HTTP_HEADERS = PQ1_HTTP_HEADER_CAP;
-constexpr size_t MAX_RPC_BODY = 64 * 1024;
+constexpr size_t MAX_RPC_BODY = 256 * 1024;
 constexpr size_t MAX_PIECE_HTTP = MAX_HTTP_HEADERS + PIECE_SIZE + 4096;
 constexpr uint64_t PQ1_RECONNECT_BYTES = 8ULL << 30;
 
@@ -2716,22 +2716,27 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             EnsureSearchBound();
             ModelSearchRecord rec;
             std::string ierr;
-            if (SearchRecordFromJson(result["search_record"], rec, ierr)) {
-                rec.object_kind = "BOUNTY";
-                if (result.exists("bounty_id")) {
-                    rec.bounty_id = result["bounty_id"].get_str();
-                    Digest48::FromHex(rec.bounty_id, rec.model_id, ierr);
-                    rec.artifact_id = rec.model_id;
-                }
-                std::vector<unsigned char> pk, sk;
-                Digest48 sid;
-                if (LoadOrCreateResearchIdentity(HelperDir(cat), pk, sk, sid, ierr)) {
-                    rec.pubkey = pk;
-                    SignSearchRecord(rec, Span<const unsigned char>{sk.data(), sk.size()}, ierr);
-                    std::lock_guard<std::mutex> lock(g_search_mu);
-                    g_search_idx.Put(rec, ConnNowMs(), ierr);
-                }
+            const UniValue& sr = result["search_record"];
+            rec.object_kind = "BOUNTY";
+            rec.expires_at = 0;
+            rec.metadata_sequence = 1;
+            if (sr.exists("canonical_name") && sr["canonical_name"].isStr()) rec.canonical_name = sr["canonical_name"].get_str();
+            if (sr.exists("display_name") && sr["display_name"].isStr()) rec.display_name = sr["display_name"].get_str();
+            if (sr.exists("short_description") && sr["short_description"].isStr()) rec.short_description = sr["short_description"].get_str();
+            if (sr.exists("description") && sr["description"].isStr()) rec.description = sr["description"].get_str();
+            if (result.exists("bounty_id") && result["bounty_id"].isStr()) {
+                rec.bounty_id = result["bounty_id"].get_str();
+                Digest48::FromHex(rec.bounty_id, rec.model_id, ierr);
+                rec.artifact_id = rec.model_id;
             }
+            std::vector<unsigned char> pk, sk;
+            Digest48 sid;
+            if (LoadOrCreateResearchIdentity(HelperDir(cat), pk, sk, sid, ierr)) {
+                rec.pubkey = pk;
+                SignSearchRecord(rec, Span<const unsigned char>{sk.data(), sk.size()}, ierr);
+            }
+            std::lock_guard<std::mutex> lock(g_search_mu);
+            g_search_idx.Put(rec, ConnNowMs(), ierr);
         }
         if (ok && (method == "searchbounties" || method == "getmodelbounties")) {
             UniValue q(UniValue::VOBJ);
@@ -2853,6 +2858,41 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 result.pushKV("timed_out", timed);
                 result.pushKV("query_id", job.query_id);
                 result.pushKV("fanout_attempted", true);
+            } else {
+                EnsureSearchBound();
+                SearchQuery sq;
+                std::string perr;
+                ParseSearchQuery(q, sq, perr);
+                sq.filters.object_kind = "BOUNTY";
+                std::lock_guard<std::mutex> lock(g_search_mu);
+                const auto local_hits = g_search_idx.Search(sq, ConnNowMs());
+                UniValue arr = result.exists("results") && result["results"].isArray() ? result["results"]
+                                                                                    : UniValue(UniValue::VARR);
+                std::set<std::string> seen;
+                for (const auto& r : arr.getValues()) {
+                    if (r.exists("bounty_id") && r["bounty_id"].isStr()) seen.insert(r["bounty_id"].get_str());
+                }
+                for (const auto& h : local_hits) {
+                    if (h.rec.object_kind != "BOUNTY") continue;
+                    const std::string bid = h.rec.bounty_id.empty() ? h.rec.model_id.Hex() : h.rec.bounty_id;
+                    if (!bid.empty() && seen.count(bid)) continue;
+                    UniValue card(UniValue::VOBJ);
+                    card.pushKV("bounty_id", bid);
+                    card.pushKV("object_kind", "BOUNTY");
+                    card.pushKV("title", h.rec.canonical_name);
+                    card.pushKV("description", h.rec.short_description.empty() ? h.rec.description : h.rec.short_description);
+                    arr.push_back(card);
+                    if (!bid.empty()) seen.insert(bid);
+                }
+                UniValue out(UniValue::VOBJ);
+                if (result.isObject()) {
+                    for (const std::string& k : result.getKeys()) {
+                        if (k == "results") continue;
+                        out.pushKV(k, result[k]);
+                    }
+                }
+                out.pushKV("results", arr);
+                result = out;
             }
         }
         return ok;

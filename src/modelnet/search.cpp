@@ -228,6 +228,15 @@ bool ValidateSearchRecord(const ModelSearchRecord& r, std::string& err)
         err = "html not permitted";
         return false;
     }
+    if (!r.btx_uri.empty()) {
+        Resource decoded;
+        std::string uri_err;
+        if (!DecodeResource(r.btx_uri, decoded, uri_err) || decoded.kind != ResourceKind::MODEL ||
+            decoded.digest != r.model_id) {
+            err = "uri mismatch";
+            return false;
+        }
+    }
     if (SearchRecordToJson(r).write().size() > SEARCH_RECORD_MAX) {
         err = "record too large";
         return false;

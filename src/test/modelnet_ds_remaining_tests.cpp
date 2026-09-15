@@ -291,8 +291,8 @@ BOOST_AUTO_TEST_CASE(v11_uri_05_unknown_version_or_kind_rejected)
 
     token.clear();
     err.clear();
-    // Kind 9 is outside the nine-entry registry.
-    BOOST_REQUIRE_MESSAGE(modelnet::RawToken(modelnet::RESOURCE_VERSION, 9, digest, token, err), err);
+    // Kind 15 is outside the current registry (0–8 original + 9–14 bounty types).
+    BOOST_REQUIRE_MESSAGE(modelnet::RawToken(modelnet::RESOURCE_VERSION, 15, digest, token, err), err);
     modelnet::Resource out2;
     BOOST_CHECK(!modelnet::DecodeResource("btx://" + token, out2, err));
     BOOST_CHECK(err.find("type") != std::string::npos);

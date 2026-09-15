@@ -1267,6 +1267,9 @@ BOUNTY_PROXY(getagentmandate, "Owner-only mandate view.\n")
 BOUNTY_PROXY(createagentmandate, "Finite mandate. No unbounded all-recipient default.\n")
 BOUNTY_PROXY(revokeagentmandate, "Blocks new signatures, not already released ones.\n")
 BOUNTY_PROXY(getagentactivity, "Redacted local audit. No telemetry.\n")
+BOUNTY_PROXY(reservemandate, "Atomic mandate reservation. Cannot exceed budget or swap refund keys.\n")
+BOUNTY_PROXY(observebountychain, "Watch-only outpoint observation. Not a consensus oracle.\n")
+BOUNTY_PROXY(reorgbountychain, "Disconnect last observed tip. Secret knowledge is not chain state.\n")
 BOUNTY_PROXY(exportbountyrecovery, "Scripts and lineage. No seed or private keys.\n")
 BOUNTY_PROXY(importbountyrecovery, "Manifest object only. No automatic broadcast.\n")
 
@@ -1671,6 +1674,9 @@ void RegisterModelNetRPCCommands(CRPCTable& t)
         {"modelnet", &createagentmandate},
         {"modelnet", &revokeagentmandate},
         {"modelnet", &getagentactivity},
+        {"modelnet", &reservemandate},
+        {"modelnet", &observebountychain},
+        {"modelnet", &reorgbountychain},
         {"modelnet", &exportbountyrecovery},
         {"modelnet", &importbountyrecovery},
         {"modelnet", &preparebountyfunding},

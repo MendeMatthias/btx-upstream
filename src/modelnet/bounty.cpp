@@ -91,6 +91,10 @@ UniValue ObjArg(const UniValue& params, size_t i)
 {
     const UniValue& a = ArgN(params, i);
     if (a.isObject()) return a;
+    if (a.isStr()) {
+        UniValue o;
+        if (o.read(a.get_str()) && o.isObject()) return o;
+    }
     UniValue o(UniValue::VOBJ);
     return o;
 }
@@ -251,12 +255,9 @@ bool ValidateCouncil(const UniValue& council, int threshold, std::string& err)
             err = "duplicate council key";
             return false;
         }
-        if (k.size() != 2624 && k.size() != 64) {
-            // tests may use short placeholders; production council keys are ML-DSA-44 (2624 hex)
-            if (k.size() < 8) {
-                err = "council key";
-                return false;
-            }
+        if (k.size() != 2624 || !IsHex(k)) {
+            err = "council key must be ML-DSA-44 hex";
+            return false;
         }
     }
     return true;
@@ -1000,7 +1001,7 @@ bool BountyStore::Dispatch(const std::string& method, const UniValue& params, Un
         rec.pushKV("description", it->second["description"]);
         rec.pushKV("bounty_id", bounty_id);
         rec.pushKV("published_at", 1);
-        rec.pushKV("expires_at", 2000000000);
+        rec.pushKV("expires_at", 0);
         rec.pushKV("metadata_sequence", 1);
         result.pushKV("search_record", rec);
         Event("publish", bounty_id, result);
@@ -1065,7 +1066,15 @@ bool BountyStore::Dispatch(const std::string& method, const UniValue& params, Un
                 r.short_description = b.exists("description") ? b["description"].get_str() : "";
                 if (RelevanceScore(r, terms) <= 0) continue;
             }
-            arr.push_back(BountyEntryLocked(kv.first));
+            UniValue card(UniValue::VOBJ);
+            card.pushKV("bounty_id", kv.first);
+            card.pushKV("object_kind", "BOUNTY");
+            if (b.exists("title")) card.pushKV("title", b["title"]);
+            if (b.exists("description")) card.pushKV("description", b["description"]);
+            if (b.exists("target_atoms")) card.pushKV("target_atoms", b["target_atoms"]);
+            card.pushKV("trust_label", BOUNTY_TRUST_LABEL);
+            card.pushKV("wallet", false);
+            arr.push_back(card);
             if (static_cast<int>(arr.size()) >= limit) break;
         }
         result.setObject();
@@ -1166,6 +1175,10 @@ bool BountyStore::Dispatch(const std::string& method, const UniValue& params, Un
         const std::string terms_id = a.exists("terms_id") ? a["terms_id"].get_str() : a["bounty_id"].get_str();
         auto tit = m_terms.find(terms_id);
         if (tit == m_terms.end()) return fail("NOT_FOUND", "terms");
+        for (const auto& kv : m_rounds) {
+            if (kv.second.exists("terms_id") && kv.second["terms_id"].get_str() == terms_id)
+                return fail("REJECTED", "round already frozen");
+        }
         UniValue round = a.exists("round") ? a["round"] : a;
         UniValue lots = round.exists("lots") ? round["lots"] : UniValue(UniValue::VARR);
         if (!lots.isArray() || lots.empty() || static_cast<int>(lots.size()) > BOUNTY_LOTS_MAX)

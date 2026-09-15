@@ -12,6 +12,7 @@ grep -n 'onResultFundBounty' "$PAGE" >/dev/null || die "Fund Bounty slot missing
 grep -n 'onResultAward' "$PAGE" >/dev/null || die "Award slot missing"
 grep -n 'onResultRefund' "$PAGE" >/dev/null || die "Refund slot missing"
 grep -n 'Fund Bounty' "$PAGE" >/dev/null || die "Fund Bounty button missing"
+grep -n 'QMessageBox' "$PAGE" >/dev/null || die "QMessageBox confirmation missing"
 grep -n 'preparebountyfunding' "$PAGE" >/dev/null || die "preparebountyfunding missing"
 grep -n 'preparebountyrefund' "$PAGE" >/dev/null || die "preparebountyrefund missing"
 grep -n 'inspectbountyaward' "$PAGE" >/dev/null || die "inspectbountyaward missing"

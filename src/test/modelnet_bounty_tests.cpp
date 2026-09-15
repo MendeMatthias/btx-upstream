@@ -5,8 +5,10 @@
 #include <bitcoin-build-config.h>
 #include <modelnet/bounty.h>
 #include <modelnet/canonical_codec.h>
+#include <modelnet/crypto.h>
 #include <modelnet/http_bridge.h>
 #include <modelnet/identity.h>
+#include <modelnet/resource_uri.h>
 #include <modelnet/search.h>
 #include <span.h>
 #include <test/util/setup_common.h>
@@ -52,7 +54,12 @@ UniValue DefaultTerms(const modelnet::NetworkId& nid)
     UniValue council(UniValue::VARR);
     for (int i = 0; i < 5; ++i) {
         UniValue m(UniValue::VOBJ);
-        m.pushKV("public_key_hex", strprintf("%08x%08x", i + 1, i + 1));
+        std::string hex;
+        hex.reserve(2624);
+        for (size_t j = 0; j < 1312; ++j) {
+            hex += strprintf("%02x", static_cast<unsigned char>(i + 1 + j));
+        }
+        m.pushKV("public_key_hex", hex);
         council.push_back(m);
     }
     t.pushKV("council", council);
@@ -313,6 +320,145 @@ BOOST_AUTO_TEST_CASE(bounty_auth_001_to_030)
         std::vector<unsigned char> bytes(junk.begin(), junk.end());
         UniValue dec;
         (void)CanonicalDecode(Span<const unsigned char>{bytes.data(), bytes.size()}, dec, err);
+    }
+
+    // AUTH-006 metadata delegate cannot authorize payout/council
+    {
+        ServiceDelegation d;
+        d.delegate_pubkey = pk2;
+        d.scopes = DELEGATE_ANNOUNCE | DELEGATE_SERVE;
+        d.all_models = true;
+        d.issued_at = 1;
+        d.expires_at = 100000;
+        d.root_id = PublisherId(Span<const unsigned char>{pk.data(), pk.size()});
+        DelegationTable table;
+        BOOST_REQUIRE(table.InsertRootSigned(d, 10, err));
+        const Digest48 sid = ProviderId(Span<const unsigned char>{pk2.data(), pk2.size()});
+        BOOST_CHECK(table.HasScope(sid, DELEGATE_ANNOUNCE, 10));
+        BOOST_CHECK(!table.MayWalletSpend(sid));
+        BOOST_CHECK(!table.MayPerformRootAction(sid));
+        ServiceDelegation money = d;
+        money.scopes = DELEGATE_KNOWN_MASK | (1u << 20);
+        BOOST_CHECK(!ValidDelegation(money, 10, err));
+    }
+
+    // AUTH-007 expired delegation
+    {
+        ServiceDelegation d;
+        d.delegate_pubkey = pk2;
+        d.scopes = DELEGATE_ANNOUNCE;
+        d.all_models = true;
+        d.issued_at = 1;
+        d.expires_at = 50;
+        BOOST_CHECK(!ValidDelegation(d, 50, err));
+        BOOST_CHECK(!ValidDelegation(d, 51, err));
+        DelegationTable table;
+        BOOST_CHECK(!table.InsertRootSigned(d, 51, err));
+    }
+
+    // AUTH-008 revoked delegation retains provenance
+    {
+        ServiceDelegation d;
+        d.delegate_pubkey = pk2;
+        d.scopes = DELEGATE_ANNOUNCE;
+        d.all_models = true;
+        d.issued_at = 1;
+        d.expires_at = 100000;
+        d.root_id = PublisherId(Span<const unsigned char>{pk.data(), pk.size()});
+        DelegationTable table;
+        BOOST_REQUIRE(table.InsertRootSigned(d, 10, err));
+        const Digest48 sid = ProviderId(Span<const unsigned char>{pk2.data(), pk2.size()});
+        BOOST_REQUIRE(table.RevokeByRoot(sid, d.root_id));
+        BOOST_CHECK(!table.HasScope(sid, DELEGATE_ANNOUNCE, 10));
+        BOOST_CHECK(table.TombstoneRetained(sid));
+    }
+
+    // AUTH-019 URI mismatch
+    {
+        auto uri_rec = rec;
+        Digest48 other{};
+        other.data[0] = 0x42;
+        BOOST_REQUIRE(EncodeResource(ResourceKind::MODEL, other, uri_rec.btx_uri, err));
+        BOOST_CHECK(!ValidateSearchRecord(uri_rec, err));
+        BOOST_CHECK(!idx.Put(uri_rec, 23, err));
+    }
+
+    // AUTH-021 v1 signature presented as v2
+    {
+        auto v1 = rec;
+        v1.record_version = 1;
+        const auto pre = SearchRecordPreimageV1(v1);
+        const Digest48 h = DomainHash("BTX/ModelSearchRecord/v1", Span<const unsigned char>{pre.data(), pre.size()});
+        BOOST_REQUIRE(SignMlDsa44(Span<const unsigned char>{sk.data(), sk.size()},
+                                   Span<const unsigned char>{h.data.data(), h.data.size()}, v1.sig, err));
+        v1.record_version = 2;
+        BOOST_CHECK(!VerifySearchRecord(v1, 24, err));
+    }
+
+    // AUTH-023 tombstone flood uses the same signed admission path
+    {
+        size_t accepted = 0;
+        for (int i = 0; i < 8; ++i) {
+            auto t = MakeSigned("tomb-flood", pk, sk, static_cast<uint8_t>(40 + i));
+            t.tombstone = true;
+            t.sig.clear();
+            if (idx.Put(t, 25 + i, err)) ++accepted;
+        }
+        BOOST_CHECK_EQUAL(accepted, 0);
+    }
+
+    // AUTH-024 authorized rotation vs unrelated new key
+    {
+        auto rot = rec;
+        rot.pubkey = pk2;
+        rot.metadata_sequence = rec.metadata_sequence + 3;
+        BOOST_REQUIRE(SignSearchRecord(rot, Span<const unsigned char>{sk2.data(), sk2.size()}, err));
+        BOOST_CHECK(!idx.Put(rot, 40, err));
+        auto same_signer = rec;
+        same_signer.metadata_sequence = rec.metadata_sequence + 3;
+        same_signer.short_description = "rotated metadata";
+        BOOST_REQUIRE(SignSearchRecord(same_signer, Span<const unsigned char>{sk.data(), sk.size()}, err));
+        BOOST_CHECK(idx.Put(same_signer, 41, err) || idx.Get(rec.model_id)->tombstone);
+    }
+
+    // AUTH-025 replay same signed payload
+    {
+        SearchIndex one;
+        auto once = MakeSigned("replay", pk, sk, 50);
+        BOOST_REQUIRE(one.Put(once, 42, err));
+        BOOST_CHECK(one.Put(once, 43, err));
+        BOOST_REQUIRE(one.Get(once.model_id));
+    }
+
+    // AUTH-027 mixed issuers keep attribution
+    {
+        auto a = MakeSigned("same-name", pk, sk, 60);
+        auto b = MakeSigned("same-name", pk2, sk2, 61);
+        SearchIndex mix;
+        BOOST_REQUIRE(mix.Put(a, 44, err));
+        BOOST_REQUIRE(mix.Put(b, 45, err));
+        BOOST_REQUIRE(mix.Get(a.model_id));
+        BOOST_REQUIRE(mix.Get(b.model_id));
+        BOOST_CHECK(mix.Get(a.model_id)->pubkey != mix.Get(b.model_id)->pubkey);
+    }
+
+    // AUTH-029 sequential update vs tombstone already executed above; same-sequence
+    // conflict after tombstone must not resurrect the record.
+    {
+        auto live = MakeSigned("race", pk, sk, 70);
+        SearchIndex race;
+        BOOST_REQUIRE(race.Put(live, 46, err));
+        auto tomb = live;
+        tomb.tombstone = true;
+        tomb.metadata_sequence = live.metadata_sequence + 1;
+        BOOST_REQUIRE(SignSearchRecord(tomb, Span<const unsigned char>{sk.data(), sk.size()}, err));
+        BOOST_REQUIRE(race.Put(tomb, 47, err));
+        auto nxt = live;
+        nxt.metadata_sequence = live.metadata_sequence + 1;
+        nxt.short_description = "next";
+        BOOST_REQUIRE(SignSearchRecord(nxt, Span<const unsigned char>{sk.data(), sk.size()}, err));
+        BOOST_CHECK(!race.Put(nxt, 48, err));
+        BOOST_CHECK(race.Get(live.model_id)->tombstone);
     }
 }
 
@@ -895,7 +1041,8 @@ BOOST_AUTO_TEST_CASE(bounty_search_health_feed_store_rpc)
         "cancelbountyevaluation", "publishbountyevaluation", "listbountyevaluations", "createbountychallenge",
         "listbountychallenges", "resolvebountychallenge", "proposebountyaward", "approvebountyaward",
         "getbountyaward", "getbountyevents", "watchbounty", "unwatchbounty", "getagentmandate",
-        "createagentmandate", "revokeagentmandate", "getagentactivity", "importbountyrecovery"};
+        "createagentmandate", "revokeagentmandate", "getagentactivity", "reservemandate",
+        "observebountychain", "reorgbountychain", "importbountyrecovery"};
     for (const auto& n : helper) BOOST_CHECK_MESSAGE(IsBountyHelperMethod(n), n);
     BOOST_CHECK(!IsBountyHelperMethod("preparebountyfunding"));
     BOOST_CHECK(!IsBountyHelperMethod("signbountyfunding"));

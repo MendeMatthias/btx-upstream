@@ -133,9 +133,18 @@ python3 -c 'import socket,sys; p=sys.argv[1]; s=socket.socket(socket.AF_UNIX); s
   -modelbind=off -daemon=0 >"$WORKDIR/stale.log" 2>&1 &
 PID=$!
 wait_rpc "$DATADIR"
-info="$("$CLI" -regtest -datadir="$DATADIR" -rpcuser=u -rpcpassword=p getmodelnetworkinfo)"
+info=""
+ready=0
+for i in $(seq 1 80); do
+  info="$("$CLI" -regtest -datadir="$DATADIR" -rpcuser=u -rpcpassword=p getmodelnetworkinfo)"
+  if echo "$info" | grep -E -q '"helper_ready": true|"helper_state": "READY"'; then
+    ready=1
+    break
+  fi
+  sleep 0.25
+done
 echo "START-15 $info"
-echo "$info" | grep -E -q '"helper_ready": true|"helper_state": "READY"'
+test "$ready" = 1
 "$CLI" -regtest -datadir="$DATADIR" -rpcuser=u -rpcpassword=p stop >/dev/null 2>&1 || true
 sleep 1
 PID=""

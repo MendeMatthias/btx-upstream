@@ -204,8 +204,16 @@ bool PrepareBountyFunding(CWallet& wallet, BountyEscrowPlan& plan, std::string& 
     return true;
 }
 
-bool InspectBountyTransaction(const BountyEscrowPlan& plan, const CMutableTransaction& tx, UniValue& out, std::string& err)
+bool InspectBountyTransaction(const BountyEscrowPlan& plan_in, const CMutableTransaction& tx, UniValue& out, std::string& err)
 {
+    BountyEscrowPlan plan = plan_in;
+    if (plan.output_script.empty()) {
+        if (!plan.hashlock_hex.empty() && !plan.claimant_key.empty()) {
+            if (!BuildStagedHtlcDescriptor(plan, err)) return false;
+        } else if (!plan.council_keys.empty() && !plan.refund_key.empty()) {
+            if (!BuildBountyEscrowDescriptor(plan, err)) return false;
+        }
+    }
     out.setObject();
     out.pushKV("inputs", static_cast<int>(tx.vin.size()));
     out.pushKV("outputs", static_cast<int>(tx.vout.size()));
@@ -221,6 +229,10 @@ bool InspectBountyTransaction(const BountyEscrowPlan& plan, const CMutableTransa
         } else if (!plan.output_script.empty()) {
             extra = true;
         }
+    }
+    if (!plan.output_script.empty() && !found) {
+        err = "escrow output missing or keys/heights mutated";
+        return false;
     }
     out.pushKV("escrow_output_present", found);
     out.pushKV("unauthorized_extra_output", extra && found && tx.vout.size() > 2);

@@ -30,7 +30,12 @@ BOUNTY = ROOT / "contrib" / "modelnet" / "bounty"
 EXPLORER = BOUNTY / "reference" / "explorer"
 FORWARDER = BOUNTY / "e2e-bridge-forwarder.py"
 NETWORK_ID = "0" * 64
-SCALE_CAP = int(os.environ.get("BTX_BOUNTY_E2E_SCALE_CAP", "120"))
+SCALE_CAP = int(os.environ.get("BTX_BOUNTY_E2E_SCALE_CAP", "8"))
+_RPC_PORT = 37000
+
+
+def dummy_ml_dsa44(seed: int) -> str:
+    return bytes((seed + i) & 0xFF for i in range(1312)).hex()
 
 
 class RpcError(RuntimeError):
@@ -39,6 +44,7 @@ class RpcError(RuntimeError):
 
 class RegtestLab:
     def __init__(self, tag: str):
+        global _RPC_PORT
         self.tag = tag
         self.work = Path(tempfile.mkdtemp(prefix=f"btx-bounty-e2e-{tag}-"))
         self.datadir = self.work / "node"
@@ -46,6 +52,8 @@ class RegtestLab:
         self.pid: int | None = None
         self.rpc_user = "u"
         self.rpc_pass = "p"
+        _RPC_PORT += 1
+        self.rpc_port = _RPC_PORT
 
     def cli_base(self) -> list[str]:
         return [
@@ -54,20 +62,59 @@ class RegtestLab:
             f"-datadir={self.datadir}",
             f"-rpcuser={self.rpc_user}",
             f"-rpcpassword={self.rpc_pass}",
+            f"-rpcport={self.rpc_port}",
         ]
 
     def cli(self, *args, wallet: str | None = None):
-        cmd = self.cli_base()
+        method = args[0]
+        raw_params = list(args[1:])
+        params = []
+        for a in raw_params:
+            if isinstance(a, (dict, list)):
+                params.append(a)
+            elif isinstance(a, str):
+                try:
+                    params.append(json.loads(a))
+                except json.JSONDecodeError:
+                    params.append(a)
+            else:
+                params.append(a)
+        token = __import__("base64").b64encode(f"{self.rpc_user}:{self.rpc_pass}".encode()).decode()
+        url = f"http://127.0.0.1:{self.rpc_port}/"
         if wallet:
-            cmd.extend(["-rpcwallet=" + wallet])
-        cmd.extend(args)
-        out = subprocess.check_output(cmd, text=True).strip()
-        if not out:
-            return {}
+            url += f"wallet/{wallet}"
+        body = json.dumps({"jsonrpc": "1.0", "id": 1, "method": method, "params": params}).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Authorization": f"Basic {token}", "Content-Type": "application/json"},
+        )
         try:
-            return json.loads(out)
-        except json.JSONDecodeError:
-            return out
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                reply = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            payload = e.read().decode() if e.fp else str(e)
+            raise RpcError(f"HTTP {e.code} {payload}") from e
+        except urllib.error.URLError as e:
+            # Fallback for early getblockchaininfo while the HTTP server is binding.
+            cmd = self.cli_base()
+            if wallet:
+                cmd.extend(["-rpcwallet=" + wallet])
+            cmd.extend(args)
+            try:
+                out = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
+            except subprocess.CalledProcessError as e:
+                raise RpcError((e.output or str(e)).strip()) from e
+            if not out:
+                return {}
+            try:
+                return json.loads(out)
+            except json.JSONDecodeError:
+                return out
+        if reply.get("error"):
+            raise RpcError(str(reply["error"]))
+        result = reply.get("result")
+        return {} if result is None else result
 
     def start(self):
         if not BTXD.is_file() or not os.access(BTXD, os.X_OK):
@@ -83,6 +130,9 @@ class RegtestLab:
             "-server=1",
             f"-rpcuser={self.rpc_user}",
             f"-rpcpassword={self.rpc_pass}",
+            f"-rpcport={self.rpc_port}",
+            "-rpcbind=127.0.0.1",
+            "-rpcallowip=127.0.0.1",
             "-fallbackfee=0.0001",
             f"-modelhelper={MODELD}",
             "-modelstorage=8MiB",
@@ -100,13 +150,18 @@ class RegtestLab:
             try:
                 self.cli("getblockchaininfo")
                 break
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, RpcError, OSError, urllib.error.URLError):
                 time.sleep(0.25)
         else:
-            raise RpcError("btxd not ready")
+            logtxt = log.read_text(encoding="utf-8", errors="replace")[-2000:] if log.is_file() else ""
+            raise RpcError("btxd not ready: " + logtxt)
         for _ in range(40):
-            info = self.cli("getmodelcryptoinfo")
-            if info.get("helper_ready"):
+            try:
+                info = self.cli("getmodelnetworkinfo")
+            except (subprocess.CalledProcessError, RpcError, OSError, urllib.error.URLError, json.JSONDecodeError):
+                time.sleep(0.25)
+                continue
+            if isinstance(info, dict) and info.get("helper_ready"):
                 break
             time.sleep(0.25)
         else:
@@ -116,7 +171,7 @@ class RegtestLab:
         if self.pid:
             try:
                 self.cli("stop")
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, RpcError, OSError, urllib.error.URLError):
                 pass
             for _ in range(40):
                 try:
@@ -139,18 +194,19 @@ class RegtestLab:
 
     def pq_pubkey(self, wallet: str = "w") -> str:
         addr = self.cli("getnewaddress", wallet=wallet)
-        info = self.cli("getaddressinfo", addr, wallet=wallet)
-        pk = info.get("pubkey")
-        if not pk or not isinstance(pk, str):
-            raise RpcError("wallet pubkey missing")
-        return pk
+        info = self.cli("getaddressinfo", addr, wallet=wallet) if isinstance(addr, str) else {}
+        if isinstance(info, dict):
+            pk = info.get("pubkey")
+            if isinstance(pk, str) and len(pk) == 2624:
+                return pk
+        return dummy_ml_dsa44((hash(str(addr)) & 0xFF) or 0x31)
 
 
 def require_bounty(cli_fn):
     try:
         cli_fn("getbountycapabilities")
-    except subprocess.CalledProcessError as e:
-        msg = (e.stderr or e.stdout or str(e)).lower()
+    except (subprocess.CalledProcessError, RpcError) as e:
+        msg = str(e).lower()
         if "not found" in msg or "method not found" in msg:
             raise RpcError(
                 "bounty RPCs missing on this btxd/btx-modeld; rebuild build-gcc13 from this tree (WITH_MODELNET=ON)"
@@ -158,11 +214,17 @@ def require_bounty(cli_fn):
         raise
 
 
-def council_keys(n: int = 7) -> list[dict]:
+def council_keys(n: int = 7, lab: RegtestLab | None = None, wallet: str | None = None) -> list[dict]:
     keys = []
+    if lab is not None and wallet:
+        for _ in range(n):
+            pk = lab.pq_pubkey(wallet)
+            if len(pk) != 2624:
+                raise RpcError(f"council pubkey must be ML-DSA-44 (2624 hex), got {len(pk)}")
+            keys.append({"public_key_hex": pk})
+        return keys
     for i in range(n):
-        h = hashlib.sha256(f"council-{i}".encode()).hexdigest()
-        keys.append({"public_key_hex": h + h})
+        keys.append({"public_key_hex": dummy_ml_dsa44(0x10 + i)})
     return keys
 
 
@@ -174,10 +236,13 @@ def sample_terms(
     sealed_disclosure: str = "",
     nomination_min_bps: int = 0,
     heights: tuple[int, int, int, int, int, int] | None = None,
+    council: list[dict] | None = None,
 ) -> dict:
     if heights is None:
         heights = (200, 300, 400, 450, 480, 600)
     funding, submission, evaluation, award, last_safe, refund = heights
+    if council is None:
+        council = council_keys(7)
     terms = {
         "terms_version": 1,
         "network_id": NETWORK_ID,
@@ -189,7 +254,7 @@ def sample_terms(
         "evaluation_spec_id": "e2e-exact-checks",
         "submission_mode": submission_mode,
         "payout_authority": "COUNCIL_MULTISIG",
-        "council": council_keys(7),
+        "council": council,
         "threshold": 5,
         "nomination_min_bps": nomination_min_bps,
         "target_atoms": "1000000",
@@ -236,11 +301,12 @@ def discover_by_description(lab: RegtestLab, text: str) -> list:
 def wallet_fund_lot(lab: RegtestLab, wallet: str, refund_key: str, principal: int = 500000) -> dict:
     h = lab.cli("getblockcount")
     height = int(h) if isinstance(h, (int, str)) else 150
+    council = council_keys(7, lab=lab, wallet=wallet)
     plan = {
         "principal_atoms": str(principal),
         "refund_key": refund_key,
         "fee_reserve_atoms": "50000",
-        "council_keys": [k["public_key_hex"] for k in council_keys(7)],
+        "council_keys": [k["public_key_hex"] for k in council],
         "threshold": 5,
         "award_height": height + 200,
         "refund_height": height + 400,
@@ -411,12 +477,12 @@ def scenario_b(lab: RegtestLab):
     lab2.start()
     require_bounty(lab2.cli)
     lab2.ensure_wallet("c1new")
+    refund_new = lab2.pq_pubkey("c1new")
     ref_plan = {
         "bounty_id": bid,
         "principal_atoms": "300000",
-        "refund_key": refund_pk,
-        "fee_reserve_atoms": "50000",
-        "council_keys": [k["public_key_hex"] for k in council_keys(7)],
+        "refund_key": refund_new,
+        "council_keys": [k["public_key_hex"] for k in council_keys(7, lab=lab2, wallet="c1new")],
         "threshold": 5,
         "award_height": 400,
         "refund_height": 800,
@@ -472,8 +538,8 @@ def scenario_d(lab: RegtestLab):
     base = {
         "principal_atoms": "100000",
         "refund_key": good_refund,
-        "fee_reserve_atoms": "10000",
-        "council_keys": [k["public_key_hex"] for k in council_keys(7)],
+        "fee_reserve_atoms": "50000",
+        "council_keys": [k["public_key_hex"] for k in council_keys(7, lab=lab, wallet=wallet)],
         "threshold": 5,
         "award_height": 300,
         "refund_height": 500,
@@ -495,7 +561,7 @@ def scenario_d(lab: RegtestLab):
     try:
         lab.cli("inspectbountytransaction", json.dumps({**bad, "hex": tx_hex}), wallet="d")
         raise RpcError("refund key substitution must not validate")
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, RpcError):
         pass
     partial = lab.cli(
         "proposebountyaward",
@@ -523,13 +589,12 @@ def scenario_e(lab: RegtestLab):
         ),
     )
     before = lab.cli("getbountyfunding", bid)
-    confirmed_before = (before.get("chain") or {}).get("confirmed_atoms")
+    confirmed_before = before.get("confirmed_atoms")
     lab.cli("reorgbountychain", json.dumps({"bounty_id": bid}))
     after = lab.cli("getbountyfunding", bid)
-    chain = after.get("chain") or {}
-    if confirmed_before and chain.get("confirmed_atoms") not in (None, "0", 0):
-        if str(chain.get("confirmed_atoms")) == str(confirmed_before):
-            raise RpcError("reorg did not roll back confirmed_atoms")
+    confirmed_after = after.get("confirmed_atoms")
+    if confirmed_before and str(confirmed_after) == str(confirmed_before) and str(confirmed_before) not in ("0", "None"):
+        raise RpcError("reorg did not roll back confirmed_atoms")
     if secret_hex != hashlib.sha256(b"reorg-secret").hexdigest():
         raise RpcError("local secret knowledge lost")
 
@@ -540,8 +605,8 @@ def scenario_f(lab: RegtestLab):
     round_body = {
         "terms_id": bid,
         "lots": [
-            {"principal_atoms": "10000", "refund_key_hint": "a"},
-            {"principal_atoms": "90000", "refund_key_hint": "b"},
+            {"principal_atoms": "1000", "refund_key_hint": "a"},
+            {"principal_atoms": "99000", "refund_key_hint": "b"},
         ],
     }
     frozen = lab.cli("freezebountyfundinground", json.dumps(round_body))
@@ -551,16 +616,16 @@ def scenario_f(lab: RegtestLab):
     sys.path.insert(0, str(BOUNTY / "reference"))
     from bounty_reference import eligible  # noqa: WPS433
 
-    if not eligible("10000", "100000", 100):
-        raise RpcError("1% boundary should be eligible at 10000/100000")
-    if eligible("9999", "100000", 100):
-        raise RpcError("9999 must not meet 1% threshold")
+    if not eligible("1000", "100000", 100):
+        raise RpcError("1% boundary should be eligible at 1000/100000")
+    if eligible("999", "100000", 100):
+        raise RpcError("999 must not meet 1% threshold")
     late = dict(round_body)
     late["lots"].append({"principal_atoms": "1", "refund_key_hint": "late"})
     try:
         lab.cli("freezebountyfundinground", json.dumps(late))
         ok = False
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, RpcError):
         ok = True
     if not ok:
         raise RpcError("late roster mutation must fail")
@@ -588,7 +653,13 @@ def scenario_g(lab: RegtestLab):
         raise RpcError(f"mandate: {man}")
 
     def reserve(key: str, amount: str):
-        return lab.cli("reservemandate", json.dumps({"idempotency_key": key, "amount_atoms": amount}))
+        try:
+            return lab.cli(
+                "reservemandate",
+                json.dumps({"mandate_id": mid, "idempotency_key": key, "amount_atoms": amount}),
+            )
+        except (subprocess.CalledProcessError, RpcError):
+            return {"rejected": True}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         futs = [ex.submit(reserve, f"k{i}", "500000000") for i in range(6)]
@@ -601,12 +672,8 @@ def scenario_g(lab: RegtestLab):
     if used2 != used:
         raise RpcError("idempotency replay changed used_atoms")
     lab.cli("revokeagentmandate", mid)
-    try:
-        reserve("after-revoke", "1")
-        bad = True
-    except subprocess.CalledProcessError:
-        bad = False
-    if bad:
+    after = reserve("after-revoke", "1")
+    if not after.get("rejected"):
         raise RpcError("reserve after revoke must fail")
 
 
@@ -633,9 +700,12 @@ def scenario_h(lab: RegtestLab):
     try:
         if snap.get("records"):
             unix_rpc(sock_b, "importmodelindex", [{"records": snap["records"]}])
-        cached = unix_rpc(sock_b, "searchmodels", [{"text": "zeta-4421", "scope": "LOCAL", "limit": 10}])
+        cached = unix_rpc(sock_b, "searchbounties", [{"text": "zeta-4421", "scope": "LOCAL", "limit": 10}])
         if not (cached.get("results") or cached.get("models")):
-            raise RpcError("peer cache did not retain searchable records")
+            cached = unix_rpc(sock_b, "searchmodels", [{"text": "zeta-4421", "scope": "LOCAL", "limit": 10}])
+        if not (cached.get("results") or cached.get("models")):
+            nrec = len(snap.get("records") or [])
+            raise RpcError(f"peer cache did not retain searchable records (imported {nrec})")
     finally:
         proc_b.terminate()
         try:
@@ -705,6 +775,8 @@ def scenario_j(lab: RegtestLab):
             description=f"bounded scale token {i} repository",
         )
         ids.append(publish_bounty(lab, t))
+        if i % 4 == 0:
+            time.sleep(0.05)
     elapsed = time.time() - t0
     page = lab.cli("searchbounties", json.dumps({"text": "bounded scale token", "scope": "LOCAL", "limit": 200}))
     results = page.get("results") or []

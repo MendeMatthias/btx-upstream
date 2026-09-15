@@ -129,7 +129,7 @@ terms = {
     "evaluation_spec_id": "EXACT_CHECKS",
     "submission_mode": "PUBLIC",
     "payout_authority": "COUNCIL",
-    "council": [{"public_key_hex": f"{i:08x}{i:08x}"} for i in range(1, 6)],
+    "council": [{"public_key_hex": bytes((i + j) % 256 for j in range(1312)).hex()} for i in range(1, 6)],
     "threshold": 3,
     "nomination_min_bps": 500,
     "target_atoms": "100000000",
@@ -348,6 +348,10 @@ if [[ -x "$BTXD" && -x "$CLI" ]]; then
   done
   BTXD_PID=""
   ok WALLET-rpc-help
+  BTX_BOUNTY_E2E_SCALE_CAP="${BTX_BOUNTY_E2E_SCALE_CAP:-32}" \
+    BIN="$BIN" MODELD="$MODELD" python3 "$ROOT/contrib/modelnet/e2e-bounty-scenarios.py" \
+    || die "e2e-bounty-scenarios"
+  ok E2E-A-J-regtest
 else
   die "missing isolated btxd/btx-cli"
 fi

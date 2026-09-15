@@ -28,6 +28,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTimer>
@@ -968,6 +969,16 @@ void ModelNetPage::onResultFundBounty()
 {
     UniValue params(UniValue::VARR);
     params.push_back(UniValue(UniValue::VOBJ));
+    const auto reply = QMessageBox::question(
+        this,
+        tr("Confirm bounty inspection"),
+        tr("preparebountyfunding / inspectbountytransaction will be shown. This page will not broadcast. There is no automatic spend."),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (reply != QMessageBox::Yes) {
+        ui->modelsOutput->setPlainText(tr("Bounty funding cancelled. No transaction was created or broadcast."));
+        return;
+    }
     ui->modelsOutput->setPlainText(
         tr("preparebountyfunding / inspectbountytransaction (no automatic spend)\n") +
         callRpc("getbountycapabilities") + QLatin1Char('\n') +
@@ -1041,6 +1052,17 @@ void ModelNetPage::showFundPlan(const QString& release_id)
     lines << tr("Next: signmodelfunding, then submitmodelfunding.");
     lines << QString();
     lines << QString::fromStdString(result->write(2));
+    const auto reply = QMessageBox::question(
+        this,
+        tr("Confirm funding inspection"),
+        tr("Amount (atoms): %1\nFee (atoms): %2\nSHA-256 hashlock: %3\nRefund height: %4\nRelease identity: %5\n\nThis page will not broadcast. There is no automatic spend.")
+            .arg(field("amount_atoms"), field("fee_atoms"), field("key_hash"), field("refund_height"), release_id),
+        QMessageBox::Yes | QMessageBox::Cancel,
+        QMessageBox::Cancel);
+    if (reply != QMessageBox::Yes) {
+        ui->modelsOutput->setPlainText(tr("Funding cancelled. No transaction was created or broadcast."));
+        return;
+    }
     ui->modelsOutput->setPlainText(lines.join(QLatin1Char('\n')));
 }
 

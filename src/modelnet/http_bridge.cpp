@@ -220,6 +220,8 @@ bool WalletLikePath(const std::string& path)
     if (p.find("revokeagentmandate") != std::string::npos) return true;
     if (p.find("getagentmandate") != std::string::npos) return true;
     if (p.find("reservemandate") != std::string::npos) return true;
+    if (p.find("observebountychain") != std::string::npos) return true;
+    if (p.find("reorgbountychain") != std::string::npos) return true;
     if (p.find("bountyevaluation") != std::string::npos) return true;
     if (p.find("proposebounty") != std::string::npos) return true;
     if (p.find("approvebounty") != std::string::npos) return true;
@@ -259,6 +261,8 @@ bool MethodLooksWallet(const std::string& method)
     if (m.find("revokeagentmandate") != std::string::npos) return true;
     if (m.find("getagentmandate") != std::string::npos) return true;
     if (m.find("reservemandate") != std::string::npos) return true;
+    if (m.find("observebountychain") != std::string::npos) return true;
+    if (m.find("reorgbountychain") != std::string::npos) return true;
     if (m.find("bountyevaluation") != std::string::npos) return true;
     if (m.find("proposebounty") != std::string::npos) return true;
     if (m.find("approvebounty") != std::string::npos) return true;
