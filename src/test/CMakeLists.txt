@@ -568,6 +568,7 @@ if(WITH_MODELNET)
     modelnet_conn_tests.cpp
     modelnet_search_tests.cpp
     modelnet_bounty_tests.cpp
+    modelnet_bounty_script_spend_tests.cpp
     modelnet_economy_tests.cpp
     modelnet_feed_tests.cpp
     modelnet_release_directory_tests.cpp

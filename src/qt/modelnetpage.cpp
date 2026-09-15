@@ -1083,7 +1083,7 @@ void ModelNetPage::pollFeedSequence()
 {
 #ifdef ENABLE_MODELNET
     if (!m_client_model) return;
-    const auto st = tryRpc("getmodelfeedsequence");
+    const auto st = tryRpc("getmodelfeedsequence", UniValue(UniValue::VARR));
     if (!st) return;
     int64_t seq = 0;
     if (st->exists("feed_sequence") && (*st)["feed_sequence"].isNum()) {

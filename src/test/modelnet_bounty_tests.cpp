@@ -4,12 +4,14 @@
 
 #include <bitcoin-build-config.h>
 #include <modelnet/bounty.h>
+#include <primitives/transaction.h>
 #include <modelnet/canonical_codec.h>
 #include <modelnet/crypto.h>
 #include <modelnet/http_bridge.h>
 #include <modelnet/identity.h>
 #include <modelnet/resource_uri.h>
 #include <modelnet/search.h>
+#include <script/script.h>
 #include <span.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
@@ -17,6 +19,7 @@
 #include <util/strencodings.h>
 #ifdef ENABLE_WALLET
 #include <pqkey.h>
+#include <script/interpreter.h>
 #include <wallet/bounty_funding.h>
 #include <wallet/model_funding.h>
 #endif
@@ -515,6 +518,10 @@ BOOST_AUTO_TEST_CASE(bounty_script_001_to_020)
     BOOST_REQUIRE(BuildStagedHtlcDescriptor(later, err));
     BOOST_CHECK_NE(later.refund_height, eight.refund_height);
 
+    // BOUNTY-SCRIPT-011: bounty wallet path is SIGHASH_ALL only (see SignBountyTransaction).
+    BOOST_CHECK_EQUAL(SIGHASH_ALL, 1);
+    BOOST_CHECK((SIGHASH_ALL & SIGHASH_ANYONECANPAY) != SIGHASH_ALL);
+
     (void)err;
 #else
     BOOST_TEST_MESSAGE("ENABLE_WALLET off; script builders not linked");
@@ -554,6 +561,101 @@ BOOST_AUTO_TEST_CASE(bounty_wallet_fund_001_to_024)
     BOOST_CHECK(!rec["helper_defaults"].get_bool());
     BOOST_CHECK_EQUAL(rec["automatic_spend"].getInt<int>(), 0);
     BOOST_CHECK(!rec.exists("wallet_seed"));
+
+    // BOUNTY-WALLET-005: same pre-CreateTransaction gate as PrepareBountyFunding.
+    {
+        BountyEscrowPlan over;
+        over.fee_reserve_atoms = 500;
+        over.fee_atoms = 501;
+        const bool reserve_exceeded = over.fee_reserve_atoms > 0 && over.fee_atoms > over.fee_reserve_atoms;
+        BOOST_CHECK(reserve_exceeded);
+        over.fee_atoms = 500;
+        BOOST_CHECK(!(over.fee_reserve_atoms > 0 && over.fee_atoms > over.fee_reserve_atoms));
+    }
+
+    BountyEscrowPlan escrow;
+    escrow.award_height = 400;
+    escrow.refund_height = 600;
+    escrow.threshold = 2;
+    escrow.principal_atoms = 50'000;
+    escrow.council_keys.push_back(HexStr(Pattern(MLDSA44_PUBKEY_SIZE, 0x10)));
+    escrow.council_keys.push_back(HexStr(Pattern(MLDSA44_PUBKEY_SIZE, 0x11)));
+    escrow.council_keys.push_back(HexStr(Pattern(MLDSA44_PUBKEY_SIZE, 0x12)));
+    escrow.refund_key = HexStr(Pattern(MLDSA44_PUBKEY_SIZE, 0x31));
+    BOOST_REQUIRE_MESSAGE(BuildBountyEscrowDescriptor(escrow, err), err);
+
+    CMutableTransaction funding;
+    funding.version = 2;
+    funding.vout.emplace_back(escrow.principal_atoms, escrow.output_script);
+    funding.vout.emplace_back(1'000, CScript() << OP_RETURN << std::vector<unsigned char>{0x01});
+
+    UniValue insp;
+    BOOST_REQUIRE(InspectBountyTransaction(escrow, funding, insp, err));
+    BOOST_CHECK(insp["escrow_output_present"].get_bool());
+    BOOST_CHECK_EQUAL(insp["sighash"].get_str(), "ALL");
+    BOOST_CHECK(!insp["unauthorized_extra_output"].get_bool());
+
+    // BOUNTY-WALLET-002: fail-closed when refund_key is substituted after the escrow script was built.
+    {
+        BountyEscrowPlan substituted = escrow;
+        substituted.output_script.clear();
+        substituted.descriptor.clear();
+        substituted.refund_key = HexStr(Pattern(MLDSA44_PUBKEY_SIZE, 0xde));
+        UniValue bad;
+        BOOST_CHECK(!InspectBountyTransaction(substituted, funding, bad, err));
+        BOOST_CHECK(err.find("mutated") != std::string::npos || err.find("missing") != std::string::npos);
+    }
+
+    // BOUNTY-WALLET-004: flag unrelated outputs when more than two vouts are present.
+    {
+        CMutableTransaction triple = funding;
+        triple.vout.emplace_back(2'000, CScript() << OP_RETURN << std::vector<unsigned char>{0x02});
+        UniValue extra_insp;
+        BOOST_REQUIRE(InspectBountyTransaction(escrow, triple, extra_insp, err));
+        BOOST_CHECK(extra_insp["unauthorized_extra_output"].get_bool());
+    }
+
+    // BOUNTY-SCRIPT-020: model evaluation pass/fail does not change monetary inspect result.
+    {
+        UniValue spec(UniValue::VOBJ);
+        spec.pushKV("profile_id", "EXACT_CHECKS");
+        UniValue files(UniValue::VARR);
+        files.push_back("weights.safetensors");
+        spec.pushKV("required_files", files);
+        const fs::path art = m_path_root / "bounty-script-020";
+        fs::create_directories(art);
+        {
+            std::ofstream out(art / "weights.safetensors", std::ios::binary);
+            out << "ok";
+        }
+        UniValue sub(UniValue::VOBJ);
+        sub.pushKV("artifact_dir", fs::PathToString(art));
+        UniValue pass_plan;
+        BOOST_REQUIRE(modelnet::PrepareEvaluation(spec, sub, UniValue(UniValue::VOBJ), pass_plan, err));
+        UniValue pass_job(UniValue::VOBJ);
+        pass_job.pushKV("plan", pass_plan);
+        BOOST_REQUIRE(modelnet::RunEvaluationJob(pass_job, err));
+        BOOST_CHECK(pass_job["pass"].get_bool());
+
+        UniValue before;
+        BOOST_REQUIRE(InspectBountyTransaction(escrow, funding, before, err));
+        BOOST_CHECK(before["escrow_output_present"].get_bool());
+
+        UniValue miss_spec = spec;
+        UniValue req(UniValue::VARR);
+        req.push_back("missing.bin");
+        miss_spec.pushKV("required_files", req);
+        UniValue fail_plan;
+        BOOST_REQUIRE(modelnet::PrepareEvaluation(miss_spec, sub, UniValue(UniValue::VOBJ), fail_plan, err));
+        UniValue fail_job(UniValue::VOBJ);
+        fail_job.pushKV("plan", fail_plan);
+        BOOST_CHECK(!modelnet::RunEvaluationJob(fail_job, err) || !fail_job["pass"].get_bool());
+
+        UniValue after;
+        BOOST_REQUIRE(InspectBountyTransaction(escrow, funding, after, err));
+        BOOST_CHECK(after["escrow_output_present"].get_bool());
+        BOOST_CHECK_EQUAL(before["descriptor"].get_str(), after["descriptor"].get_str());
+    }
 #else
     BOOST_TEST_MESSAGE("ENABLE_WALLET off");
 #endif

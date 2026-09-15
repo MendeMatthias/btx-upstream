@@ -1,8 +1,8 @@
-# BTX 0.34.7 — Native Model Network (RC)
+# BTX 0.34.7 — Native Model Network
 
-**Status:** 0.34.7 RC. Packaged `planning/acceptance-matrix.csv` is the
-production bar. `CLIENT_VERSION` is **0.34.7** with
-`CLIENT_VERSION_IS_RELEASE=false` until remaining GOV/search/lab gates run.
+**Status:** 0.34.7. `CLIENT_VERSION` is **0.34.7** with
+`CLIENT_VERSION_IS_RELEASE=true`. The remaining operator step is merge of
+PR #156 to `main`.
 
 A BTX node already has compute. 0.34.7 gives it **models and money** on an
 isolated plane, including **decentralized model search**, a **model
@@ -16,8 +16,8 @@ Search is **not** local-only. `searchmodels` default scope is `NETWORK`.
 are this node's observations.
 
 `CLIENT_VERSION` is **0.34.7** with
-`CLIENT_VERSION_IS_RELEASE=false` until remaining GOV/search/lab/economy
-gates have executed evidence.
+`CLIENT_VERSION_IS_RELEASE=true`. Fast-start pin is assumeutxo height
+**219000** (`dc51220b…`).
 
 CUDA runtime qualification is an **isolated worker** (`cuda_qual_worker`),
 never `cudaSetDevice` inside `btxd`. Default `-modelruntimecheck=0` is

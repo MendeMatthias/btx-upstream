@@ -126,7 +126,7 @@ written when the tag is sealed (see
 **v0.34** (seal `dc46dee2`, freeze `ecfaa6c9`). Epoch A Profile 1 ExactReplay
 is live on mainnet at height **185000**. EncDr stall recovery at height
 **199299** is withdrawn. The shielded pool is closed at height
-**199300**. The compiled assumeutxo pin is height **201500** (the 199299 and
+**199300**. The compiled assumeutxo pin is height **219000** (the 199299 and
 199300 pins were on the withdrawn 0.34.1 branch and are removed; see
 [#127](https://github.com/btxchain/btx/issues/127)). Nodes that already
 loaded assumeutxo-199300 or assumeutxo-199299 must resync from an empty
@@ -134,8 +134,9 @@ datadir.
 
 - [Release notes](doc/release-notes.md)
 - [0.34.5 convergence notes](doc/release-notes/release-notes-0.34.5.md)
-- [0.34.7 Native Model Network (draft / RC)](doc/release-notes/release-notes-0.34.7.md) — isolated model plane; not a monetary `CLIENT_VERSION` bump
+- [0.34.7 Native Model Network](doc/release-notes/release-notes-0.34.7.md)
 - [GitHub releases](https://github.com/btxchain/btx/releases) — Linux CPU, Linux CUDA, macOS arm64 Metal
+- [AssumeUTXO snapshot 219000](https://github.com/btxchain/btx/releases/tag/assumeutxo-219000) (`btx-assumeutxo-219000.dat` SHA256 `78acb7dd7eeec2a17909c6c5f7e12ffa9b4ad2ffcbd9eb464421dcd960868e7b`)
 - [AssumeUTXO snapshot 201500](https://github.com/btxchain/btx/releases/tag/assumeutxo-201500) (`btx-assumeutxo-201500.dat` SHA256 `08c52c8b34e878c4d48546cfec066bc48fceed51d7287b4ff7ec7b5727cf52c7`)
 
 Catch-up on a **fresh** chainstate (`loadtxoutset` of assumeutxo-199300 /
@@ -1028,8 +1029,8 @@ historical sync finishes.
 
 Fast-start support in the current tree:
 
-- `main`: supported; compiled assumeutxo heights through **201500**
-  (`3dd0fa67…`). Load `https://github.com/btxchain/btx/releases/download/assumeutxo-201500/btx-assumeutxo-201500.dat`
+- `main`: supported; compiled assumeutxo heights through **219000**
+  (`dc51220b…`). Load `https://github.com/btxchain/btx/releases/download/assumeutxo-219000/btx-assumeutxo-219000.dat`
   with `loadtxoutset` on a fresh chainstate. Do **not** load
   assumeutxo-199300 (`ff80e629…`) or assumeutxo-199299 (`f12a27d0…`);
   those bases are on the withdrawn 0.34.1 branch and 0.34.5 rejects them.
