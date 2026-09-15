@@ -115,6 +115,10 @@ std::vector<std::string> BuildHelperArgv(const HelperLaunchConfig& cfg)
     argv.push_back("-modelseed=" + (cfg.seed.empty() ? std::string("auto") : cfg.seed));
     if (!cfg.bind.empty()) argv.push_back("-modelbind=" + cfg.bind);
     if (cfg.preserve_rare) argv.push_back("-modelpreserverare");
+    if (!cfg.follow_peers) argv.push_back("-modelfollowpeers=0");
+    for (const auto& peer : cfg.peers) {
+        if (!peer.empty()) argv.push_back("-modelpeer=" + peer);
+    }
     if (cfg.auto_cap_bytes > 0) argv.push_back("-modelstorageautocap=" + std::to_string(cfg.auto_cap_bytes));
     if (cfg.reserve_bytes > 0) argv.push_back("-modelfreespacereserve=" + std::to_string(cfg.reserve_bytes));
     if (cfg.upload_bps > 0) argv.push_back("-modeluploadlimit=" + std::to_string(cfg.upload_bps));

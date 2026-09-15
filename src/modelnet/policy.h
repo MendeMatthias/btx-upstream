@@ -134,6 +134,10 @@ struct PreservationPolicy {
     uint64_t upload_bps{0};
     bool preserve_rare{false};
     bool allow_encrypted{false};
+    /** Pull FREE seeded models announced by catalog contacts (operator
+     *  -modelpeer / addmodelnode, plus PEX-learned endpoints). Not the same
+     *  as preserve-rare of arbitrary gossip from unknown advertisers. */
+    bool follow_configured_peers{true};
 };
 
 /** True when the local give-back target/time is met. Never invents download demand. */
@@ -167,6 +171,11 @@ bool ShouldDemandSeed(const PreservationPolicy& p, AdmissionLevel admission);
 bool MayPreserveFetch(const PreservationPolicy& p, AdmissionLevel admission, bool encrypted,
                        int observed_sources, uint64_t bytes, uint64_t spare_bytes);
 
+/** Fetch a FREE model announced by a catalog contact (-modelpeer, addmodelnode, PEX).
+ *  Requires seed=auto, quota, and that the object fits spare space. */
+bool MayFollowConfiguredPeer(const PreservationPolicy& p, AdmissionLevel admission, bool encrypted,
+                              uint64_t bytes, uint64_t spare_bytes);
+
 struct PreserveCandidate {
     Digest48 model_id;
     uint64_t bytes{0};
@@ -188,6 +197,14 @@ bool SelectPreserveRare(const std::vector<PreserveCandidate>& observed,
                         const PreservationPolicy& p,
                         PreserveCandidate& out,
                         int64_t now = 0);
+
+/** Pick one configured-peer catalog object that fits spare quota. Smaller
+ *  first so a mixed catalog still drains instead of stalling on one huge item. */
+bool SelectPeerFollow(const std::vector<PreserveCandidate>& observed,
+                       const std::set<Digest48>& local,
+                       uint64_t spare_bytes,
+                       const PreservationPolicy& p,
+                       PreserveCandidate& out);
 
 struct EvictItem {
     Digest48 model_id;

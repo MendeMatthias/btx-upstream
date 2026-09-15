@@ -38,7 +38,9 @@ static void Usage()
         "BTX MUST NOT autonomously retrieve arbitrary advertised models. Once the\n"
         "operator allocates a storage budget and a user retrieves a qualified public\n"
         "model, the default policy retains and re-advertises it (demand propagation).\n"
-        "Unsolicited rare fetches require -modelpreserverare=1.\n"
+        "Configured -modelpeer catalogs are followed automatically (quota-limited).\n"
+        "Arbitrary advertised models are not fetched. Rare-network fetches still\n"
+        "require -modelpreserverare=1.\n"
         "\n"
         "  -decode=<uri>          decode a btx:// resource and exit\n"
         "  -modeldir=<dir>        catalog/store directory (never wallet/chainstate)\n"
@@ -49,6 +51,7 @@ static void Usage()
         "  -modelseed=auto|manual|off  default auto (demand-seed after import/getmodel)\n"
         "  -modelseedupondownload=0|1  B0 alias of -modelseed=off|auto; not a second opt-in\n"
         "  -modelpreserverare     fetch qualified under-replicated models into spare quota\n"
+        "  -modelfollowpeers=0|1  follow FREE catalogs of -modelpeer / PEX contacts (default 1)\n"
         "  -modeluploadlimit=<bps>  aggregate serving cap (0 = connection ceilings only)\n"
         "  -modelallowencrypted   allow preserve-rare of unqualified ciphertext\n"
         "  -modelbind=<ip:port>  PQ1 TLS listen address (empty = unix RPC only)\n"
@@ -87,6 +90,7 @@ int main(int argc, char* argv[])
         if (a == "-modelrelay") cfg.relay = true;
         else if (a == "-modelhost") cfg.host = true;
         else if (a == "-modelpreserverare") cfg.preserve_rare = true;
+        else if (a == "-modelfollowpeers") cfg.follow_peers = true;
         else if (a == "-modelallowencrypted") cfg.allow_encrypted = true;
         else if (a.rfind("-decode=", 0) == 0) decode = a.substr(8);
         else if (a == "-decode" && i + 1 < argc) decode = argv[++i];
@@ -126,6 +130,8 @@ int main(int argc, char* argv[])
         else if (auto v = take("-modelseed"); !v.empty()) cfg.seed = v;
         else if (auto v = take("-modelpreserverare"); !v.empty()) {
             cfg.preserve_rare = !(v == "0" || v == "false" || v == "off");
+        } else if (auto v = take("-modelfollowpeers"); !v.empty()) {
+            cfg.follow_peers = !(v == "0" || v == "false" || v == "off");
         } else if (auto v = take("-modeluploadlimit"); !v.empty()) {
             std::string err;
             if (!modelnet::ParseModelBytes(v, cfg.upload_bps, err)) {

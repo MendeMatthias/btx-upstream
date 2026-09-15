@@ -52,6 +52,7 @@ struct HelperConfig {
     bool public_host_reachable{false};
     std::string seed{"auto"};
     bool preserve_rare{false};
+    bool follow_peers{true};
     bool allow_encrypted{false};
     uint64_t upload_bps{0};
     std::vector<std::string> peers;

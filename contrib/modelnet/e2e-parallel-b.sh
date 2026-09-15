@@ -27,6 +27,8 @@ run nat "$ROOT/contrib/modelnet/e2e-nat-congested.sh" &
 jobs+=($!)
 run preserve "$ROOT/contrib/modelnet/e2e-preserve-rare.sh" &
 jobs+=($!)
+run follow "$ROOT/contrib/modelnet/e2e-peer-follow.sh" &
+jobs+=($!)
 run two_source "$ROOT/contrib/modelnet/e2e-two-source.sh" &
 jobs+=($!)
 run firstrun "$ROOT/contrib/modelnet/e2e-firstrun-cli.sh" &

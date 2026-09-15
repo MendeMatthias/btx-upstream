@@ -52,7 +52,10 @@ MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-tls-fragment.sh" || die "e2e-tls-fr
 step "12/12 GUI URI source + OS handler"
 "$ROOT/contrib/modelnet/e2e-gui-uri.sh" || die "e2e-gui-uri"
 
-step "13/15 default hosting START-01..03"
+step "13/16 default peer-follow (no getmodel)"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-peer-follow.sh" || die "e2e-peer-follow"
+
+step "14/16 default hosting START-01..03"
 BIN="$BIN" "$ROOT/contrib/modelnet/e2e-hosting-default.sh" || die "e2e-hosting-default"
 
 step "14/15 helper lifecycle START-06/08/09/14/15"

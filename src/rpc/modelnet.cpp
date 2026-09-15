@@ -577,7 +577,7 @@ static RPCHelpMan getmodelpolicy()
 {
     return ProxyOrLocal("getmodelpolicy",
                         "Local free-first and propagation policy. Automatic spend default is 0.\n"
-                        "Demand-seed is the default once a storage budget is allocated; unsolicited fetch requires preserve_rare.\n",
+                        "Demand-seed is the default once a storage budget is allocated. Catalog contacts (-modelpeer, addmodelnode, PEX) are followed by default. Arbitrary advertised models are not fetched; preserve_rare remains opt-in.\n",
                         {});
 }
 
@@ -588,6 +588,7 @@ static RPCHelpMan setmodelpolicy()
                             {"seed", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "auto | manual | off"},
                             {"seed_upon_download", RPCArg::Type::BOOL, RPCArg::Optional::OMITTED, "B0 alias of seed=auto (true) or seed=off (false); not a second opt-in"},
                             {"preserve_rare", RPCArg::Type::BOOL, RPCArg::Optional::OMITTED, "fetch under-replicated qualified models into spare quota"},
+                            {"follow_configured_peers", RPCArg::Type::BOOL, RPCArg::Optional::OMITTED, "follow FREE models announced by catalog contacts (default true)"},
                             {"retrieval_default", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "FREE_ONLY"},
                             {"upload_bps", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "serving cap in bytes/s; 0 = connection ceilings only"},
                         }}});

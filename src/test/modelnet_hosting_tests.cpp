@@ -429,6 +429,34 @@ BOOST_AUTO_TEST_CASE(start_10_argv_has_bind_not_wallet)
     BOOST_CHECK(has_bind);
 }
 
+BOOST_AUTO_TEST_CASE(start_11_argv_forwards_peers_and_follow_default)
+{
+    modelnet::HelperLaunchConfig cfg;
+    cfg.helper_exe = fs::PathFromString("/usr/bin/btx-modeld");
+    cfg.peers.push_back("127.0.0.1:29448");
+    cfg.follow_peers = false;
+    const auto argv = modelnet::BuildHelperArgv(cfg);
+    bool has_peer = false;
+    bool has_follow_off = false;
+    for (const auto& a : argv) {
+        if (a == "-modelpeer=127.0.0.1:29448") has_peer = true;
+        if (a == "-modelfollowpeers=0") has_follow_off = true;
+    }
+    BOOST_CHECK(has_peer);
+    BOOST_CHECK(has_follow_off);
+}
+
+BOOST_AUTO_TEST_CASE(start_12_argv_omits_follow_off_when_default_on)
+{
+    modelnet::HelperLaunchConfig cfg;
+    cfg.helper_exe = fs::PathFromString("/usr/bin/btx-modeld");
+    cfg.follow_peers = true;
+    const auto argv = modelnet::BuildHelperArgv(cfg);
+    for (const auto& a : argv) {
+        BOOST_CHECK(a != "-modelfollowpeers=0");
+    }
+}
+
 BOOST_AUTO_TEST_CASE(cache_09_restart_preserves_retention)
 {
     const fs::path tmp = m_path_root / "cache09";

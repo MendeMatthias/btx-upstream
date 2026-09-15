@@ -23,6 +23,7 @@ Defaults for a packaged install (`-modelnet=1`, `-modelstorage=auto`):
 | `-modelseed` | `auto` | Demand-seed: an intentional `importmodel` / `getmodel` is retained and re-advertised inside quota |
 | `-modelseedupondownload` | B0 **alias** of seed off/auto | **Not** a second opt-in gate |
 | preserve-rare | off | Unsolicited fetch of under-replicated models stays explicit (`-modelpreserverare`) |
+| peer follow | on | Follow FREE catalogs of `-modelpeer` / PEX contacts into spare quota (`-modelfollowpeers=0` disables) |
 | automatic spend | 0 | `FREE_ONLY` never becomes paid because a timer expired |
 | resource governor | `AUTO` | Spare GPU/network/disk only. See [resource-governor/README.md](../resource-governor/README.md). `-automining` does not enable mining by itself. |
 
@@ -51,7 +52,7 @@ bundled `lib/`.
 |---|---|---|
 | Library (254 `modelnet_*` cases) | `build-gcc13/bin/test_btx --run_test=modelnet_*` | Spec rows: URI, PQ, STORE, FREE, DISC, ISO, SCRIPT leaves, demand-seed default, grant headers, grant expiry |
 | Reference codecs | `python3 -m unittest -v test_v11` in `contrib/modelnet/reference` | URI/record vectors |
-| Full local process suite | `contrib/modelnet/e2e-all.sh` or `e2e-parallel-a.sh` + `e2e-parallel-b.sh` | Two-helper PQ1, local helper, resolve 8/4, NAT resume, preserve-rare, two-source, first-run, DISC-05 failover, §12.3 bench, OpenSSL 3.5.8 second-process, TLS 512, GUI URI source, DOC, optional Chrome |
+| Full local process suite | `contrib/modelnet/e2e-all.sh` or `e2e-parallel-a.sh` + `e2e-parallel-b.sh` | Two-helper PQ1, local helper, resolve 8/4, NAT resume, peer-follow, preserve-rare, two-source, first-run, DISC-05 failover, §12.3 bench, OpenSSL 3.5.8 second-process, TLS 512, GUI URI source, DOC, optional Chrome |
 | Concurrent two-host wave | `contrib/modelnet/e2e-parallel-hosts.sh` | Isolated CUDA worker + two-host regtest + Chrome + production PID watch |
 | Cross-host inspect | `contrib/modelnet/e2e-cross-host-inspect.sh` | granite bytes match (13888336427) + production PIDs + GPU still holds ExactReplay |
 | Isolated CUDA worker | `contrib/modelnet/cuda-isolated-e2e.sh` | Tiny kernel on a dedicated CUDA workstation only; never the live attestor GPU |
@@ -133,7 +134,7 @@ Unix RPC is **one JSON line**:
 {"jsonrpc":"1.0","id":1,"method":"getmodelnetworkinfo","params":[]}
 ```
 
-Expect `propagation.demand_propagation=true` and `seed_upon_download_opt_in=false`.
+Expect `propagation.demand_propagation=true`, `peer_follow_propagation=true`, and `seed_upon_download_opt_in=false`.
 Import `seeded=true` without `seedmodel`.
 
 Point a **local** runtime at `exportmodelpath`. BTX does not start inference

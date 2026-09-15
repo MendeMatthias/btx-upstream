@@ -137,6 +137,7 @@ UniValue CapabilitiesObject()
     c.pushKV("automatic_spend_atoms", 0);
     c.pushKV("demand_seed_default", true);
     c.pushKV("preserve_rare", true);
+    c.pushKV("follow_configured_peers_default", true);
     c.pushKV("unsolicited_fetch_default", false);
     c.pushKV("extension_version", 257);
     // Native helper bits: RESOURCE_RESOLVE|FREE_GRANT|SERVICE_RECEIPT|RESEARCH_IDENTITY|

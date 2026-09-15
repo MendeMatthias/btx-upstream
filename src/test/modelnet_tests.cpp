@@ -263,6 +263,48 @@ BOOST_AUTO_TEST_CASE(demand_seed_and_preserve_rare_policy)
     rare.preserve_rare = false;
     BOOST_CHECK(!modelnet::MayPreserveFetch(rare, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 1, 10, 200ULL << 30));
 
+    modelnet::PreservationPolicy follow;
+    follow.storage_quota_bytes = 80ULL << 30;
+    follow.seed_mode = modelnet::SeedMode::AUTO;
+    follow.follow_configured_peers = true;
+    BOOST_CHECK(modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 10ULL << 30, 40ULL << 30));
+    BOOST_CHECK(!modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 50ULL << 30, 40ULL << 30));
+    follow.seed_mode = modelnet::SeedMode::OFF;
+    BOOST_CHECK(!modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 10ULL << 30, 40ULL << 30));
+    follow.seed_mode = modelnet::SeedMode::AUTO;
+    follow.follow_configured_peers = false;
+    BOOST_CHECK(!modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, false, 10ULL << 30, 40ULL << 30));
+    follow.follow_configured_peers = true;
+    BOOST_CHECK(!modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, true, 10ULL << 30, 40ULL << 30));
+    follow.allow_encrypted = true;
+    BOOST_CHECK(modelnet::MayFollowConfiguredPeer(follow, modelnet::AdmissionLevel::BYTES_VERIFIED, true, 10ULL << 30, 40ULL << 30));
+    follow.allow_encrypted = false;
+
+    modelnet::PreserveCandidate granite, tiny, follow_pick;
+    granite.model_id.data[0] = 9;
+    granite.bytes = 13ULL << 30;
+    granite.admission = modelnet::AdmissionLevel::BYTES_VERIFIED;
+    granite.observed_sources = 8;
+    tiny.model_id.data[0] = 3;
+    tiny.bytes = 1ULL << 20;
+    tiny.admission = modelnet::AdmissionLevel::BYTES_VERIFIED;
+    follow.follow_configured_peers = true;
+    follow.storage_quota_bytes = 80ULL << 30;
+    std::set<modelnet::Digest48> follow_local;
+    BOOST_REQUIRE(modelnet::SelectPeerFollow({granite, tiny}, follow_local, 20ULL << 30, follow, follow_pick));
+    BOOST_CHECK_EQUAL(follow_pick.model_id.data[0], 3);
+    BOOST_REQUIRE(modelnet::SelectPeerFollow({granite}, follow_local, 20ULL << 30, follow, follow_pick));
+    BOOST_CHECK_EQUAL(follow_pick.model_id.data[0], 9);
+    modelnet::PreserveCandidate cipher = granite;
+    cipher.model_id.data[0] = 7;
+    cipher.encrypted = true;
+    cipher.bytes = 1ULL << 20;
+    BOOST_REQUIRE(modelnet::SelectPeerFollow({cipher, granite}, follow_local, 20ULL << 30, follow, follow_pick));
+    BOOST_CHECK_EQUAL(follow_pick.model_id.data[0], 9);
+    const UniValue follow_json = modelnet::PolicyToJson(follow);
+    BOOST_CHECK(follow_json["peer_follow_propagation"].get_bool());
+    BOOST_CHECK(follow_json["follow_configured_peers"].get_bool());
+
     modelnet::PreserveCandidate a, b, pick;
     a.model_id.data[0] = 1;
     a.bytes = 110ULL << 30;

@@ -48,6 +48,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -2466,6 +2467,7 @@ struct HelperRuntimeInfo {
     uint64_t reserve_bytes{0};
     bool demand_seed{true};
     bool preserve_rare{false};
+    bool follow_peers{true};
     bool public_host_reachable{false};
     bool advertised_host{false};
     uint64_t upload_bps{0};
@@ -2558,6 +2560,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("seed_mode", cat.Policy().seed_mode == SeedMode::AUTO ? "auto" : SeedModeName(cat.Policy().seed_mode));
         result.pushKV("demand_seed", g_runtime.demand_seed && cat.Policy().seed_mode == SeedMode::AUTO && cat.QuotaBytes() > 0);
         result.pushKV("preserve_rare", g_runtime.preserve_rare);
+        result.pushKV("follow_configured_peers", cat.Policy().follow_configured_peers);
         result.pushKV("public_host_reachable", g_runtime.public_host_reachable);
         result.pushKV("advertised_host", g_runtime.advertised_host);
         result.pushKV("nat_limited", !g_runtime.public_host_reachable);
@@ -4723,6 +4726,7 @@ static PreservationPolicy PolicyFromConfig(const HelperConfig& cfg)
     if (!SeedModeFromName(cfg.seed, p.seed_mode)) p.seed_mode = SeedMode::AUTO;
     p.seed_upon_download = p.seed_mode == SeedMode::AUTO;
     p.preserve_rare = cfg.preserve_rare;
+    p.follow_configured_peers = cfg.follow_peers;
     p.allow_encrypted = cfg.allow_encrypted;
     p.upload_bps = cfg.upload_bps;
     return p;
@@ -4733,6 +4737,7 @@ static void RefreshAutoStorage(HelperConfig& cfg, ModelCatalog* cat)
     g_runtime.storage_mode = cfg.storage_mode;
     g_runtime.demand_seed = cfg.seed == "auto";
     g_runtime.preserve_rare = cfg.preserve_rare;
+    g_runtime.follow_peers = cfg.follow_peers;
     g_runtime.upload_bps = cfg.upload_bps;
     g_runtime.advertised_host = cfg.host && cfg.public_host_reachable;
     g_runtime.public_host_reachable = cfg.public_host_reachable;
@@ -4773,13 +4778,44 @@ static void RefreshAutoStorage(HelperConfig& cfg, ModelCatalog* cat)
     }
 }
 
+static void GossipPexOnSession(Pq1Session& sess, ModelCatalog& cat, const std::string& endpoint)
+{
+    NativeRequest pexreq;
+    NativeResponse pexresp;
+    pexreq.method = "POST";
+    pexreq.path = std::string(MODEL_HTTP_ROOT) + "ext/pex";
+    const int64_t now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    {
+        std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
+        pexreq.body = g_swarm.pex.Advertise(now, PEX_MAX_RECORDS_PER_MESSAGE).write();
+    }
+    std::string perr;
+    if (!sess.Request(pexreq, pexresp, perr) || pexresp.status != 200) return;
+    UniValue pexj;
+    if (!pexj.read(pexresp.body) || !pexj.isObject()) return;
+    std::vector<ProviderHint> acc;
+    std::string ierr;
+    {
+        std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
+        (void)g_swarm.pex.Ingest(endpoint, pexj, now, acc, ierr);
+        g_swarm.pex_received.store(g_swarm.pex.Stats().received);
+        g_swarm.pex_accepted.store(g_swarm.pex.Stats().accepted);
+        g_swarm.providers_known = static_cast<int>(g_swarm.pex.Recent(now).size());
+    }
+    for (const auto& h : acc) {
+        if (!h.endpoint.empty()) cat.AddPeer(h.endpoint);
+    }
+}
+
 static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::path& pinfile, std::atomic<bool>* stop)
 {
     if (!PreservationPermitted(cat)) return;
     const auto pol = cat.Policy();
-    if (!pol.preserve_rare || pol.storage_quota_bytes == 0) return;
+    const bool follow = pol.follow_configured_peers && pol.seed_mode == SeedMode::AUTO;
+    if ((!pol.preserve_rare && !follow) || pol.storage_quota_bytes == 0) return;
     const uint64_t spare = pol.storage_quota_bytes > cat.UsedBytes() ? pol.storage_quota_bytes - cat.UsedBytes() : 0;
-    if (spare < 64 * MIB) return;
+    if (spare == 0) return;
     std::set<Digest48> local;
     UniValue listed;
     cat.List(listed);
@@ -4801,7 +4837,14 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
         }
     }
     std::map<std::string, PreserveCandidate> seen;
-    for (const auto& endpoint : cat.Peers()) {
+    const std::vector<std::string> peers = cat.Peers();
+    if (peers.empty()) return;
+    static std::atomic<size_t> peer_cursor{0};
+    const size_t n = peers.size();
+    const size_t visit = std::min(n, PEX_MAX_RECORDS_PER_MESSAGE);
+    const size_t start = peer_cursor.fetch_add(visit) % n;
+    for (size_t i = 0; i < visit; ++i) {
+        const std::string& endpoint = peers[(start + i) % n];
         if (stop && stop->load()) return;
         std::string host;
         uint16_t port = 0;
@@ -4817,6 +4860,7 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
         req.path = std::string(MODEL_HTTP_ROOT) + "availability";
         req.body = "{}";
         if (!sess.Request(req, resp, err) || resp.status != 200) continue;
+        GossipPexOnSession(sess, cat, endpoint);
         UniValue body;
         if (!body.read(resp.body) || !body.isObject()) continue;
         const UniValue models = (body.exists("local") && body["local"].exists("models")) ? body["local"]["models"] : UniValue(UniValue::VARR);
@@ -4825,6 +4869,8 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
             Digest48 id;
             std::string e;
             if (!Digest48::FromHex(m["model_id"].get_str(), id, e)) continue;
+            const std::string adm = (m.exists("admission") && m["admission"].isStr()) ? m["admission"].get_str() : "";
+            if (adm == "FAILED" || adm == "NOT_RUN_RESOURCE_LIMIT") continue;
             const std::string key = id.Hex();
             if (seen.count(key)) {
                 seen[key].observed_sources += 1;
@@ -4836,7 +4882,7 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
             c.observed_sources = 1;
             c.peer = endpoint;
             c.admission = AdmissionLevel::BYTES_VERIFIED;
-            c.encrypted = false;
+            c.encrypted = (adm == "ENCRYPTED_UNQUALIFIED");
             seen[key] = c;
         }
     }
@@ -4844,7 +4890,14 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
     observed.reserve(seen.size());
     for (auto& kv : seen) observed.push_back(kv.second);
     PreserveCandidate pick;
-    if (!SelectPreserveRare(observed, local, spare, pol, pick, static_cast<int64_t>(std::time(nullptr)))) return;
+    bool got = false;
+    if (follow) {
+        got = SelectPeerFollow(observed, local, spare, pol, pick);
+    }
+    if (!got && pol.preserve_rare) {
+        got = SelectPreserveRare(observed, local, spare, pol, pick, static_cast<int64_t>(std::time(nullptr)));
+    }
+    if (!got) return;
     std::string host;
     uint16_t port = 0;
     std::string err;
@@ -4968,6 +5021,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
               << " quota=" << cfg.quota_bytes
               << " seed=" << cfg.seed
               << " preserve_rare=" << (cfg.preserve_rare ? "1" : "0")
+              << " follow_peers=" << (cfg.follow_peers ? "1" : "0")
               << " automatic_spend=0"
               << " workers=" << PQ1_HTTP_WORKERS
               << (cfg.bind.empty() ? "" : " bind=" + cfg.bind)
@@ -4995,7 +5049,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
             RefreshAutoStorage(cfg, &cat);
             last_quota = std::chrono::steady_clock::now();
         }
-        if (cfg.preserve_rare &&
+        if ((cfg.preserve_rare || cfg.follow_peers) &&
             std::chrono::steady_clock::now() - last_preserve >= std::chrono::seconds(5)) {
             TryPreserveRareTick(cat, pq, pinfile, stop);
             last_preserve = std::chrono::steady_clock::now();

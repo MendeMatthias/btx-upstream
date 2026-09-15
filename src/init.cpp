@@ -640,6 +640,9 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-modelfreespacereserve=<size>", "AUTO free-space reserve override (default: max(32GiB, 10% of filesystem capacity)).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modelseed=auto|manual|off", "Demand-seed after intentional import/getmodel (default: auto).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modelpreserverare", "Fetch qualified under-replicated public models into spare quota (default: 0).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-modelfollowpeers", "Follow FREE models announced by -modelpeer / addmodelnode / PEX catalog contacts into spare quota (default: 1).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-modelpeer=<host:port>", "Model-plane bootstrap contact passed to the owned helper (repeatable). Alias: -modelseednode.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-modelseednode=<host:port>", "Alias of -modelpeer.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modeluploadlimit=<bps>", "Aggregate model upload cap. auto = governor ceiling. 0 = connection ceilings only.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
     argsman.AddArg("-resourcegovernor=<mode>", "Local resource governor: auto, performance, balanced, eco, manual, or off (default: auto). Never consensus.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -4092,6 +4095,12 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         hcfg.storage_arg = args.GetArg("-modelstorage", "auto");
         hcfg.seed = args.GetArg("-modelseed", "auto");
         hcfg.preserve_rare = args.GetBoolArg("-modelpreserverare", false);
+        hcfg.follow_peers = args.GetBoolArg("-modelfollowpeers", true);
+        hcfg.peers = args.GetArgs("-modelpeer");
+        {
+            const auto aliases = args.GetArgs("-modelseednode");
+            hcfg.peers.insert(hcfg.peers.end(), aliases.begin(), aliases.end());
+        }
         {
             std::string err;
             uint64_t cap = 0, reserve = 0;

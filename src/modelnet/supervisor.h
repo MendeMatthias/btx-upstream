@@ -34,11 +34,13 @@ struct HelperLaunchConfig {
     std::string storage_arg{"auto"};
     std::string seed{"auto"};
     bool preserve_rare{false};
+    bool follow_peers{true};
     uint64_t auto_cap_bytes{0};
     uint64_t reserve_bytes{0};
     uint64_t upload_bps{0};
     /** PQ1 listen host:port. Empty = unix RPC only. Packaged btxd default is 0.0.0.0:29447. */
     std::string bind;
+    std::vector<std::string> peers;
     /** Operator set -modelrpcsocket: connect, do not spawn, do not kill. */
     bool external_socket{false};
     bool required{false};

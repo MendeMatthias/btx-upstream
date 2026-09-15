@@ -129,8 +129,9 @@ Product contract: a BTX node already has compute; BTX gives it models and
 money. Inference is **local after acquire** — there is no inference endpoint,
 inference seller, or cloud fallback on this RPC surface. Fresh-install defaults
 include **automatic spend 0**; `FREE_ONLY` retrieval never becomes paid because
-a timer expired. Unsolicited fetch of advertised models stays off until
-`preserve_rare`. After a positive storage budget, demand-seed is the default
+a timer expired. Arbitrary advertised models stay off. Catalog contacts
+(`-modelpeer`, `addmodelnode`, PEX) are followed by default into spare quota.
+After a positive storage budget, demand-seed is the default
 (`getmodelpolicy` / [modelnet/propagation.md](modelnet/propagation.md)).
 
 Catalogue and semantics: [modelnet/rpc.md](modelnet/rpc.md). Peer HTTP

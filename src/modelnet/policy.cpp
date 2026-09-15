@@ -315,6 +315,18 @@ bool MayPreserveFetch(const PreservationPolicy& p, AdmissionLevel admission, boo
     return true;
 }
 
+bool MayFollowConfiguredPeer(const PreservationPolicy& p, AdmissionLevel admission, bool encrypted,
+                              uint64_t bytes, uint64_t spare_bytes)
+{
+    if (!p.follow_configured_peers) return false;
+    if (p.storage_quota_bytes == 0) return false;
+    if (p.seed_mode != SeedMode::AUTO) return false;
+    if (encrypted && !p.allow_encrypted) return false;
+    if (admission == AdmissionLevel::FAILED) return false;
+    if (bytes == 0 || bytes > spare_bytes) return false;
+    return true;
+}
+
 uint64_t PreserveRareJitterScore(const Digest48& model_id, int64_t now)
 {
     const int64_t bucket = (now == 0) ? 0 : now / 300;
@@ -363,6 +375,23 @@ bool SelectPreserveRare(const std::vector<PreserveCandidate>& observed,
     return true;
 }
 
+bool SelectPeerFollow(const std::vector<PreserveCandidate>& observed,
+                       const std::set<Digest48>& local,
+                       uint64_t spare_bytes,
+                       const PreservationPolicy& p,
+                       PreserveCandidate& out)
+{
+    const PreserveCandidate* best = nullptr;
+    for (const auto& c : observed) {
+        if (local.count(c.model_id)) continue;
+        if (!MayFollowConfiguredPeer(p, c.admission, c.encrypted, c.bytes, spare_bytes)) continue;
+        if (!best || c.bytes < best->bytes) best = &c;
+    }
+    if (!best) return false;
+    out = *best;
+    return true;
+}
+
 int EvictPriority(const EvictItem& item)
 {
     if (item.pinned) return 1000;
@@ -384,6 +413,7 @@ UniValue PolicyToJson(const PreservationPolicy& p)
     o.pushKV("seed_upon_download", p.seed_mode == SeedMode::AUTO);
     o.pushKV("seed_upon_download_opt_in", false);
     o.pushKV("preserve_rare", p.preserve_rare);
+    o.pushKV("follow_configured_peers", p.follow_configured_peers);
     o.pushKV("allow_encrypted", p.allow_encrypted);
     o.pushKV("storage_quota_bytes", p.storage_quota_bytes);
     o.pushKV("upload_bps", p.upload_bps);
@@ -392,8 +422,9 @@ UniValue PolicyToJson(const PreservationPolicy& p)
     o.pushKV("retrieval_default", "FREE_ONLY");
     o.pushKV("demand_propagation", p.seed_mode == SeedMode::AUTO && p.storage_quota_bytes > 0);
     o.pushKV("preservation_propagation", p.preserve_rare && p.storage_quota_bytes > 0);
+    o.pushKV("peer_follow_propagation", p.follow_configured_peers && p.seed_mode == SeedMode::AUTO && p.storage_quota_bytes > 0);
     o.pushKV("release_propagation", p.seed_mode == SeedMode::AUTO && p.storage_quota_bytes > 0);
-    o.pushKV("unsolicited_fetch", "disabled unless preserve_rare=1 and a positive storage budget");
+    o.pushKV("unsolicited_fetch", "arbitrary advertised models stay off; catalog contacts (-modelpeer, addmodelnode, PEX) are followed when seed=auto and storage>0");
     return o;
 }
 
@@ -414,6 +445,7 @@ bool PolicyFromJson(const UniValue& obj, PreservationPolicy& p, std::string& err
     }
     p.seed_upon_download = p.seed_mode == SeedMode::AUTO;
     if (obj.exists("preserve_rare")) p.preserve_rare = obj["preserve_rare"].get_bool();
+    if (obj.exists("follow_configured_peers")) p.follow_configured_peers = obj["follow_configured_peers"].get_bool();
     if (obj.exists("allow_encrypted")) p.allow_encrypted = obj["allow_encrypted"].get_bool();
     if (obj.exists("upload_bps")) p.upload_bps = obj["upload_bps"].getInt<uint64_t>();
     if (obj.exists("storage_quota_bytes")) p.storage_quota_bytes = obj["storage_quota_bytes"].getInt<uint64_t>();

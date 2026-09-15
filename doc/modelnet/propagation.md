@@ -7,8 +7,13 @@ setting. Explicit numeric quotas remain FIXED.
 
 Once a user **intentionally** retrieves or imports a qualified
 redistributable public model, the default policy **retains and
-re-advertises** it inside that budget. Nodes MAY additionally fetch
-qualified under-replicated resources only when preserve-rare is on.
+re-advertises** it inside that budget. Nodes with catalog contacts
+(`-modelpeer`, `addmodelnode`, and PEX-learned endpoints) **also follow**
+those peers' FREE seeded catalogs into spare quota. That is how a new
+participant learns models without calling `getmodel`, the same shape as
+Tor needing at least one bootstrap contact then learning more relays.
+Arbitrary advertised models from unknown gossip are still not fetched
+unless preserve-rare is on.
 
 This is not IPFS “addressable therefore everywhere”. Somebody has to
 retain a replica. BTX combines real demand, automatic reseeding, observed
@@ -28,6 +33,7 @@ download / import M
 | Kind | Trigger | Default |
 |---|---|---|
 | **Demand** | Intentional `importmodel` / `getmodel` | On when storage > 0 and `-modelseed=auto` |
+| **Peer follow** | A catalog contact announces a FREE seeded model that fits spare quota | On (`-modelfollowpeers=1`) |
 | **Preservation** | Spare quota + observed sources ≤ 2 | Off unless `-modelpreserverare` |
 | **Release** | Local decrypt of a qualified public artifact after key reveal | Demand-seed the **plaintext** identity |
 
@@ -39,6 +45,7 @@ download / import M
 | `-modelseed=auto\|manual\|off` | `auto` | Auto = seed on intentional download. `manual` = only `seedmodel`. `off` = never auto-advertise |
 | `-modelseedupondownload=0\|1` | B0 alias | `1` → auto, `0` → off. **Not** a second opt-in; ignored when `-modelseed` is set |
 | `-modelpreserverare` | off | Unsolicited fetch of under-replicated **qualified** public models into spare space. At most one job per minute |
+| `-modelfollowpeers` | on | Follow FREE models announced by catalog contacts (`-modelpeer`, `addmodelnode`, PEX) into spare quota. Disable with `=0` |
 | `-modeluploadlimit=` | 0 | Serving cap (bytes/s). 0 = existing connection ceilings only |
 | `-modelallowencrypted` | off | Permit preserve-rare of `ENCRYPTED_UNQUALIFIED` ciphertext |
 
