@@ -4,8 +4,14 @@
 
 #include <node/resource_governor.h>
 #include <test/util/setup_common.h>
+#include <util/fs.h>
 
 #include <boost/test/unit_test.hpp>
+
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <string>
 
 BOOST_FIXTURE_TEST_SUITE(resource_governor_tests, BasicTestingSetup)
 
@@ -20,6 +26,7 @@ using node::PauseReason;
 using node::PauseReasonName;
 using node::PressureState;
 using node::ResourceGovernor;
+using node::SampleHostSignals;
 using node::SystemSignals;
 using node::ThermalState;
 
@@ -650,6 +657,201 @@ BOOST_AUTO_TEST_CASE(gov_metered_pauses_preservation)
     g.Observe(s, 0);
     BOOST_CHECK(!g.Permit(GovernorJob::PRESERVATION).allowed);
     BOOST_CHECK_EQUAL(g.Permit(GovernorJob::PRESERVATION).reason, PauseReason::METERED_NETWORK);
+}
+
+BOOST_AUTO_TEST_CASE(gov_e2e_overnight_12h)
+{
+    ResourceGovernor g;
+    g.SetMiningConsent(true);
+    SystemSignals s = QuietDesktop();
+    s.gpu.type = "NVIDIA";
+    int64_t t = 0;
+    g.Observe(s, t);
+    g.Observe(s, t + 30 * 1000);
+    BOOST_REQUIRE(g.MiningAllowed());
+    // Compressed 12h overnight: one sample per minute, GPU idle, AC.
+    for (int i = 0; i < 720; ++i) {
+        t += 60 * 1000;
+        s.gpu.utilization_pct = 3 + (i % 3);
+        g.Observe(s, t);
+        BOOST_CHECK(g.MiningAllowed());
+        BOOST_CHECK_EQUAL(g.Permit(GovernorJob::MINING).reason, PauseReason::NONE);
+        BOOST_CHECK(g.Permit(GovernorJob::MODEL_SEED).allowed);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(gov_e2e_active_day)
+{
+    ResourceGovernor g;
+    g.SetMiningConsent(true);
+    SystemSignals s = QuietDesktop();
+    s.gpu.type = "NVIDIA";
+    IdleFor(g, s, 0, 30);
+    BOOST_CHECK(g.MiningAllowed());
+
+    // Morning: foreground inference yields mining immediately after pause window.
+    s.gpu.utilization_pct = 80;
+    s.foreground_ai = true;
+    g.BeginForegroundAiWork();
+    g.Observe(s, 35'000);
+    BOOST_CHECK(!g.MiningAllowed());
+    BOOST_CHECK_EQUAL(g.MiningPauseReason(), PauseReason::FOREGROUND_GPU_LOAD);
+    g.EndForegroundAiWork();
+    s.foreground_ai = false;
+    s.gpu.utilization_pct = 4;
+
+    // Midday: ExactReplay/validation outranks mining in the same tick.
+    const auto t0 = std::chrono::steady_clock::now();
+    s.validation_active = true;
+    g.BeginValidationWork();
+    g.Observe(s, 80'000);
+    BOOST_CHECK(!g.MiningAllowed());
+    BOOST_CHECK_EQUAL(g.MiningPauseReason(), PauseReason::VALIDATION_PRIORITY);
+    const auto val_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    BOOST_CHECK_LT(val_us, 50'000);
+    g.EndValidationWork();
+    s.validation_active = false;
+
+    // Afternoon: user retrieve keeps seed up but preservation down.
+    g.SetUserRetrievalActive(true);
+    g.Observe(s, 120'000);
+    BOOST_CHECK(!g.Permit(GovernorJob::PRESERVATION).allowed);
+    g.SetUserRetrievalActive(false);
+
+    // Evening idle: resume after cooldown + 30s idle.
+    s.gpu.utilization_pct = 3;
+    g.Observe(s, 180'000);
+    g.Observe(s, 220'000);
+    BOOST_CHECK(g.MiningAllowed());
+}
+
+BOOST_AUTO_TEST_CASE(gov_e2e_val_lat)
+{
+    ResourceGovernor g;
+    g.SetMiningConsent(true);
+    IdleFor(g, QuietDesktop(), 0, 30);
+    BOOST_REQUIRE(g.MiningAllowed());
+    const auto t0 = std::chrono::steady_clock::now();
+    g.BeginValidationWork();
+    const auto permit = g.Permit(GovernorJob::MINING);
+    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+    BOOST_CHECK(!permit.allowed);
+    BOOST_CHECK_EQUAL(permit.reason, PauseReason::VALIDATION_PRIORITY);
+    BOOST_CHECK_LT(us, 20'000);
+}
+
+BOOST_AUTO_TEST_CASE(gov_e2e_nvidia_workstation)
+{
+    ResourceGovernor g;
+    g.SetMiningConsent(true);
+    SystemSignals s = QuietDesktop();
+    s.gpu.type = "NVIDIA";
+    s.gpu.id = "gpu0";
+    IdleFor(g, s, 0, 30);
+    BOOST_CHECK(g.MiningAllowed());
+
+    s.gpu.utilization_pct = 88; // inference
+    g.Observe(s, 31'000);
+    g.Observe(s, 35'000);
+    BOOST_CHECK(!g.MiningAllowed());
+
+    s.gpu.utilization_pct = 4;
+    g.Observe(s, 80'000);
+    g.Observe(s, 110'000);
+    BOOST_CHECK(g.MiningAllowed());
+
+    s.validation_active = true;
+    g.BeginValidationWork();
+    BOOST_CHECK(!g.MiningAllowed());
+    g.EndValidationWork();
+    s.validation_active = false;
+
+    s.gpu.thermal = ThermalState::HOT;
+    s.gpu.temperature_c = 92;
+    g.Observe(s, 120'000);
+    BOOST_CHECK(!g.MiningAllowed());
+
+    s.gpu.thermal = ThermalState::NORMAL;
+    s.gpu.temperature_c = 42;
+    g.Observe(s, 200'000);
+    g.Observe(s, 230'000);
+    const int64_t quiet = g.BackgroundUploadLimitBps();
+    s.latency_current_ms = 250;
+    g.Observe(s, 231'000);
+    BOOST_CHECK_LT(g.BackgroundUploadLimitBps(), quiet);
+}
+
+BOOST_AUTO_TEST_CASE(gov_e2e_apple_metal)
+{
+    ResourceGovernor g;
+    g.SetMiningConsent(true);
+    SystemSignals s = QuietDesktop();
+    s.gpu.type = "METAL";
+    s.gpu.id = "ane0";
+    IdleFor(g, s, 0, 30);
+    BOOST_CHECK(g.MiningAllowed());
+    s.gpu.thermal = ThermalState::HOT;
+    s.gpu.temperature_c = 95;
+    g.Observe(s, 40'000);
+    BOOST_CHECK(!g.MiningAllowed());
+    BOOST_CHECK_EQUAL(g.MiningPauseReason(), PauseReason::THERMAL_PRESSURE);
+    s.gpu.thermal = ThermalState::NORMAL;
+    s.gpu.temperature_c = 48;
+    g.Observe(s, 90'000);
+    g.Observe(s, 120'000);
+    BOOST_CHECK(g.MiningAllowed());
+    s.on_ac = false;
+    s.battery_percent = 35;
+    g.Observe(s, 121'000);
+    BOOST_CHECK(!g.MiningAllowed());
+    BOOST_CHECK_EQUAL(g.MiningPauseReason(), PauseReason::BATTERY_POLICY);
+}
+
+BOOST_AUTO_TEST_CASE(gov_e2e_bufferbloat_shaped)
+{
+    ResourceGovernor g;
+    SystemSignals s = QuietDesktop();
+    g.Observe(s, 0);
+    const int64_t quiet = g.BackgroundUploadLimitBps();
+    s.latency_baseline_ms = 20;
+    s.latency_current_ms = 180; // shaped uplink / bufferbloat
+    g.Observe(s, 1000);
+    BOOST_CHECK_LT(g.BackgroundUploadLimitBps(), quiet);
+    BOOST_CHECK_EQUAL(g.Permit(GovernorJob::MODEL_SEED).reason, PauseReason::LATENCY_PRESSURE);
+    s.latency_current_ms = 22;
+    s.egress_bps = 1024;
+    g.Observe(s, 40'000);
+    BOOST_CHECK_EQUAL(g.Permit(GovernorJob::MODEL_SEED).reason, PauseReason::NONE);
+}
+
+BOOST_AUTO_TEST_CASE(gov_e2e_battery_sysfs)
+{
+#ifdef __linux__
+    const fs::path dir = m_path_root / "power_supply";
+    fs::create_directories(dir / "AC");
+    fs::create_directories(dir / "BAT0");
+    {
+        std::ofstream f{dir / "AC" / "online"};
+        f << "0\n";
+    }
+    {
+        std::ofstream f{dir / "BAT0" / "capacity"};
+        f << "41\n";
+    }
+    BOOST_REQUIRE_EQUAL(::setenv("BTX_POWER_SUPPLY_DIR", fs::PathToString(dir).c_str(), 1), 0);
+    BOOST_REQUIRE_EQUAL(::setenv("BTX_GOV_NVIDIA_SAMPLE", "0", 1), 0);
+    const SystemSignals s = SampleHostSignals();
+    BOOST_CHECK(!s.on_ac);
+    BOOST_CHECK_EQUAL(s.battery_percent, 41);
+    ResourceGovernor g;
+    g.SetMiningConsent(true);
+    IdleFor(g, s, 0, 30);
+    BOOST_CHECK(!g.MiningAllowed());
+    ::unsetenv("BTX_POWER_SUPPLY_DIR");
+    ::unsetenv("BTX_GOV_NVIDIA_SAMPLE");
+#else
+    BOOST_TEST_MESSAGE("gov_e2e_battery_sysfs: not linux");
+#endif
 }
 
 BOOST_AUTO_TEST_SUITE_END()

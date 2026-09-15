@@ -243,6 +243,58 @@
        </item>
       </layout>
      </widget>
+     <widget class="QWidget" name="tabPublish">
+      <attribute name="title">
+       <string>Publish</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayoutPublish">
+       <item>
+        <widget class="QLabel" name="publishNoteLabel">
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="text">
+          <string>Creator publish uses publishmodelsearchrecord (same name as btx-cli). It signs searchable metadata only. It does not spend BTX, upload weights, or start inference. automatic_spend_atoms stays 0.</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="publishRowLayout">
+         <item>
+          <widget class="QLineEdit" name="publishModelIdEdit">
+           <property name="placeholderText">
+            <string>model_id hex or btx:// URI</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="publishDisplayNameEdit">
+           <property name="placeholderText">
+            <string>Display name</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="publishButton">
+           <property name="text">
+            <string>Publish search record</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QPlainTextEdit" name="publishOutput">
+         <property name="readOnly">
+          <bool>true</bool>
+         </property>
+         <property name="placeholderText">
+          <string>publishmodelsearchrecord result</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
      <widget class="QWidget" name="tabDownloads">
       <attribute name="title">
        <string>Downloads</string>

@@ -88,6 +88,23 @@ MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-gov-retrieve.sh" || die "e2e-gov-re
 step "WITH_MODELNET=OFF + governor"
 "$ROOT/contrib/modelnet/check-with-modelnet-off.sh" || die "check-with-modelnet-off"
 
+step "CONN-NAT-01 PCP/NAT-PMP mapped"
+MODELD="$MODELD" TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-conn-nat-pcp.sh" || die "e2e-conn-nat-pcp"
+
+step "governor NVIDIA / Apple / timeline"
+TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-governor-nvidia.sh" || die "e2e-governor-nvidia"
+TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-governor-apple.sh" || die "e2e-governor-apple"
+TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-governor-timeline.sh" || die "e2e-governor-timeline"
+
+step "search creator + GUI gates + ExactReplay isolation"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-search-creator.sh" || die "e2e-search-creator"
+"$ROOT/contrib/modelnet/e2e-gui-gates.sh" || die "e2e-gui-gates"
+TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-search-exactreplay.sh" || die "e2e-search-exactreplay"
+
+step "QUIC deferred + Apple pkg recipe"
+MODELD="$MODELD" TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-quic-absent.sh" || die "e2e-quic-absent"
+"$ROOT/contrib/modelnet/e2e-apple-pkg-recipe.sh" || die "e2e-apple-pkg-recipe"
+
 if [[ -x /usr/bin/google-chrome ]]; then
   step "optional web bridge"
   "$ROOT/contrib/modelnet/e2e-bridge-optional.sh" || die "e2e-bridge-optional"

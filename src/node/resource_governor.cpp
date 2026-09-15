@@ -7,9 +7,13 @@
 #include <logging.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <string>
 
 namespace node {
 
@@ -771,20 +775,71 @@ SystemSignals SampleHostSignals()
         s.swap_pressure = swap_total > 0 && swap_free >= 0 && swap_free * 10 < swap_total;
     }
     {
-        std::ifstream ac("/sys/class/power_supply/AC/online");
+        const char* ps_c = std::getenv("BTX_POWER_SUPPLY_DIR");
+        const std::string ps = (ps_c && ps_c[0]) ? std::string(ps_c) : std::string("/sys/class/power_supply");
+        std::ifstream ac(ps + "/AC/online");
         int v = 1;
         if (ac >> v) s.on_ac = v != 0;
         else {
-            std::ifstream ac2("/sys/class/power_supply/ACAD/online");
+            std::ifstream ac2(ps + "/ACAD/online");
             if (ac2 >> v) s.on_ac = v != 0;
         }
-        std::ifstream cap("/sys/class/power_supply/BAT0/capacity");
+        std::ifstream cap(ps + "/BAT0/capacity");
         int pct = -1;
         if (cap >> pct) s.battery_percent = ClampInt(pct, 0, 100);
     }
     s.gpu.type = "UNKNOWN";
     s.gpu.utilization_pct = -1; // NVML optional; conservative if mining gated on unknown
+    const char* nv_en = std::getenv("BTX_GOV_NVIDIA_SAMPLE");
+    const bool want_nv = nv_en && nv_en[0] == '1';
+    static int64_t nv_next_ms = 0;
+    static AcceleratorSample nv_cache;
+    static bool nv_have = false;
+    if (want_nv) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+        if (!nv_have || now >= nv_next_ms) {
+            nv_next_ms = now + 5000;
+            nv_have = false;
+            if (FILE* nv = popen("nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null", "r")) {
+                char line[256]{};
+                if (fgets(line, sizeof(line), nv)) {
+                    int util = -1, temp = -1;
+                    long used = -1, total = -1;
+                    if (std::sscanf(line, "%d, %ld, %ld, %d", &util, &used, &total, &temp) == 4) {
+                        nv_cache.type = "NVIDIA";
+                        nv_cache.utilization_pct = ClampInt(util, 0, 100);
+                        nv_cache.memory_used = used * 1024 * 1024;
+                        nv_cache.memory_total = total * 1024 * 1024;
+                        nv_cache.temperature_c = temp;
+                        nv_cache.thermal = temp >= 85 ? ThermalState::HOT : temp >= 70 ? ThermalState::WARM : ThermalState::NORMAL;
+                        nv_have = true;
+                    }
+                }
+                pclose(nv);
+            }
+        }
+        if (nv_have) s.gpu = nv_cache;
+    }
 #endif
+    if (const char* path = std::getenv("BTX_GOV_SIGNALS_FILE"); path && path[0]) {
+        std::ifstream f(path);
+        std::stringstream buf;
+        buf << f.rdbuf();
+        UniValue j;
+        if (j.read(buf.str()) && j.isObject()) {
+            if (j.exists("on_ac") && j["on_ac"].isBool()) s.on_ac = j["on_ac"].get_bool();
+            if (j.exists("battery_percent")) s.battery_percent = ClampInt(j["battery_percent"].getInt<int>(), 0, 100);
+            if (j.exists("gpu_type") && j["gpu_type"].isStr()) s.gpu.type = j["gpu_type"].get_str();
+            if (j.exists("gpu_utilization_pct")) s.gpu.utilization_pct = ClampInt(j["gpu_utilization_pct"].getInt<int>(), 0, 100);
+            if (j.exists("gpu_temperature_c")) s.gpu.temperature_c = j["gpu_temperature_c"].getInt<int>();
+            if (j.exists("latency_baseline_ms")) s.latency_baseline_ms = j["latency_baseline_ms"].getInt<int>();
+            if (j.exists("latency_current_ms")) s.latency_current_ms = j["latency_current_ms"].getInt<int>();
+            if (j.exists("validation_active") && j["validation_active"].isBool()) s.validation_active = j["validation_active"].get_bool();
+            if (j.exists("foreground_ai") && j["foreground_ai"].isBool()) s.foreground_ai = j["foreground_ai"].get_bool();
+        }
+    }
     return s;
 }
 

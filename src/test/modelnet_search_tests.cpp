@@ -6,6 +6,7 @@
 #include <modelnet/helper.h>
 #include <modelnet/identity.h>
 #include <modelnet/protocol.h>
+#include <modelnet/qualification.h>
 #include <modelnet/search.h>
 #include <span.h>
 #include <test/util/setup_common.h>
@@ -419,6 +420,47 @@ BOOST_AUTO_TEST_CASE(search_rpc_directory_entry)
     BOOST_CHECK(DispatchHelperRpc(cat, req, result, code, e, nullptr));
     BOOST_CHECK(result.exists("coverage") || result.exists("results") || result.exists("models"));
     BOOST_CHECK(result.exists("schema_version"));
+}
+
+BOOST_AUTO_TEST_CASE(search_creator_publish_rpc)
+{
+    using namespace modelnet;
+    const fs::path tmp = m_path_root / "search-creator";
+    fs::create_directories(tmp);
+    ModelCatalog cat{tmp, 1 << 20};
+    UniValue meta(UniValue::VOBJ);
+    meta.pushKV("display_name", "Creator Lab Model");
+    meta.pushKV("canonical_name", "Creator Lab Model");
+    meta.pushKV("short_description", "unix RPC publish path used by the GUI Publish tab");
+    UniValue params(UniValue::VARR);
+    params.push_back(std::string(96, 'a'));
+    params.push_back(meta);
+    UniValue req(UniValue::VOBJ);
+    req.pushKV("method", "publishmodelsearchrecord");
+    req.pushKV("params", params);
+    UniValue result;
+    std::string code, e;
+    BOOST_CHECK(DispatchHelperRpc(cat, req, result, code, e, nullptr));
+    BOOST_CHECK_EQUAL(result["automatic_spend_atoms"].getInt<int>(), 0);
+    BOOST_CHECK(!result["wallet_key"].get_bool());
+    UniValue q(UniValue::VOBJ);
+    q.pushKV("text", "Creator Lab");
+    q.pushKV("scope", "LOCAL");
+    UniValue sp(UniValue::VARR);
+    sp.push_back(q);
+    UniValue sreq(UniValue::VOBJ);
+    sreq.pushKV("method", "searchmodels");
+    sreq.pushKV("params", sp);
+    UniValue hits;
+    BOOST_CHECK(DispatchHelperRpc(cat, sreq, hits, code, e, nullptr));
+    BOOST_CHECK(hits.exists("results") || hits.exists("models"));
+}
+
+BOOST_AUTO_TEST_CASE(search_exactreplay_isolation)
+{
+    using namespace modelnet;
+    BOOST_CHECK(!SearchTouchesMonetaryConsensus());
+    BOOST_CHECK(!ModelWorkMayStarveExactReplay());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

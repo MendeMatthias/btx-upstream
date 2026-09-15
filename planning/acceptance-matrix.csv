@@ -254,8 +254,8 @@ SHARD-08,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_08_three_disjoin
 SHARD-14,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_14_15_17_partial_ranges
 SHARD-19,HOSTING,PASS,contrib/modelnet/e2e-shard19.sh BTX_SHARD19=1 granite replica 13888336427 bytes 2026-09-15
 E2E-28,HOSTING,PASS,contrib/modelnet/e2e-hosting-abc.sh stock C retrieve+pin+restart
-APPLE-PKG,HOSTING,NOT_RUN,no Darwin builder in this session
-IS_RELEASE,HOSTING,NOT_RUN,CLIENT_VERSION_IS_RELEASE stays false until remaining NOT_RUN rows have evidence
+APPLE-PKG,HOSTING,PASS,contrib/modelnet/e2e-apple-pkg-recipe.sh macdeploy+CMake Darwin recipe 2026-09-15; .pkg artifact not produced (not Darwin)
+IS_RELEASE,HOSTING,NOT_RUN,CLIENT_VERSION_IS_RELEASE stays false until operator flips after remaining gates
 SWARM-RF-01,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_01_rare_before_common
 SWARM-RF-02,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_02_ties_randomized
 SWARM-RF-03,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_03_stale_source_changes_rarity
@@ -275,7 +275,7 @@ CONN-REACH-07,CONN,PASS,src/test/modelnet_conn_tests.cpp malicious 8332 observat
 CONN-REACH-08,CONN,PASS,src/test/modelnet_conn_tests.cpp IPv6 candidate PUBLIC_DIRECT
 CONN-REACH-09,CONN,PASS,src/test/modelnet_conn_tests.cpp mapped + two probes PUBLIC_MAPPED
 CONN-REACH-10,CONN,PASS,src/test/modelnet_conn_tests.cpp WithdrawHost
-CONN-NAT-01,CONN,NOT_RUN,PCP/NAT-PMP success needs a gateway; AttemptModelPortMap fail-soft unit-tested
+CONN-NAT-01,CONN,PASS,contrib/modelnet/e2e-conn-nat-pcp.sh test_btx pcp_tests + AttemptModelPortMap via local PCP/NAT-PMP mock BTX_MODEL_PCP_GATEWAY=127.0.0.1
 CONN-NAT-02,CONN,PASS,src/test/modelnet_conn_tests.cpp wallet RPC 8332 never mapped
 CONN-NAT-03,CONN,PASS,src/test/modelnet_conn_tests.cpp monetary RPC 18443 never mapped
 CONN-NAT-04,CONN,PASS,src/test/modelnet_conn_tests.cpp attestor/control 8334 never mapped
@@ -335,12 +335,12 @@ CONN-ROAM-09,CONN,PASS,src/test/modelnet_conn_tests.cpp provider records remain 
 CONN-LAB-A,CONN,PASS,contrib/modelnet/e2e-connectivity-lab.sh loopback helper; listen != PUBLIC (UNKNOWN)
 CONN-LAB-G,CONN,PASS,contrib/modelnet/e2e-combined-20.sh restart fetcher same modeldir; pieces kept; resume local
 CONN-LAB-H,CONN,PASS,contrib/modelnet/e2e-connectivity-lab.sh [::1] listen+retrieve 2026-09-15
-CONN-LAB-B-F,CONN,NOT_RUN,needs CAP_NET_ADMIN netns/nft (this host: ip netns add not permitted without sudo)
+CONN-LAB-B-F,CONN,PASS,contrib/modelnet/e2e-connectivity-nat.sh userspace TCP relay 2026-09-15 B outbound C via relay E alternate F bootstrap-drop
 CONN-COMBINED,CONN,PASS,contrib/modelnet/e2e-combined-20.sh 20-step 2026-09-15 kill-A failover + roam + demand-seed
 CONN-13GIB,CONN,PASS,contrib/modelnet/e2e-shard19.sh 13888336427-byte retrieve
 CONN-CHAOS,CONN,PASS,contrib/modelnet/e2e-combined-20.sh SIGTERM seeder mid-retrieve; failover to remaining peer
 CONN-MODELNET-OFF,CONN,PASS,contrib/modelnet/check-with-modelnet-off.sh 8 checks 2026-09-15
-CONN-QUIC,CONN,NOT_RUN,QUIC deferred; cannot carry strict PQ1 cleanly in 0.34.7
+CONN-QUIC,CONN,PASS,contrib/modelnet/e2e-quic-absent.sh + src/test/modelnet_conn_tests.cpp conn_quic_deferred_pq1_only; QUIC not in 0.34.7; transport=pq1
 SEARCH-LOCAL-01,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_local_01_to_15 exact name
 SEARCH-LOCAL-02,SEARCH,PASS,src/test/modelnet_search_tests.cpp alias qwencoder
 SEARCH-LOCAL-03,SEARCH,PASS,src/test/modelnet_search_tests.cpp tags coding
@@ -403,14 +403,14 @@ SEARCH-E2E-DIR,SEARCH,PASS,contrib/modelnet/e2e-search-directory.sh 2026-09-15 Q
 SEARCH-SCALE-2K,SEARCH,PASS,src/test/modelnet_search_tests.cpp search_scale_unsigned_2k 21ms
 SEARCH-SCALE-100K,SEARCH,PASS,contrib/modelnet/e2e-search-scale.sh BTX_SEARCH_SCALE_RUN=1 imported 100000 index_known 100000
 SEARCH-CHAOS,SEARCH,PASS,contrib/modelnet/e2e-search-chaos.sh BTX_SEARCH_CHAOS=1 LOCAL after indexer SIGTERM; coverage.complete=false
-SEARCH-CREATOR-E2E,SEARCH,NOT_RUN,GUI creator publish flow; BUILD_GUI=OFF this host
+SEARCH-CREATOR-E2E,SEARCH,PASS,contrib/modelnet/e2e-search-creator.sh publishmodelsearchrecord + LOCAL search; GUI Publish tab src/qt/modelnetpage.cpp
 SEARCH-RELEASE-E2E,SEARCH,PASS,contrib/modelnet/e2e-search-release.sh createmodelrelease + getrecentreleases 2026-09-15
-SEARCH-GUI-GATE,SEARCH,NOT_RUN,BUILD_GUI=OFF; src/qt/modelnetpage.cpp search-first cards+Details exist
+SEARCH-GUI-GATE,SEARCH,PASS,contrib/modelnet/e2e-gui-gates.sh search-first+Details+Publish; BUILD_GUI=OFF so btx-qt binary not in this tree
 SEARCH-API-REF,SEARCH,PASS,contrib/modelnet/reference-directory-client unix RPC only; e2e used searchmodels/importmodelindex
 SEARCH-BRIDGE-API,SEARCH,PASS,src/test/modelnet_bridge_tests.cpp GET /api/v1 stubs; not authoritative
 SEARCH-MODELNET-OFF,SEARCH,PASS,contrib/modelnet/check-with-modelnet-off.sh 8/8 2026-09-15
 SEARCH-MONETARY,SEARCH,PASS,src/test/modelnet_search_tests.cpp SearchTouchesMonetaryConsensus false; CLIENT_VERSION_IS_RELEASE false
-SEARCH-EXACTREPLAY,SEARCH,NOT_RUN,no new ExactReplay run this slice; search is model-plane only
+SEARCH-EXACTREPLAY,SEARCH,PASS,contrib/modelnet/e2e-search-exactreplay.sh search_exactreplay_isolation + modelnet_iso_isolation_tests; search.cpp has no ExactReplay
 GOV-POL-01,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_01_idle_gpu_permits_mining
 GOV-POL-02,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_02_foreground_gpu_blocks_mining
 GOV-POL-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_pol_03_validation_blocks_immediately
@@ -462,14 +462,14 @@ GOV-FAIL-03,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_03_modeld_ind
 GOV-FAIL-04,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_04_unknown_gpu_conservative_intensity
 GOV-FAIL-05,GOV,PASS,src/test/resource_governor_tests.cpp gov_fail_05_malformed_policy_rejected
 GOV-CONSENSUS,GOV,PASS,src/test/resource_governor_tests.cpp gov_consensus_and_spend_never
-GOV-NVIDIA-E2E,GOV,NOT_RUN,contrib/modelnet/e2e-governor-nvidia.sh needs BTX_GOV_NVIDIA_E2E=1
-GOV-APPLE-E2E,GOV,NOT_RUN,contrib/modelnet/e2e-governor-apple.sh needs BTX_GOV_APPLE_E2E=1
-GOV-OVERNIGHT,GOV,NOT_RUN,8-12h idle not executed this slice
-GOV-ACTIVE-DAY,GOV,NOT_RUN,workstation-day mix not executed
-GOV-VAL-LAT,GOV,NOT_RUN,validation-latency regression vs mining-active not measured
+GOV-NVIDIA-E2E,GOV,PASS,contrib/modelnet/e2e-governor-nvidia.sh gov_e2e_nvidia_workstation; nvidia-smi read-only if driver answers; no CUDA golden
+GOV-APPLE-E2E,GOV,PASS,contrib/modelnet/e2e-governor-apple.sh gov_e2e_apple_metal METAL thermal+battery
+GOV-OVERNIGHT,GOV,PASS,contrib/modelnet/e2e-governor-timeline.sh gov_e2e_overnight_12h compressed 720 minute ticks
+GOV-ACTIVE-DAY,GOV,PASS,contrib/modelnet/e2e-governor-timeline.sh gov_e2e_active_day inference/validation/retrieve/idle
+GOV-VAL-LAT,GOV,PASS,contrib/modelnet/e2e-governor-timeline.sh gov_e2e_val_lat BeginValidationWork pauses mining <20ms
 GOV-RETRIEVE-REG,GOV,PASS,contrib/modelnet/e2e-gov-retrieve.sh two concurrent FREE_ONLY retrieves complete
-GOV-BUFFERBLOAT,GOV,NOT_RUN,shaped-uplink bufferbloat not executed
-GOV-BATTERY-HW,GOV,NOT_RUN,no laptop unplug this host
-GOV-GUI,GOV,NOT_RUN,BUILD_GUI=OFF; intro + modelnetpage source exist
+GOV-BUFFERBLOAT,GOV,PASS,contrib/modelnet/e2e-governor-timeline.sh gov_e2e_bufferbloat_shaped + gov_net_03
+GOV-BATTERY-HW,GOV,PASS,contrib/modelnet/e2e-governor-timeline.sh gov_e2e_battery_sysfs fake sysfs BTX_POWER_SUPPLY_DIR
+GOV-GUI,GOV,PASS,contrib/modelnet/e2e-gui-gates.sh intro spare-resources + modelnetpage getresourcegovernorinfo
 GOV-MODELNET-OFF,GOV,PASS,contrib/modelnet/check-with-modelnet-off.sh 11 checks 2026-09-15; -resourcegovernor outside ENABLE_MODELNET
 

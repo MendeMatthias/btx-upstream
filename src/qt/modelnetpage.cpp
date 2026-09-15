@@ -312,6 +312,7 @@ ModelNetPage::ModelNetPage(QWidget *parent) :
     connect(ui->searchButton, &QPushButton::clicked, this, &ModelNetPage::runModelSearch);
     connect(ui->searchLineEdit, &QLineEdit::returnPressed, this, &ModelNetPage::runModelSearch);
     connect(ui->searchLineEdit, &QLineEdit::textChanged, this, &ModelNetPage::onSearchTextChanged);
+    connect(ui->publishButton, &QPushButton::clicked, this, &ModelNetPage::onPublishSearchRecord);
     connect(ui->modelsScopeTabWidget, &QTabWidget::currentChanged, this, [this](int) {
         ui->searchCoverageLabel->setText(
             tr("Scope changed — run Search to refresh results (coverage always incomplete)."));
@@ -833,6 +834,39 @@ void ModelNetPage::showModelDetails(const QString& full_uri)
     params.push_back(full_uri.toStdString());
     ui->modelsOutput->setPlainText(
         tr("getmodeldirectoryentry (read-only directory view)\n") + callRpc("getmodeldirectoryentry", params));
+}
+
+void ModelNetPage::onPublishSearchRecord()
+{
+#ifdef ENABLE_MODELNET
+    if (!m_client_model) {
+        ui->publishOutput->setPlainText(
+            tr("Node RPC is not connected. Connect the wallet, or use btx-cli publishmodelsearchrecord."));
+        return;
+    }
+    const QString id = ui->publishModelIdEdit->text().trimmed();
+    const QString name = ui->publishDisplayNameEdit->text().trimmed();
+    if (id.isEmpty() || name.isEmpty()) {
+        ui->publishOutput->setPlainText(tr("Model id and display name are required."));
+        return;
+    }
+    UniValue meta(UniValue::VOBJ);
+    meta.pushKV("display_name", name.toStdString());
+    meta.pushKV("canonical_name", name.toStdString());
+    UniValue params(UniValue::VARR);
+    params.push_back(id.toStdString());
+    params.push_back(meta);
+    const auto result = tryRpc("publishmodelsearchrecord", params);
+    if (!result) {
+        ui->publishOutput->setPlainText(callRpc("publishmodelsearchrecord", params));
+        return;
+    }
+    ui->publishOutput->setPlainText(
+        tr("publishmodelsearchrecord (metadata only; automatic_spend_atoms=0)\n") +
+        QString::fromStdString(result->write(2)));
+#else
+    ui->publishOutput->setPlainText(tr("Model network support was not compiled into this GUI."));
+#endif
 }
 
 void ModelNetPage::refresh()

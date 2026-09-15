@@ -46,6 +46,7 @@ private Q_SLOTS:
     void onResultDownload();
     void onResultCopyUri();
     void onResultDetails();
+    void onPublishSearchRecord();
 
 private:
     Ui::ModelNetPage *ui;

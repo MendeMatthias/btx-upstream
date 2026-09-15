@@ -493,6 +493,31 @@ BOOST_AUTO_TEST_CASE(conn_http_endpoints_and_rpc_fields)
     BOOST_CHECK(result.exists("bootstrap_dependency"));
     BOOST_CHECK(result.exists("routing_table_size"));
     BOOST_CHECK_EQUAL(result["automatic_spend_atoms"].getInt<int>(), 0);
+    BOOST_CHECK_EQUAL(result["transport"].get_str(), "pq1");
+    BOOST_CHECK(result.exists("quic") && result["quic"].isBool() && !result["quic"].get_bool());
+    BOOST_CHECK(result.exists("classical_fallback") && result["classical_fallback"].isBool() &&
+                !result["classical_fallback"].get_bool());
+}
+
+BOOST_AUTO_TEST_CASE(conn_quic_deferred_pq1_only)
+{
+    using namespace modelnet;
+    BOOST_CHECK(ConnectionFullyReady(true, true, true));
+    BOOST_CHECK(!ConnectionFullyReady(true, false, true));
+    BOOST_CHECK(!ConnectionFullyReady(true, true, false));
+    BOOST_CHECK(!ConnectionFullyReady(false, true, true));
+    const fs::path tmp = m_path_root / "conn-quic";
+    fs::create_directories(tmp);
+    ModelCatalog cat{tmp, 1 << 20};
+    UniValue rpc(UniValue::VOBJ);
+    rpc.pushKV("method", "getmodelnetworkinfo");
+    rpc.pushKV("params", UniValue(UniValue::VARR));
+    UniValue result;
+    std::string code, e;
+    BOOST_CHECK(DispatchHelperRpc(cat, rpc, result, code, e, nullptr));
+    BOOST_CHECK_EQUAL(result["transport"].get_str(), "pq1");
+    BOOST_CHECK(!result["quic"].get_bool());
+    BOOST_CHECK(!result["classical_fallback"].get_bool());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

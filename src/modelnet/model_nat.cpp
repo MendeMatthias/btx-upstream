@@ -11,8 +11,11 @@
 #include <util/threadinterrupt.h>
 
 #include <algorithm>
+#include <arpa/inet.h>
+#include <cstdlib>
 #include <cstring>
 #include <netinet/in.h>
+#include <optional>
 #include <vector>
 
 namespace modelnet {
@@ -129,12 +132,21 @@ ModelMapResult AttemptModelPortMap(const std::string& bind, bool enable)
         r.error = "refusing to map control-plane port";
         return r;
     }
-    if (host == "127.0.0.1" || host == "::1" || host == "localhost") {
+    const bool lab = std::getenv("BTX_MODEL_PCP_LAB") != nullptr;
+    if (!lab && (host == "127.0.0.1" || host == "::1" || host == "localhost")) {
         r.status = ModelNatStatus::LOOPBACK;
         return r;
     }
     CThreadInterrupt interrupt;
-    const auto gw4 = QueryDefaultGateway(NET_IPV4);
+    std::optional<CNetAddr> gw4;
+    if (const char* lab_gw = std::getenv("BTX_MODEL_PCP_GATEWAY"); lab_gw && lab_gw[0] != '\0') {
+        struct in_addr a{};
+        if (inet_pton(AF_INET, lab_gw, &a) == 1) {
+            gw4 = CNetAddr(a);
+        }
+    } else {
+        gw4 = QueryDefaultGateway(NET_IPV4);
+    }
     if (!gw4) {
         r.status = ModelNatStatus::UNMAPPED;
         r.error = "no default gateway";
@@ -173,7 +185,15 @@ void ReleaseModelPortMap(ModelMapResult& mapping)
         return;
     }
     CThreadInterrupt interrupt;
-    const auto gw4 = QueryDefaultGateway(NET_IPV4);
+    std::optional<CNetAddr> gw4;
+    if (const char* lab_gw = std::getenv("BTX_MODEL_PCP_GATEWAY"); lab_gw && lab_gw[0] != '\0') {
+        struct in_addr a{};
+        if (inet_pton(AF_INET, lab_gw, &a) == 1) {
+            gw4 = CNetAddr(a);
+        }
+    } else {
+        gw4 = QueryDefaultGateway(NET_IPV4);
+    }
     if (gw4) {
         (void)NATPMPRequestPortMap(*gw4, mapping.mapped_port, /*lifetime=*/0, interrupt, 1,
                                     std::chrono::milliseconds(200));

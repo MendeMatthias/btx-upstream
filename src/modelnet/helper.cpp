@@ -2535,6 +2535,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("error", pq.Ready() ? "" : pq.Error());
         result.pushKV("openssl", OpenSSL_version(OPENSSL_VERSION));
         result.pushKV("transport", "pq1");
+        result.pushKV("quic", false);
         result.pushKV("group", "MLKEM768");
         result.pushKV("cipher", "TLS_AES_256_GCM_SHA384");
         result.pushKV("sigalg", "mldsa44");

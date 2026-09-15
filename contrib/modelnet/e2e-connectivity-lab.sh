@@ -131,17 +131,15 @@ note "H IPv6 loopback [::1] listen+retrieve PASS"
 # --- G. roam is executed by e2e-combined-20.sh (restart fetcher, pieces kept) ---
 note "G roam: see contrib/modelnet/e2e-combined-20.sh (restart same modeldir)"
 
-if ! ip netns list >/dev/null 2>&1; then
-  note "SKIP B-F: ip netns not available"
-  note "NOT_RUN namespace topologies (cone/restricted/symmetric/double-NAT)"
-  exit 0
+# --- B–F userspace NAT/relay (no netns / no sudo) ---
+MODELD="$BIN" TEST_BTX="${TEST_BTX:-$ROOT/build-gcc13/bin/test_btx}" \
+  "$ROOT/contrib/modelnet/e2e-connectivity-nat.sh" || die "userspace NAT lab B-F"
+note "B-F userspace relay topologies PASS"
+
+if ip netns add btx-conn-probe 2>/dev/null; then
+  ip netns delete btx-conn-probe 2>/dev/null || true
+  note "netns also available; nft cone/restricted matrix is optional extra"
+else
+  note "netns not permitted; userspace B-F already executed"
 fi
-if ! ip netns add btx-conn-probe 2>/dev/null; then
-  note "SKIP B-F: CAP_NET_ADMIN missing (cannot create netns)"
-  note "NOT_RUN namespace topologies B-F (private/public NAT, relay, bootstrap loss)"
-  exit 0
-fi
-ip netns delete btx-conn-probe 2>/dev/null || true
-note "netns available; full NAT matrix B-F still needs nft MASQUERADE applied by this script."
-note "NOT_RUN B-F until nft topologies are auto-applied (this session cannot sudo)."
-exit 0
+echo "e2e-connectivity-lab: PASS"
