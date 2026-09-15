@@ -31,6 +31,7 @@
 
 #ifdef ENABLE_WALLET
 #include <interfaces/wallet.h>
+#include <wallet/bounty_funding.h>
 #include <wallet/model_funding.h>
 #include <wallet/rpc/util.h>
 #include <wallet/wallet.h>
@@ -1219,6 +1220,315 @@ static RPCHelpMan buildmodelhtlcrefund()
                         });
 }
 
+#define BOUNTY_PROXY(n, h) \
+    static RPCHelpMan n() \
+    { \
+        return ProxyOrLocal(#n, h, {{"request", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "arguments", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}}}); \
+    }
+
+BOUNTY_PROXY(searchbounties, "Search published bounties by description. Not a complete global directory.\n")
+BOUNTY_PROXY(getmodelbounties, "List/search bounties. Not globally complete.\n")
+BOUNTY_PROXY(getbounty, "Inspect a bounty entry. Unknown chain facts are null.\n")
+BOUNTY_PROXY(getbountyeconomy, "Pledged vs confirmed funding. Pledged is never confirmed.\n")
+BOUNTY_PROXY(getbountyterms, "Return the signed BountyTerms envelope.\n")
+BOUNTY_PROXY(getbountycapabilities, "Installed records, scripts, and executed evaluation profiles only.\n")
+BOUNTY_PROXY(createbountydraft, "Local draft. No publication or deposit.\n")
+BOUNTY_PROXY(validatebountyterms, "Schema, timeline, council, and money checks. Does not predict quality.\n")
+BOUNTY_PROXY(publishbounty, "Sign exact terms with the research key. No wallet spend.\n")
+BOUNTY_PROXY(revisebounty, "New terms id. Old deposits never migrate.\n")
+BOUNTY_PROXY(nominatebountyevaluator, "Nomination only. No seat or spend authority.\n")
+BOUNTY_PROXY(acceptbountyappointment, "Accept a frozen roster. Not a spend signature.\n")
+BOUNTY_PROXY(listbountyevaluators, "Nominations and appointments for a bounty.\n")
+BOUNTY_PROXY(pledgebounty, "Nonbinding pledge. Never presented as confirmed funding.\n")
+BOUNTY_PROXY(withdrawbountypledge, "Withdraw a pledge, not deposited money.\n")
+BOUNTY_PROXY(freezebountyfundinground, "Freeze contributors, council, and lots. Outputs immutable after this.\n")
+BOUNTY_PROXY(getbountyfunding, "Public outpoints and watch-only completeness.\n")
+BOUNTY_PROXY(commitbountysubmission, "Salted commitment. Not an originality proof.\n")
+BOUNTY_PROXY(revealbountysubmission, "Reveal matching commitment. No public secrets.\n")
+BOUNTY_PROXY(getbountysubmission, "Submission entry.\n")
+BOUNTY_PROXY(listbountysubmissions, "Submissions for a bounty.\n")
+BOUNTY_PROXY(withdrawbountysubmission, "Cannot erase public bytes or rewrite a settled award.\n")
+BOUNTY_PROXY(preparebountyevaluation, "Installed profiles only. No execution yet.\n")
+BOUNTY_PROXY(runbountyevaluation, "Isolated process. Requires execution approval. No wallet keys.\n")
+BOUNTY_PROXY(getbountyevaluationjob, "Evaluation job status.\n")
+BOUNTY_PROXY(cancelbountyevaluation, "Kills the worker process, not only JSON state.\n")
+BOUNTY_PROXY(publishbountyevaluation, "Report signature is not an award or transaction signature.\n")
+BOUNTY_PROXY(listbountyevaluations, "Published evaluation reports.\n")
+BOUNTY_PROXY(createbountychallenge, "Bounded typed challenge.\n")
+BOUNTY_PROXY(listbountychallenges, "Challenges for a bounty.\n")
+BOUNTY_PROXY(resolvebountychallenge, "Cannot revoke a released transaction signature.\n")
+BOUNTY_PROXY(proposebountyaward, "Complete binding. No payment yet. Never automatic.\n")
+BOUNTY_PROXY(approvebountyaward, "Policy approval. Explicitly not a transaction signature.\n")
+BOUNTY_PROXY(getbountyaward, "Award entry.\n")
+BOUNTY_PROXY(getbountyevents, "Node-local cursor with epoch/gap detection.\n")
+BOUNTY_PROXY(watchbounty, "Local watch. Does not download, evaluate, or spend.\n")
+BOUNTY_PROXY(unwatchbounty, "Remove a local watch.\n")
+BOUNTY_PROXY(getagentmandate, "Owner-only mandate view.\n")
+BOUNTY_PROXY(createagentmandate, "Finite mandate. No unbounded all-recipient default.\n")
+BOUNTY_PROXY(revokeagentmandate, "Blocks new signatures, not already released ones.\n")
+BOUNTY_PROXY(getagentactivity, "Redacted local audit. No telemetry.\n")
+BOUNTY_PROXY(exportbountyrecovery, "Scripts and lineage. No seed or private keys.\n")
+BOUNTY_PROXY(importbountyrecovery, "Manifest object only. No automatic broadcast.\n")
+
+static RPCHelpMan preparebountyfunding()
+{
+    return RPCHelpMan{
+        "preparebountyfunding",
+        "Freeze an exact two-leaf CLTV-multisig+refund funding transaction. User amount and refund key required. Helper defaults are ignored.\n",
+        {
+            {"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "Funding plan", {
+                {"principal_atoms", RPCArg::Type::STR, RPCArg::Optional::NO, "Exact user-selected amount"},
+                {"refund_key", RPCArg::Type::STR, RPCArg::Optional::NO, "Contributor refund pubkey"},
+                {"fee_reserve_atoms", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Fee ceiling"},
+                {"council_keys", RPCArg::Type::ARR, RPCArg::Optional::OMITTED, "Council pubkeys", {{"key", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "hex"}}},
+                {"threshold", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "m"},
+                {"award_height", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "CLTV award height"},
+                {"refund_height", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "CLTV refund height"},
+            }},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "plan"}}},
+        RPCExamples{HelpExampleCli("preparebountyfunding", "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            std::string err;
+            wallet::BountyEscrowPlan plan;
+            if (!wallet::ParseBountyPlan(request.params[0], plan, err)) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            }
+            if (plan.principal_atoms <= 0 || plan.refund_key.empty()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "principal_atoms and refund_key are required from the user");
+            }
+            auto pwallet = WalletForModelFunding(request);
+            if (!wallet::PrepareBountyFunding(*pwallet, plan, err)) {
+                throw JSONRPCError(RPC_WALLET_ERROR, err);
+            }
+            return wallet::BountyPlanToJson(plan);
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+
+static RPCHelpMan inspectbountytransaction()
+{
+    return RPCHelpMan{
+        "inspectbountytransaction",
+        "No signing. Full authorized/unauthorized diff of a bounty transaction.\n",
+        {
+            {"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "plan + hex", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "inspection"}}},
+        RPCExamples{HelpExampleCli("inspectbountytransaction", "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            std::string err;
+            wallet::BountyEscrowPlan plan;
+            const UniValue& o = request.params[0];
+            if (!wallet::ParseBountyPlan(o, plan, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            CMutableTransaction tx;
+            const std::string hex = o.exists("hex") ? o["hex"].get_str() : (o.exists("transaction") ? o["transaction"].get_str() : plan.unsigned_hex);
+            if (!wallet::DecodeFundingTxHex(hex, tx, err)) throw JSONRPCError(RPC_DESERIALIZATION_ERROR, err);
+            UniValue out;
+            if (!wallet::InspectBountyTransaction(plan, tx, out, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            return out;
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+
+static RPCHelpMan signbountyfunding()
+{
+    return RPCHelpMan{
+        "signbountyfunding",
+        "SIGHASH_ALL only. Refuse ANYONECANPAY. Exact inspected fingerprint.\n",
+        {
+            {"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "plan + hex", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}},
+        },
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "signed"}}},
+        RPCExamples{HelpExampleCli("signbountyfunding", "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            std::string err;
+            wallet::BountyEscrowPlan plan;
+            const UniValue& o = request.params[0];
+            if (!wallet::ParseBountyPlan(o, plan, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            CMutableTransaction tx;
+            if (!wallet::DecodeFundingTxHex(o.exists("hex") ? o["hex"].get_str() : plan.unsigned_hex, tx, err))
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR, err);
+            auto pwallet = WalletForModelFunding(request);
+            if (!wallet::SignBountyTransaction(*pwallet, plan, tx, err)) throw JSONRPCError(RPC_WALLET_ERROR, err);
+            UniValue out = wallet::BountyPlanToJson(plan);
+            out.pushKV("hex", EncodeHexTx(CTransaction(tx)));
+            out.pushKV("txid", tx.GetHash().GetHex());
+            return out;
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+
+static RPCHelpMan NamedBountyInspect(const std::string& name)
+{
+    return RPCHelpMan{
+        name,
+        "No signing. Recompute inputs, principal, output keys, exact tree, fees and deadlines.\n",
+        {{"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "plan + hex", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}}},
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "inspection"}}},
+        RPCExamples{HelpExampleCli(name, "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            std::string err;
+            wallet::BountyEscrowPlan plan;
+            const UniValue& o = request.params[0];
+            if (!wallet::ParseBountyPlan(o, plan, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            CMutableTransaction tx;
+            const std::string hex = o.exists("hex") ? o["hex"].get_str() : plan.unsigned_hex;
+            if (!wallet::DecodeFundingTxHex(hex, tx, err)) throw JSONRPCError(RPC_DESERIALIZATION_ERROR, err);
+            UniValue out;
+            if (!wallet::InspectBountyTransaction(plan, tx, out, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            return out;
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+
+static RPCHelpMan NamedBountySign(const std::string& name)
+{
+    return RPCHelpMan{
+        name,
+        "SIGHASH_ALL only. Exact inspected fingerprint. No implicit ANYONECANPAY.\n",
+        {{"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "plan + hex", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}}},
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "signed"}}},
+        RPCExamples{HelpExampleCli(name, "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            std::string err;
+            wallet::BountyEscrowPlan plan;
+            const UniValue& o = request.params[0];
+            if (!wallet::ParseBountyPlan(o, plan, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            CMutableTransaction tx;
+            if (!wallet::DecodeFundingTxHex(o.exists("hex") ? o["hex"].get_str() : plan.unsigned_hex, tx, err))
+                throw JSONRPCError(RPC_DESERIALIZATION_ERROR, err);
+            auto pwallet = WalletForModelFunding(request);
+            if (!wallet::SignBountyTransaction(*pwallet, plan, tx, err)) throw JSONRPCError(RPC_WALLET_ERROR, err);
+            UniValue out = wallet::BountyPlanToJson(plan);
+            out.pushKV("hex", EncodeHexTx(CTransaction(tx)));
+            out.pushKV("txid", tx.GetHash().GetHex());
+            return out;
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+
+static RPCHelpMan NamedBountySubmit(const std::string& name)
+{
+    return RPCHelpMan{
+        name,
+        "Live revalidation then broadcast. Duplicate txid is reported.\n",
+        {{"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "signed hex", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}}},
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "broadcast"}}},
+        RPCExamples{HelpExampleCli(name, "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            const UniValue& o = request.params[0];
+            std::string err;
+            CMutableTransaction mtx;
+            const std::string hex = o.exists("hex") ? o["hex"].get_str() : o.exists("signed_transaction") ? o["signed_transaction"].get_str() : "";
+            if (!wallet::DecodeFundingTxHex(hex, mtx, err)) throw JSONRPCError(RPC_DESERIALIZATION_ERROR, err);
+            node::NodeContext& node = EnsureAnyNodeContext(request.context);
+            std::string err_string;
+            const CTransactionRef tx = MakeTransactionRef(mtx);
+            const node::TransactionError err_code = node::BroadcastTransaction(
+                node, tx, err_string, node::DEFAULT_MAX_RAW_TX_FEE_RATE, /*relay=*/true, /*wait_callback=*/false);
+            UniValue out(UniValue::VOBJ);
+            out.pushKV("txid", tx->GetHash().GetHex());
+            out.pushKV("submitted", err_code == node::TransactionError::OK);
+            out.pushKV("duplicate", err_code == node::TransactionError::ALREADY_IN_UTXO_SET);
+            out.pushKV("error", err_string);
+            out.pushKV("automatic_spend", 0);
+            return out;
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+
+static RPCHelpMan submitbountyfunding() { return NamedBountySubmit("submitbountyfunding"); }
+static RPCHelpMan inspectbountyaward() { return NamedBountyInspect("inspectbountyaward"); }
+static RPCHelpMan signbountyaward() { return NamedBountySign("signbountyaward"); }
+static RPCHelpMan submitbountyaward() { return NamedBountySubmit("submitbountyaward"); }
+static RPCHelpMan preparebountyclaim()
+{
+    return RPCHelpMan{
+        "preparebountyclaim",
+        "Prepare staged SHA256 claim. Does not log preimages. Revalidate chain, branch, maturity, keys and fee policy.\n",
+        {{"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "lot_ids, secret_ref, fee_ceiling", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}}},
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "plan"}}},
+        RPCExamples{HelpExampleCli("preparebountyclaim", "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            std::string err;
+            wallet::BountyEscrowPlan plan;
+            if (!wallet::ParseBountyPlan(request.params[0], plan, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            if (request.params[0].exists("secret") || request.params[0].exists("preimage")) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "preimages are not accepted on the wire; use secret_ref");
+            }
+            plan.mode = "STAGED_RELEASE";
+            if (!wallet::BuildStagedHtlcDescriptor(plan, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            return wallet::BountyPlanToJson(plan);
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+static RPCHelpMan signbountyclaim() { return NamedBountySign("signbountyclaim"); }
+static RPCHelpMan submitbountyclaim() { return NamedBountySubmit("submitbountyclaim"); }
+static RPCHelpMan preparebountyrefund()
+{
+    return RPCHelpMan{
+        "preparebountyrefund",
+        "Prepare contributor refund after maturity. Council/helper may be offline.\n",
+        {{"options", RPCArg::Type::OBJ, RPCArg::Optional::NO, "owned lots", std::vector<RPCArg>{}, RPCArgOptions{.skip_type_check = true}}},
+        RPCResult{RPCResult::Type::OBJ, "", "", {{RPCResult::Type::ELISION, "", "plan"}}},
+        RPCExamples{HelpExampleCli("preparebountyrefund", "'{}'")},
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue {
+            (void)self;
+#ifdef ENABLE_WALLET
+            std::string err;
+            wallet::BountyEscrowPlan plan;
+            if (!wallet::ParseBountyPlan(request.params[0], plan, err)) throw JSONRPCError(RPC_INVALID_PARAMETER, err);
+            if (plan.principal_atoms <= 0 || plan.refund_key.empty()) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, "principal_atoms and refund_key are required from the user");
+            }
+            auto pwallet = WalletForModelFunding(request);
+            if (!wallet::PrepareBountyFunding(*pwallet, plan, err)) throw JSONRPCError(RPC_WALLET_ERROR, err);
+            return wallet::BountyPlanToJson(plan);
+#else
+            throw JSONRPCError(RPC_WALLET_NOT_FOUND, "Wallet support is not compiled into this btxd");
+#endif
+        },
+    };
+}
+static RPCHelpMan signbountyrefund() { return NamedBountySign("signbountyrefund"); }
+static RPCHelpMan submitbountyrefund() { return NamedBountySubmit("submitbountyrefund"); }
+
 void RegisterModelNetRPCCommands(CRPCTable& t)
 {
 #ifdef ENABLE_MODELNET
@@ -1320,6 +1630,62 @@ void RegisterModelNetRPCCommands(CRPCTable& t)
         {"modelnet", &exportmodelrecovery},
         {"modelnet", &buildmodelhtlcclaim},
         {"modelnet", &buildmodelhtlcrefund},
+        {"modelnet", &searchbounties},
+        {"modelnet", &getmodelbounties},
+        {"modelnet", &getbounty},
+        {"modelnet", &getbountyeconomy},
+        {"modelnet", &getbountyterms},
+        {"modelnet", &getbountycapabilities},
+        {"modelnet", &createbountydraft},
+        {"modelnet", &validatebountyterms},
+        {"modelnet", &publishbounty},
+        {"modelnet", &revisebounty},
+        {"modelnet", &nominatebountyevaluator},
+        {"modelnet", &acceptbountyappointment},
+        {"modelnet", &listbountyevaluators},
+        {"modelnet", &pledgebounty},
+        {"modelnet", &withdrawbountypledge},
+        {"modelnet", &freezebountyfundinground},
+        {"modelnet", &getbountyfunding},
+        {"modelnet", &commitbountysubmission},
+        {"modelnet", &revealbountysubmission},
+        {"modelnet", &getbountysubmission},
+        {"modelnet", &listbountysubmissions},
+        {"modelnet", &withdrawbountysubmission},
+        {"modelnet", &preparebountyevaluation},
+        {"modelnet", &runbountyevaluation},
+        {"modelnet", &getbountyevaluationjob},
+        {"modelnet", &cancelbountyevaluation},
+        {"modelnet", &publishbountyevaluation},
+        {"modelnet", &listbountyevaluations},
+        {"modelnet", &createbountychallenge},
+        {"modelnet", &listbountychallenges},
+        {"modelnet", &resolvebountychallenge},
+        {"modelnet", &proposebountyaward},
+        {"modelnet", &approvebountyaward},
+        {"modelnet", &getbountyaward},
+        {"modelnet", &getbountyevents},
+        {"modelnet", &watchbounty},
+        {"modelnet", &unwatchbounty},
+        {"modelnet", &getagentmandate},
+        {"modelnet", &createagentmandate},
+        {"modelnet", &revokeagentmandate},
+        {"modelnet", &getagentactivity},
+        {"modelnet", &exportbountyrecovery},
+        {"modelnet", &importbountyrecovery},
+        {"modelnet", &preparebountyfunding},
+        {"modelnet", &inspectbountytransaction},
+        {"modelnet", &signbountyfunding},
+        {"modelnet", &submitbountyfunding},
+        {"modelnet", &inspectbountyaward},
+        {"modelnet", &signbountyaward},
+        {"modelnet", &submitbountyaward},
+        {"modelnet", &preparebountyclaim},
+        {"modelnet", &signbountyclaim},
+        {"modelnet", &submitbountyclaim},
+        {"modelnet", &preparebountyrefund},
+        {"modelnet", &signbountyrefund},
+        {"modelnet", &submitbountyrefund},
     };
     for (const auto& c : commands) t.appendCommand(c.name, &c);
 #else

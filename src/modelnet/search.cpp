@@ -8,6 +8,7 @@
 #include <modelnet/crypto.h>
 #include <modelnet/resource_uri.h>
 #include <random.h>
+#include <util/check.h>
 #include <util/strencodings.h>
 
 #include <algorithm>
@@ -38,13 +39,16 @@ void PutI64(std::vector<unsigned char>& b, int64_t v)
 }
 void PutStr(std::vector<unsigned char>& b, const std::string& s)
 {
-    const uint16_t n = static_cast<uint16_t>(std::min(s.size(), size_t{4096}));
-    PutU16(b, n);
-    b.insert(b.end(), s.begin(), s.begin() + n);
+    // AUTH-011: never collapse an oversize suffix into a colliding empty prefix.
+    // ValidateSearchRecord rejects strings above SEARCH_SIGNED_STR_MAX before Sign/Verify.
+    CHECK_NONFATAL(s.size() <= SEARCH_SIGNED_STR_MAX);
+    PutU16(b, static_cast<uint16_t>(s.size()));
+    b.insert(b.end(), s.begin(), s.end());
 }
 void PutStrList(std::vector<unsigned char>& b, const std::vector<std::string>& v)
 {
-    PutU16(b, static_cast<uint16_t>(std::min(v.size(), size_t{65535})));
+    CHECK_NONFATAL(v.size() <= 65535);
+    PutU16(b, static_cast<uint16_t>(v.size()));
     for (const auto& s : v) PutStr(b, s);
 }
 
@@ -172,8 +176,24 @@ std::vector<std::string> TokenizeSearch(const std::string& in)
 
 bool ValidateSearchRecord(const ModelSearchRecord& r, std::string& err)
 {
-    if (r.display_name.size() > SEARCH_NAME_MAX || r.canonical_name.size() > SEARCH_NAME_MAX) {
-        err = "name too long";
+    auto too_long = [&](const std::string& s, size_t max, const char* what) {
+        if (s.size() > max) {
+            err = what;
+            return true;
+        }
+        return false;
+    };
+    if (too_long(r.display_name, SEARCH_NAME_MAX, "name too long") ||
+        too_long(r.canonical_name, SEARCH_NAME_MAX, "name too long") ||
+        too_long(r.family, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.architecture, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.format, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.quantization, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.publisher_display_name, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.btx_uri, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.release_id, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.release_state, SEARCH_SIGNED_STR_MAX, "string too long") ||
+        too_long(r.assurance, SEARCH_SIGNED_STR_MAX, "string too long")) {
         return false;
     }
     if (r.aliases.size() > SEARCH_ALIASES_MAX) {
@@ -191,7 +211,16 @@ bool ValidateSearchRecord(const ModelSearchRecord& r, std::string& err)
         err = "tag/lang bound";
         return false;
     }
-    if (r.short_description.size() > SEARCH_DESC_MAX) {
+    for (const auto& t : r.tags) {
+        if (too_long(t, SEARCH_SIGNED_STR_MAX, "string too long")) return false;
+    }
+    for (const auto& t : r.languages) {
+        if (too_long(t, SEARCH_SIGNED_STR_MAX, "string too long")) return false;
+    }
+    for (const auto& t : r.modalities) {
+        if (too_long(t, SEARCH_SIGNED_STR_MAX, "string too long")) return false;
+    }
+    if (r.short_description.size() > SEARCH_DESC_MAX || r.description.size() > SEARCH_DESC_MAX) {
         err = "description too long";
         return false;
     }
@@ -359,8 +388,12 @@ UniValue SearchRecordToJson(const ModelSearchRecord& r)
     o.pushKV("signer_id", r.signer_id.Hex());
     o.pushKV("pubkey", HexStr(r.pubkey));
     o.pushKV("signature", HexStr(r.sig));
-    o.pushKV("signed_metadata", r.signed_ok || !r.sig.empty());
+    o.pushKV("signed_metadata", r.signed_ok);
     o.pushKV("tombstone", r.tombstone);
+    o.pushKV("object_kind", r.object_kind.empty() ? "MODEL" : r.object_kind);
+    if (!r.bounty_id.empty()) o.pushKV("bounty_id", r.bounty_id);
+    if (!r.description.empty()) o.pushKV("description", r.description);
+    if (!r.network_id.empty()) o.pushKV("network_id", r.network_id);
     return o;
 }
 
@@ -441,7 +474,11 @@ bool SearchRecordFromJson(const UniValue& o, ModelSearchRecord& r, std::string& 
     if (o.exists("tombstone")) r.tombstone = o["tombstone"].get_bool();
     if (o.exists("pubkey")) r.pubkey = ParseHex(o["pubkey"].get_str());
     if (o.exists("signature")) r.sig = ParseHex(o["signature"].get_str());
-    r.signed_ok = !r.sig.empty();
+    r.signed_ok = false;
+    if (o.exists("object_kind") && o["object_kind"].isStr()) r.object_kind = o["object_kind"].get_str();
+    if (o.exists("bounty_id") && o["bounty_id"].isStr()) r.bounty_id = o["bounty_id"].get_str();
+    if (o.exists("description") && o["description"].isStr()) r.description = o["description"].get_str();
+    if (o.exists("network_id") && o["network_id"].isStr()) r.network_id = o["network_id"].get_str();
     return ValidateSearchRecord(r, err);
 }
 
@@ -493,6 +530,7 @@ bool ParseSearchQuery(const UniValue& o, SearchQuery& q, std::string& err)
         FS("architecture", q.filters.architecture);
         FS("format", q.filters.format);
         FS("quantization", q.filters.quantization);
+        FS("object_kind", q.filters.object_kind);
         if (f.exists("min_size_bytes")) q.filters.min_size_bytes = f["min_size_bytes"].getInt<int64_t>();
         if (f.exists("max_size_bytes")) q.filters.max_size_bytes = f["max_size_bytes"].getInt<int64_t>();
         if (f.exists("public_only")) q.filters.public_only = f["public_only"].get_bool();
@@ -598,8 +636,8 @@ SwarmHealth ComputeSwarmHealth(uint32_t pieces_total, uint32_t pieces_local,
         uint32_t missing = 0;
         for (uint32_t i = 0; i < pieces_total; ++i) {
             int src = 0;
-            for (const auto& o : obs) {
-                for (const auto& r : o.ranges) {
+            for (const auto& ranges_i : ranges) {
+                for (const auto& r : ranges_i) {
                     if (RangeCovers(r, i)) {
                         ++src;
                         break;
@@ -625,9 +663,9 @@ SwarmHealth ComputeSwarmHealth(uint32_t pieces_total, uint32_t pieces_local,
         else if (h.providers_complete >= 1) h.klass = AvailabilityClass::HIGH;
         else h.klass = AvailabilityClass::MEDIUM;
     } else {
-        h.klass = obs.empty() ? AvailabilityClass::UNKNOWN : AvailabilityClass::HIGH;
-        h.reconstructable = !obs.empty();
-        h.reconstructable_known = !obs.empty();
+        h.klass = AvailabilityClass::UNKNOWN;
+        h.reconstructable = false;
+        h.reconstructable_known = false;
     }
     return h;
 }
@@ -672,6 +710,7 @@ int RelevanceScore(const ModelSearchRecord& r, const std::vector<std::string>& t
             if (NormalizeSearchText(tag).find(t) != std::string::npos) s += 60;
         }
         if (NormalizeSearchText(r.short_description).find(t) != std::string::npos) s += 20;
+        if (NormalizeSearchText(r.description).find(t) != std::string::npos) s += 20;
         if (NormalizeSearchText(r.publisher_display_name).find(t) != std::string::npos) s += 90;
         for (const auto& lang : r.languages) {
             if (NormalizeSearchText(lang).find(t) != std::string::npos) s += 40;
@@ -786,27 +825,44 @@ UniValue DirectoryEntryJson(const SearchHit& h)
 
 bool SearchIndex::Put(const ModelSearchRecord& r, int64_t now_ms, std::string& err)
 {
-    if (r.tombstone) return Tombstone(r.model_id, r.metadata_sequence, now_ms, err);
-    if (r.signed_ok || !r.sig.empty()) {
-        if (!VerifySearchRecord(r, now_ms, err)) return false;
+    const bool has_sig = !r.sig.empty();
+    bool verified = false;
+    if (has_sig || r.tombstone) {
+        if (!VerifySearchRecord(r, now_ms, err)) {
+            if (r.tombstone) {
+                err = err.empty() ? "unsigned tombstone" : err;
+            }
+            return false;
+        }
+        verified = true;
     } else {
         if (!ValidateSearchRecord(r, err)) return false;
     }
     const std::string key = r.model_id.Hex();
     auto it = m_by_model.find(key);
     if (it != m_by_model.end()) {
-        if (r.signed_ok && it->second.signed_ok && r.metadata_sequence < it->second.metadata_sequence) {
-            err = "sequence rollback";
-            return false;
-        }
-        if (!r.signed_ok && it->second.signed_ok) {
-            err = "unsigned cannot override signed";
-            return false;
-        }
-        if (r.signed_ok && it->second.signed_ok && r.signer_id != it->second.signer_id &&
-            r.metadata_sequence <= it->second.metadata_sequence) {
-            err = "wrong signer";
-            return false;
+        if (it->second.signed_ok) {
+            if (!verified) {
+                err = "unsigned cannot override signed";
+                return false;
+            }
+            if (r.signer_id != it->second.signer_id) {
+                err = "wrong signer";
+                return false;
+            }
+            if (r.metadata_sequence < it->second.metadata_sequence) {
+                err = "sequence rollback";
+                return false;
+            }
+            if (r.metadata_sequence == it->second.metadata_sequence) {
+                const auto a = SearchRecordToJson(it->second).write();
+                ModelSearchRecord tmp = r;
+                tmp.signed_ok = it->second.signed_ok;
+                if (SearchRecordToJson(tmp).write() != a && !r.tombstone) {
+                    err = "same sequence conflict";
+                    return false;
+                }
+            }
         }
     }
     if (m_by_model.size() >= m_cap && it == m_by_model.end()) {
@@ -822,33 +878,19 @@ bool SearchIndex::Put(const ModelSearchRecord& r, int64_t now_ms, std::string& e
         if (it == m_by_model.end()) m_pub_window[pub] += 1;
     }
     m_by_model[key] = r;
-    m_by_model[key].signed_ok = r.signed_ok || (!r.sig.empty());
+    m_by_model[key].signed_ok = verified;
+    if (r.tombstone) m_by_model[key].tombstone = true;
     ++m_seq;
     return true;
 }
 
 bool SearchIndex::Tombstone(const Digest48& model_id, uint64_t seq, int64_t now_ms, std::string& err)
 {
+    (void)seq;
     (void)now_ms;
-    auto it = m_by_model.find(model_id.Hex());
-    if (it == m_by_model.end()) {
-        ModelSearchRecord t;
-        t.model_id = model_id;
-        t.tombstone = true;
-        t.metadata_sequence = seq;
-        t.updated_at = now_ms;
-        m_by_model[model_id.Hex()] = t;
-        ++m_seq;
-        return true;
-    }
-    if (seq < it->second.metadata_sequence) {
-        err = "sequence rollback";
-        return false;
-    }
-    it->second.tombstone = true;
-    it->second.metadata_sequence = seq;
-    ++m_seq;
-    return true;
+    (void)model_id;
+    err = "unsigned tombstone rejected; supply a signed tombstone record via Put";
+    return false;
 }
 
 const ModelSearchRecord* SearchIndex::Get(const Digest48& model_id) const
@@ -933,6 +975,10 @@ std::vector<SearchHit> SearchIndex::Search(const SearchQuery& q, int64_t now_ms)
             }
             if (!ok) continue;
         }
+        if (!q.filters.object_kind.empty() &&
+            NormalizeSearchText(r.object_kind) != NormalizeSearchText(q.filters.object_kind)) {
+            continue;
+        }
         if (!terms.empty()) {
             if (RelevanceScore(r, terms) <= 0) continue;
         }
@@ -942,32 +988,7 @@ std::vector<SearchHit> SearchIndex::Search(const SearchQuery& q, int64_t now_ms)
         hit.provenance.push_back("local_index");
         hits.push_back(hit);
     }
-    std::sort(hits.begin(), hits.end(), [&](const SearchHit& a, const SearchHit& b) {
-        switch (q.sort) {
-        case SearchSort::NAME:
-            return a.rec.display_name < b.rec.display_name;
-        case SearchSort::NEWEST:
-            return a.rec.published_at > b.rec.published_at;
-        case SearchSort::OLDEST:
-            return a.rec.published_at < b.rec.published_at;
-        case SearchSort::SIZE_ASC:
-            return a.rec.size_bytes < b.rec.size_bytes;
-        case SearchSort::SIZE_DESC:
-            return a.rec.size_bytes > b.rec.size_bytes;
-        case SearchSort::PUBLISHER:
-            return a.rec.publisher_display_name < b.rec.publisher_display_name;
-        case SearchSort::PROVIDERS:
-        case SearchSort::AVAILABILITY:
-        case SearchSort::RARITY:
-            if (a.health.providers_observed != b.health.providers_observed)
-                return a.health.providers_observed > b.health.providers_observed;
-            return a.score > b.score;
-        case SearchSort::RELEVANCE:
-        default:
-            if (a.score != b.score) return a.score > b.score;
-            return a.rec.model_id.Hex() < b.rec.model_id.Hex();
-        }
-    });
+    SortHits(hits, q.sort);
     if (q.offset > 0 && q.offset < static_cast<int>(hits.size())) {
         hits.erase(hits.begin(), hits.begin() + q.offset);
     } else if (q.offset >= static_cast<int>(hits.size())) {
@@ -1010,8 +1031,10 @@ UniValue SearchIndex::ExportSince(uint64_t since, int limit) const
 {
     UniValue arr(UniValue::VARR);
     int n = 0;
+    uint64_t seq = 0;
     for (const auto& kv : m_by_model) {
-        (void)since;
+        ++seq;
+        if (seq <= since) continue;
         arr.push_back(SearchRecordToJson(kv.second));
         if (++n >= limit) break;
     }
@@ -1175,6 +1198,36 @@ bool SearchHitFromCard(const UniValue& card, SearchHit& out, std::string& err)
     return true;
 }
 
+void SortHits(std::vector<SearchHit>& hits, SearchSort sort)
+{
+    std::sort(hits.begin(), hits.end(), [&](const SearchHit& a, const SearchHit& b) {
+        switch (sort) {
+        case SearchSort::NAME:
+            return a.rec.display_name < b.rec.display_name;
+        case SearchSort::NEWEST:
+            return a.rec.published_at > b.rec.published_at;
+        case SearchSort::OLDEST:
+            return a.rec.published_at < b.rec.published_at;
+        case SearchSort::SIZE_ASC:
+            return a.rec.size_bytes < b.rec.size_bytes;
+        case SearchSort::SIZE_DESC:
+            return a.rec.size_bytes > b.rec.size_bytes;
+        case SearchSort::PUBLISHER:
+            return a.rec.publisher_display_name < b.rec.publisher_display_name;
+        case SearchSort::PROVIDERS:
+        case SearchSort::AVAILABILITY:
+        case SearchSort::RARITY:
+            if (a.health.providers_observed != b.health.providers_observed)
+                return a.health.providers_observed > b.health.providers_observed;
+            return a.score > b.score;
+        case SearchSort::RELEVANCE:
+        default:
+            if (a.score != b.score) return a.score > b.score;
+            return a.rec.model_id.Hex() < b.rec.model_id.Hex();
+        }
+    });
+}
+
 void MergeRemoteSearchHits(SearchJob& job, std::vector<SearchHit> extra)
 {
     std::map<std::string, SearchHit> merged;
@@ -1192,9 +1245,7 @@ void MergeRemoteSearchHits(SearchJob& job, std::vector<SearchHit> extra)
     }
     job.hits.clear();
     for (auto& kv : merged) job.hits.push_back(std::move(kv.second));
-    std::sort(job.hits.begin(), job.hits.end(), [](const SearchHit& a, const SearchHit& b) {
-        return a.score > b.score;
-    });
+    SortHits(job.hits, job.q.sort);
     if (job.q.limit > 0 && static_cast<int>(job.hits.size()) > job.q.limit) {
         job.hits.resize(job.q.limit);
     }
@@ -1215,7 +1266,8 @@ SearchJob SearchRuntime::Start(const SearchQuery& q, const std::vector<SearchInd
         const auto hits = idx->Search(q, now_ms);
         if (remote) {
             job.coverage.responses_received += 1;
-            if (std::find(idx->IndexPeers().begin(), idx->IndexPeers().end(), src) != idx->IndexPeers().end() ||
+            const auto peers = idx->IndexPeers();
+            if (std::find(peers.begin(), peers.end(), src) != peers.end() ||
                 src.find("index") != std::string::npos) {
                 job.coverage.index_peers_queried += 1;
             } else {
@@ -1240,16 +1292,15 @@ SearchJob SearchRuntime::Start(const SearchQuery& q, const std::vector<SearchInd
         for (auto* e : extras) ingest(e, "peer", true);
     }
     for (auto& kv : merged) job.hits.push_back(kv.second);
-    std::sort(job.hits.begin(), job.hits.end(), [](const SearchHit& a, const SearchHit& b) {
-        return a.score > b.score;
-    });
+    SortHits(job.hits, q.sort);
     const int seen = static_cast<int>(job.hits.size());
     if (static_cast<int>(job.hits.size()) > q.limit) job.hits.resize(q.limit);
-    job.state = SearchJobState::COMPLETE;
+    job.state = (q.scope == SearchScope::LOCAL && extras.empty()) ? SearchJobState::COMPLETE : SearchJobState::RUNNING;
     job.elapsed_ms = 0;
     job.coverage.complete = false;
     m_jobs[job.query_id] = job;
-    ++m_completed;
+    if (job.state == SearchJobState::COMPLETE) ++m_completed;
+    else ++m_running;
     (void)seen;
     return job;
 }
@@ -1265,8 +1316,23 @@ bool SearchRuntime::Cancel(const std::string& query_id)
 {
     auto it = m_jobs.find(query_id);
     if (it == m_jobs.end()) return false;
+    if (it->second.state == SearchJobState::RUNNING && m_running > 0) --m_running;
     it->second.state = SearchJobState::CANCELLED;
     return true;
+}
+
+bool SearchRuntime::IsCancelled(const std::string& query_id) const
+{
+    auto it = m_jobs.find(query_id);
+    return it != m_jobs.end() && it->second.state == SearchJobState::CANCELLED;
+}
+
+void SearchRuntime::Finish(SearchJob& job)
+{
+    if (job.state == SearchJobState::RUNNING) job.state = SearchJobState::COMPLETE;
+    m_jobs[job.query_id] = job;
+    if (m_running > 0) --m_running;
+    ++m_completed;
 }
 
 bool UnsignedCannotOverrideSigned()

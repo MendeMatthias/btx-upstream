@@ -162,7 +162,12 @@ BOOST_AUTO_TEST_CASE(search_sig_01_to_08)
     BOOST_REQUIRE(SignSearchRecord(expired, Span<const unsigned char>{sk.data(), sk.size()}, err));
     BOOST_CHECK(!VerifySearchRecord(expired, 10, err));
 
-    BOOST_CHECK(idx.Tombstone(r.model_id, 9, 20, err));
+    BOOST_CHECK(idx.Tombstone(r.model_id, 9, 20, err) == false);
+    auto tomb = r;
+    tomb.tombstone = true;
+    tomb.metadata_sequence = 9;
+    BOOST_REQUIRE(SignSearchRecord(tomb, Span<const unsigned char>{sk.data(), sk.size()}, err));
+    BOOST_CHECK(idx.Put(tomb, 20, err));
     SearchQuery q;
     q.text = "alpha";
     BOOST_CHECK(idx.Search(q, 20).empty());
@@ -292,7 +297,9 @@ BOOST_AUTO_TEST_CASE(search_net_01_to_13)
     q.text = "qwen coder";
     q.scope = SearchScope::NETWORK;
     q.limit = 25;
-    const auto job = rt.Start(q, {&peer, &idxn}, 1);
+    auto job = rt.Start(q, {&peer, &idxn}, 1);
+    BOOST_CHECK_EQUAL(static_cast<int>(job.state), static_cast<int>(SearchJobState::RUNNING));
+    rt.Finish(job);
     BOOST_CHECK_EQUAL(static_cast<int>(job.state), static_cast<int>(SearchJobState::COMPLETE));
     BOOST_CHECK_GE(job.hits.size(), 2);
     BOOST_CHECK(!job.coverage.complete);

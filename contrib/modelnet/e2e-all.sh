@@ -116,6 +116,9 @@ MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-economy-four-host.sh" || die "e2e-e
 MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-encrypted-cache.sh" || die "e2e-encrypted-cache"
 BIN="$BIN" "$ROOT/contrib/modelnet/e2e-economy-regtest.sh" || die "e2e-economy-regtest"
 
+step "bounty E2E A–J (spec §20)"
+BIN="$BIN" MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-bounty-all.sh" || die "e2e-bounty-all"
+
 step "QUIC deferred + Apple pkg recipe"
 MODELD="$MODELD" TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-quic-absent.sh" || die "e2e-quic-absent"
 "$ROOT/contrib/modelnet/e2e-apple-pkg-recipe.sh" || die "e2e-apple-pkg-recipe"

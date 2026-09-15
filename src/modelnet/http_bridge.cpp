@@ -213,6 +213,19 @@ bool SegmentLooksWallet(std::string_view seg)
 bool WalletLikePath(const std::string& path)
 {
     const std::string p = NormalizedRoute(path);
+    if (p.find("preparebounty") != std::string::npos) return true;
+    if (p.find("signbounty") != std::string::npos) return true;
+    if (p.find("submitbounty") != std::string::npos) return true;
+    if (p.find("createagentmandate") != std::string::npos) return true;
+    if (p.find("revokeagentmandate") != std::string::npos) return true;
+    if (p.find("getagentmandate") != std::string::npos) return true;
+    if (p.find("reservemandate") != std::string::npos) return true;
+    if (p.find("bountyevaluation") != std::string::npos) return true;
+    if (p.find("proposebounty") != std::string::npos) return true;
+    if (p.find("approvebounty") != std::string::npos) return true;
+    if (p.find("importbounty") != std::string::npos) return true;
+    if (p.find("createbountydraft") != std::string::npos) return true;
+    if (p.find("publishbounty") != std::string::npos) return true;
     size_t i = 0;
     while (i < p.size()) {
         if (p[i] == '/') {
@@ -239,6 +252,19 @@ bool MethodLooksWallet(const std::string& method)
     if (m.find("backupwallet") != std::string::npos) return true;
     if (m.find("encryptwallet") != std::string::npos) return true;
     if (m.find("listunspent") != std::string::npos) return true;
+    if (m.find("preparebounty") != std::string::npos) return true;
+    if (m.find("signbounty") != std::string::npos) return true;
+    if (m.find("submitbounty") != std::string::npos) return true;
+    if (m.find("createagentmandate") != std::string::npos) return true;
+    if (m.find("revokeagentmandate") != std::string::npos) return true;
+    if (m.find("getagentmandate") != std::string::npos) return true;
+    if (m.find("reservemandate") != std::string::npos) return true;
+    if (m.find("bountyevaluation") != std::string::npos) return true;
+    if (m.find("proposebounty") != std::string::npos) return true;
+    if (m.find("approvebounty") != std::string::npos) return true;
+    if (m.find("importbountyrecovery") != std::string::npos) return true;
+    if (m.find("createbountydraft") != std::string::npos) return true;
+    if (m.find("publishbounty") != std::string::npos) return true;
     return false;
 }
 
@@ -440,6 +466,49 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
         UniValue obj = ApiV1Shell();
         obj.pushKV("error", "malformed id");
         return finish(std::move(obj), 400, false);
+    }
+
+    if (route == "/api/v1/bounties") {
+        const std::string q = QueryParam(path, "q");
+        UniValue params(UniValue::VARR);
+        UniValue req(UniValue::VOBJ);
+        req.pushKV("text", q);
+        req.pushKV("scope", "LOCAL");
+        params.push_back(std::move(req));
+        UniValue rpc;
+        if (BridgeReadRpc("searchbounties", params, rpc) && rpc.isObject()) {
+            UniValue obj = ApiV1Shell();
+            obj.pushKV("results", rpc.exists("results") ? rpc["results"] : UniValue(UniValue::VARR));
+            obj.pushKV("wallet", false);
+            obj.pushKV("eval", false);
+            obj.pushKV("mandate", false);
+            return finish(std::move(obj), 200, true);
+        }
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("results", UniValue(UniValue::VARR));
+        obj.pushKV("wallet", false);
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route.rfind("/api/v1/bounties/", 0) == 0) {
+        const std::string id = route.substr(std::string_view{"/api/v1/bounties/"}.size());
+        if (id.empty() || id.find('/') != std::string::npos) {
+            UniValue obj = ApiV1Shell();
+            obj.pushKV("error", "not found");
+            return finish(std::move(obj), 404, false);
+        }
+        UniValue params(UniValue::VARR);
+        params.push_back(id);
+        UniValue rpc;
+        if (BridgeReadRpc("getbounty", params, rpc) && rpc.isObject()) {
+            rpc.pushKV("wallet", false);
+            rpc.pushKV("from_helper", true);
+            return finish(std::move(rpc), 200, true);
+        }
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("id", id);
+        obj.pushKV("wallet", false);
+        return finish(std::move(obj), 200, true);
     }
 
     if (route == "/api/v1/publishers") {

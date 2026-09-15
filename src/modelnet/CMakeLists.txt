@@ -48,6 +48,9 @@ add_library(bitcoin_modelnet STATIC
   relay_reserve.cpp
   provider_route.cpp
   search.cpp
+  canonical_codec.cpp
+  bounty.cpp
+  bounty_eval.cpp
 )
 target_link_libraries(bitcoin_modelnet
   PUBLIC

@@ -27,6 +27,7 @@ constexpr size_t SEARCH_TAGS_MAX = 64;
 constexpr size_t SEARCH_LANGS_MAX = 64;
 constexpr size_t SEARCH_MODALITIES_MAX = 16;
 constexpr size_t SEARCH_DESC_MAX = 1024;
+constexpr size_t SEARCH_SIGNED_STR_MAX = 4096;
 constexpr size_t SEARCH_RECORD_MAX = 16384;
 constexpr size_t SEARCH_PAGE_MAX = 100;
 constexpr int SEARCH_TTL_DEFAULT = 2;
@@ -103,6 +104,10 @@ struct ModelSearchRecord {
     Digest48 signer_id;
     std::vector<unsigned char> pubkey;
     std::vector<unsigned char> sig;
+    std::string object_kind{"MODEL"};
+    std::string bounty_id;
+    std::string description;
+    std::string network_id;
     bool signed_ok{false};
     bool tombstone{false};
 };
@@ -139,6 +144,7 @@ struct SearchFilters {
     bool ciphertext_available{false};
     int min_ciphertext_provider_count{0};
     std::vector<std::string> modalities;
+    std::string object_kind;
 };
 
 struct SearchQuery {
@@ -257,6 +263,7 @@ SwarmHealth ComputeSwarmHealth(uint32_t pieces_total, uint32_t pieces_local,
 int DiversityAwareProviderScore(const std::vector<ProviderObservation>& obs);
 int RelevanceScore(const ModelSearchRecord& r, const std::vector<std::string>& terms);
 
+void SortHits(std::vector<SearchHit>& hits, SearchSort sort);
 UniValue SearchResultCard(const SearchHit& h);
 UniValue DirectoryEntryJson(const SearchHit& h);
 UniValue AvailabilityJson(const SwarmHealth& h);
@@ -320,6 +327,8 @@ public:
     SearchJob Start(const SearchQuery& q, const std::vector<SearchIndex*>& extras, int64_t now_ms);
     bool Status(const std::string& query_id, SearchJob& out) const;
     bool Cancel(const std::string& query_id);
+    bool IsCancelled(const std::string& query_id) const;
+    void Finish(SearchJob& job);
     int Running() const { return m_running; }
     int Completed() const { return m_completed; }
 };

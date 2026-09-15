@@ -134,13 +134,19 @@ const char* ResourceKindName(ResourceKind kind)
     case ResourceKind::CIRCLE: return "CIRCLE";
     case ResourceKind::ALIAS: return "ALIAS";
     case ResourceKind::PROVIDER: return "PROVIDER";
+    case ResourceKind::BOUNTY: return "BOUNTY";
+    case ResourceKind::BOUNTY_TERMS: return "BOUNTY_TERMS";
+    case ResourceKind::FUNDING_ROUND: return "FUNDING_ROUND";
+    case ResourceKind::SUBMISSION: return "SUBMISSION";
+    case ResourceKind::EVALUATION: return "EVALUATION";
+    case ResourceKind::AWARD: return "AWARD";
     }
     return "UNKNOWN";
 }
 
 bool ResourceKindFromInt(int kind, ResourceKind& out)
 {
-    if (kind < 0 || kind > 8) return false;
+    if (kind < 0 || kind > 14) return false;
     out = static_cast<ResourceKind>(kind);
     return true;
 }

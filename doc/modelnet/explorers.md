@@ -21,6 +21,9 @@ unix RPC / `btxd` proxy is authoritative. **No unauthenticated funding writes.**
 
 Reference client: `contrib/modelnet/reference-economy-client/`.
 
+Bounty list/detail (read-only `GET /api/v1/bounties` only):
+`contrib/modelnet/explorer-bounties/`. See [../bounties.md](../bounties.md).
+
 Example:
 
 ```

@@ -599,6 +599,41 @@ Operator and researcher docs: [doc/modelnet/README.md](doc/modelnet/README.md),
 Draft notes: [doc/release-notes/release-notes-0.34.7.md](doc/release-notes/release-notes-0.34.7.md).
 This plane does not authorize a `CLIENT_VERSION` bump by itself.
 
+### Model bounties (demand-side)
+
+Release campaigns start from an **already identified** encrypted model and fund
+disclosure of its release key. **Model bounties** are the opposite offer: a
+requester publishes a capability need, fixed evaluation policy, council roster,
+and refund timeline **before** any winning `model_id` exists. Contributors
+inspect immutable signed terms, then fund **their own** escrow lots through the
+wallet. Creators submit candidates; installed evaluators run the stated profiles;
+council policy approvers accept an exact candidate; council transaction signers
+may authorize an award transaction. There is **no** chain opcode that
+automatically pays a winner — settlement is ordinary BTX spends from the
+frozen script trees.
+
+Trust label (terms and economy views):
+`COUNCIL_CUSTODIAL_AUTHORITY_WITH_INDIVIDUAL_REFUND_PATHS`. Benchmarks and
+reports evaluate models under stated conditions; they are **not** consensus
+oracles. The council M-of-N controls the award branch and could collude or fail
+to act. Each funding lot still carries the contributor’s **own** refund key on
+a CLTV branch after the disclosed height if that output remains unspent; refund
+does not require the council, the helper, or any indexer to cooperate. A
+competing award or claim branch may still race the same UTXO.
+
+Escrow reuses existing P2MR templates only — no new opcode:
+
+- Contributor lot: `mr(cltv_multi_pq(locktime,m,keys…),refund(height,refund_key))`
+- Staged winner payout: `mr(htlc_sha256(hash,claimant),refund(height,original_refund_key))`
+
+`CLIENT_VERSION_IS_RELEASE` remains **false** in this tree; bounty RPCs and
+schemas are proposed contracts until mandatory gates have executed evidence.
+See [doc/bounties.md](doc/bounties.md) and [doc/bounty-rpc.md](doc/bounty-rpc.md).
+
+Agents default to read-only discovery (`searchbounties`, `getbounty`,
+`getbountyeconomy`). Funding, evaluation execution, and signing require explicit
+user approval or a finite mandate ([AGENTS.md](AGENTS.md)).
+
 ---
 
 ## Post-Quantum Cryptography

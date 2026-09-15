@@ -297,40 +297,10 @@ bool ParseFrozenFundingQuote(const UniValue& options, FrozenFundingQuote& q, std
 
 void MergeHelperCampaign(const UniValue& helper, const std::string& release_id, FrozenFundingQuote& q)
 {
-    auto apply = [&](const UniValue& c) {
-        if (q.key_hash_hex.empty() && c.exists("key_hash") && c["key_hash"].isStr()) {
-            q.key_hash_hex = ToLower(c["key_hash"].get_str());
-        }
-        if (q.refund_height == 0 && c.exists("refund_height") && c["refund_height"].isNum()) {
-            const int64_t h = c["refund_height"].getInt<int64_t>();
-            if (h > 0 && h <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
-                q.refund_height = static_cast<uint32_t>(h);
-            }
-        }
-        if (q.amount_atoms == 0 && c.exists("target_atoms") && c["target_atoms"].isNum()) {
-            q.amount_atoms = c["target_atoms"].getInt<int64_t>();
-        }
-        if (q.claimant_key.empty() && c.exists("claimant") && c["claimant"].isStr()) {
-            q.claimant_key = c["claimant"].get_str();
-        }
-        if (q.refund_key.empty() && c.exists("refund_pubkey") && c["refund_pubkey"].isStr()) {
-            q.refund_key = c["refund_pubkey"].get_str();
-        }
-    };
-    if (helper.exists("campaigns") && helper["campaigns"].isArray()) {
-        for (const auto& c : helper["campaigns"].getValues()) {
-            if (!c.isObject()) continue;
-            if (!release_id.empty() && c.exists("release_id") && c["release_id"].isStr() &&
-                c["release_id"].get_str() != release_id) {
-                continue;
-            }
-            apply(c);
-            return;
-        }
-    }
-    if (helper.isObject() && (helper.exists("key_hash") || helper.exists("refund_height"))) {
-        apply(helper);
-    }
+    (void)helper;
+    (void)release_id;
+    (void)q;
+    // GAP-12: helper cannot supply amount, refund key, claimant, or locktime.
 }
 
 bool DecodeFundingTxHex(const std::string& hex, CMutableTransaction& tx, std::string& err)

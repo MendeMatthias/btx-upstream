@@ -709,6 +709,19 @@ void ModelNetPage::renderModelCards(const UniValue& models, const UniValue* meta
             connect(fund_btn, &QPushButton::clicked, this, &ModelNetPage::onResultFund);
             btn_row->addWidget(fund_btn);
         }
+        const bool bounty = (m.exists("object_kind") && m["object_kind"].isStr() && m["object_kind"].get_str() == "BOUNTY") ||
+                            (m.exists("bounty_id") && m["bounty_id"].isStr());
+        if (bounty) {
+            auto* fund_b = new QPushButton(tr("Fund Bounty"));
+            connect(fund_b, &QPushButton::clicked, this, &ModelNetPage::onResultFundBounty);
+            btn_row->addWidget(fund_b);
+            auto* award_btn = new QPushButton(tr("Award"));
+            connect(award_btn, &QPushButton::clicked, this, &ModelNetPage::onResultAward);
+            btn_row->addWidget(award_btn);
+            auto* refund_btn = new QPushButton(tr("Refund"));
+            connect(refund_btn, &QPushButton::clicked, this, &ModelNetPage::onResultRefund);
+            btn_row->addWidget(refund_btn);
+        }
         bool cacheable = false;
         if (m.exists("ciphertext_cacheable") && m["ciphertext_cacheable"].isTrue()) cacheable = true;
         if (m.exists("actions") && m["actions"].isArray()) {
@@ -860,6 +873,10 @@ void ModelNetPage::runModelSearch()
     case 8:
         method = "searchcollections";
         break;
+    case 9:
+        method = "searchbounties";
+        scope = "NETWORK";
+        break;
     case 0:
     default:
         if (ui->searchLineEdit->text().trimmed().isEmpty()) {
@@ -945,6 +962,34 @@ void ModelNetPage::onResultFund()
     const auto* btn = qobject_cast<QPushButton*>(sender());
     if (!btn) return;
     showFundPlan(btn->property("releaseId").toString());
+}
+
+void ModelNetPage::onResultFundBounty()
+{
+    UniValue params(UniValue::VARR);
+    params.push_back(UniValue(UniValue::VOBJ));
+    ui->modelsOutput->setPlainText(
+        tr("preparebountyfunding / inspectbountytransaction (no automatic spend)\n") +
+        callRpc("getbountycapabilities") + QLatin1Char('\n') +
+        callRpc("searchbounties", params));
+}
+
+void ModelNetPage::onResultAward()
+{
+    UniValue params(UniValue::VARR);
+    params.push_back(UniValue(UniValue::VOBJ));
+    ui->modelsOutput->setPlainText(
+        tr("inspectbountyaward (policy approval is not a transaction signature)\n") +
+        callRpc("getbountycapabilities"));
+}
+
+void ModelNetPage::onResultRefund()
+{
+    UniValue params(UniValue::VARR);
+    params.push_back(UniValue(UniValue::VOBJ));
+    ui->modelsOutput->setPlainText(
+        tr("preparebountyrefund — council/helper may be offline\n") +
+        callRpc("getbountycapabilities"));
 }
 
 void ModelNetPage::onResultCache()

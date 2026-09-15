@@ -48,6 +48,9 @@ private Q_SLOTS:
     void onResultCopyUri();
     void onResultDetails();
     void onResultFund();
+    void onResultFundBounty();
+    void onResultAward();
+    void onResultRefund();
     void onResultCache();
     void onPublishSearchRecord();
 

@@ -170,6 +170,11 @@
            <string>Collections</string>
           </attribute>
          </widget>
+         <widget class="QWidget" name="tabScopeBounties">
+          <attribute name="title">
+           <string>Bounties</string>
+          </attribute>
+         </widget>
         </widget>
        </item>
        <item>

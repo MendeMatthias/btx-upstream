@@ -17,6 +17,7 @@
 #include <modelnet/reachability.h>
 #include <modelnet/relay_reserve.h>
 #include <modelnet/search.h>
+#include <modelnet/bounty.h>
 #include <modelnet/policy.h>
 #include <modelnet/auto_storage.h>
 #include <modelnet/piece_ranges.h>
@@ -2709,6 +2710,154 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         return none;
     };
 
+    if (IsBountyHelperMethod(method)) {
+        const bool ok = DispatchBountyHelperRpc(cat, method, params, result, err_code, err);
+        if (ok && (method == "publishbounty" || method == "revisebounty") && result.exists("search_record")) {
+            EnsureSearchBound();
+            ModelSearchRecord rec;
+            std::string ierr;
+            if (SearchRecordFromJson(result["search_record"], rec, ierr)) {
+                rec.object_kind = "BOUNTY";
+                if (result.exists("bounty_id")) {
+                    rec.bounty_id = result["bounty_id"].get_str();
+                    Digest48::FromHex(rec.bounty_id, rec.model_id, ierr);
+                    rec.artifact_id = rec.model_id;
+                }
+                std::vector<unsigned char> pk, sk;
+                Digest48 sid;
+                if (LoadOrCreateResearchIdentity(HelperDir(cat), pk, sk, sid, ierr)) {
+                    rec.pubkey = pk;
+                    SignSearchRecord(rec, Span<const unsigned char>{sk.data(), sk.size()}, ierr);
+                    std::lock_guard<std::mutex> lock(g_search_mu);
+                    g_search_idx.Put(rec, ConnNowMs(), ierr);
+                }
+            }
+        }
+        if (ok && (method == "searchbounties" || method == "getmodelbounties")) {
+            UniValue q(UniValue::VOBJ);
+            if (params.isArray() && params.size() > 0 && params[0].isObject()) q = params[0];
+            else if (params.isObject()) q = params;
+            SearchScope scope = SearchScope::LOCAL;
+            if (q.exists("scope")) ParseSearchScope(q["scope"].get_str(), scope);
+            result.pushKV("global_complete", false);
+            if (scope != SearchScope::LOCAL) {
+                EnsureSearchBound();
+                std::vector<std::string> index_peers;
+                std::vector<std::string> fanout;
+                auto add_ep = [&](const std::string& ep) {
+                    if (ep.empty()) return;
+                    if (!g_swarm.bind.empty() && (ep == g_swarm.bind || ep == "[" + g_swarm.bind + "]")) return;
+                    if (std::find(fanout.begin(), fanout.end(), ep) != fanout.end()) return;
+                    if (static_cast<int>(fanout.size()) >= SEARCH_FANOUT_MAX) return;
+                    fanout.push_back(ep);
+                };
+                {
+                    std::lock_guard<std::mutex> lock(g_search_mu);
+                    index_peers = g_search_idx.IndexPeers();
+                    for (const auto& p : index_peers) add_ep(p);
+                    for (const auto& p : cat.Peers()) add_ep(p);
+                }
+                {
+                    std::lock_guard<std::mutex> plock(g_swarm.pex_mu);
+                    for (const auto& h : g_swarm.pex.Recent(ConnNowMs())) add_ep(h.endpoint);
+                }
+                SearchQuery sq;
+                std::string perr;
+                ParseSearchQuery(q, sq, perr);
+                sq.filters.object_kind = "BOUNTY";
+                sq.scope = SearchScope::NETWORK;
+                SearchJob job;
+                {
+                    std::lock_guard<std::mutex> lock(g_search_mu);
+                    job = g_search_rt.Start(sq, {}, ConnNowMs());
+                }
+                Pq1Context pq;
+                std::string tls_err;
+                const fs::path pinfile = HelperDir(cat) / "tls" / "pins.json";
+                const bool pq_ok = LoadPq1Identity(pq, HelperDir(cat), tls_err);
+                UniValue qbody(UniValue::VOBJ);
+                qbody.pushKV("text", sq.text);
+                qbody.pushKV("limit", sq.limit);
+                qbody.pushKV("ttl", SEARCH_TTL_DEFAULT);
+                qbody.pushKV("query_id", job.query_id);
+                qbody.pushKV("scope", "LOCAL");
+                UniValue filters(UniValue::VOBJ);
+                filters.pushKV("object_kind", "BOUNTY");
+                qbody.pushKV("filters", filters);
+                int index_queried = 0;
+                int responses = 0;
+                int timed = 0;
+                UniValue extra(UniValue::VARR);
+                for (const auto& ep : fanout) {
+                    {
+                        std::lock_guard<std::mutex> cl(g_search_mu);
+                        if (g_search_rt.IsCancelled(job.query_id)) break;
+                    }
+                    if (!pq_ok) {
+                        ++timed;
+                        continue;
+                    }
+                    UniValue reply;
+                    bool to = false;
+                    std::string perr2;
+                    const bool is_index = std::find(index_peers.begin(), index_peers.end(), ep) != index_peers.end();
+                    if (QuerySearchPeer(pq, pinfile, ep, qbody, reply, to, perr2)) {
+                        ++responses;
+                        if (is_index) ++index_queried;
+                        auto take = [&](const UniValue& arr) {
+                            if (!arr.isArray()) return;
+                            for (const auto& card : arr.getValues()) {
+                                if (!card.isObject()) continue;
+                                const std::string kind =
+                                    card.exists("object_kind") ? card["object_kind"].get_str() : std::string{};
+                                if (!kind.empty() && kind != "BOUNTY") continue;
+                                extra.push_back(card);
+                            }
+                        };
+                        if (reply.exists("results")) take(reply["results"]);
+                        if (reply.exists("records")) take(reply["records"]);
+                    } else if (to) {
+                        ++timed;
+                    }
+                }
+                {
+                    std::lock_guard<std::mutex> lock(g_search_mu);
+                    const auto local_hits = g_search_idx.Search(sq, ConnNowMs());
+                    UniValue arr = result.exists("results") && result["results"].isArray() ? result["results"]
+                                                                                            : UniValue(UniValue::VARR);
+                    std::set<std::string> seen;
+                    for (const auto& r : arr.getValues()) {
+                        if (r.exists("bounty_id") && r["bounty_id"].isStr()) seen.insert(r["bounty_id"].get_str());
+                    }
+                    for (const auto& h : local_hits) {
+                        if (h.rec.object_kind != "BOUNTY") continue;
+                        if (!h.rec.bounty_id.empty() && seen.count(h.rec.bounty_id)) continue;
+                        arr.push_back(SearchRecordToJson(h.rec));
+                        if (!h.rec.bounty_id.empty()) seen.insert(h.rec.bounty_id);
+                    }
+                    for (const auto& card : extra.getValues()) {
+                        const std::string bid =
+                            card.exists("bounty_id") && card["bounty_id"].isStr() ? card["bounty_id"].get_str() : "";
+                        if (!bid.empty() && seen.count(bid)) continue;
+                        arr.push_back(card);
+                        if (!bid.empty()) seen.insert(bid);
+                    }
+                    result.pushKV("results", arr);
+                    g_search_rt.Finish(job);
+                }
+                result.pushKV("complete", false);
+                result.pushKV("global_complete", false);
+                result.pushKV("index_peers_configured", static_cast<int>(index_peers.size()));
+                result.pushKV("index_peers_queried", index_queried);
+                result.pushKV("responses_received", responses);
+                result.pushKV("timed_out", timed);
+                result.pushKV("query_id", job.query_id);
+                result.pushKV("fanout_attempted", true);
+            }
+        }
+        return ok;
+    }
+
     if (method == "getmodelnetworkinfo" || method == "getmodelcryptoinfo") {
         result.pushKV("schema_version", 2);
         result.pushKV("enabled", true);
@@ -2954,6 +3103,10 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             qbody.pushKV("query_id", job.query_id);
             qbody.pushKV("scope", "LOCAL");
             for (const auto& ep : fanout) {
+                {
+                    std::lock_guard<std::mutex> cl(g_search_mu);
+                    if (g_search_rt.IsCancelled(job.query_id)) break;
+                }
                 if (!pq_ok) {
                     NoteSearchPeerTimeout(job.coverage);
                     continue;
@@ -3071,6 +3224,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("remote_count", job.coverage.responses_received);
         result.pushKV("note", "current network view; not a complete global directory");
         result.pushKV("automatic_spend_atoms", 0);
+        g_search_rt.Finish(job);
         return true;
     }
     if (method == "getmodelsearchrecord") {
@@ -3155,7 +3309,38 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             return false;
         }
         std::lock_guard<std::mutex> lock(g_search_mu);
-        if (!g_search_idx.Tombstone(id, 999999, ConnNowMs(), err)) {
+        const auto* existing = g_search_idx.Get(id);
+        if (!existing) {
+            err_code = "NOT_FOUND";
+            return false;
+        }
+        if (!existing->signed_ok) {
+            g_search_idx.Hide(id, true);
+            result.pushKV("schema_version", 2);
+            result.pushKV("tombstone", false);
+            result.pushKV("hidden_local", true);
+            result.pushKV("guaranteed_global_delete", false);
+            return true;
+        }
+        ModelSearchRecord t = *existing;
+        t.tombstone = true;
+        t.metadata_sequence = existing->metadata_sequence + 1;
+        std::vector<unsigned char> pk, sk;
+        Digest48 sid;
+        if (!LoadOrCreateResearchIdentity(HelperDir(cat), pk, sk, sid, err)) {
+            err_code = "REJECTED";
+            return false;
+        }
+        if (t.signer_id != sid) {
+            err_code = "REJECTED";
+            err = "wrong signer";
+            return false;
+        }
+        if (!SignSearchRecord(t, Span<const unsigned char>{sk.data(), sk.size()}, err)) {
+            err_code = "REJECTED";
+            return false;
+        }
+        if (!g_search_idx.Put(t, ConnNowMs(), err)) {
             err_code = "REJECTED";
             return false;
         }

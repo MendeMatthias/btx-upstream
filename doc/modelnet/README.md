@@ -167,6 +167,8 @@ In-tree capability bits are not CSV PASS and not a B0 rewrite. The bar is
 | [web-bridge-boundary.md](web-bridge-boundary.md) | Optional browser edge |
 | [propagation.md](propagation.md) | Demand-seed default, preserve-rare, release (D11) |
 | [rpc.md](rpc.md) | JSON-RPC catalogue — includes search/directory/indexer methods |
+| [../bounties.md](../bounties.md) | Model bounties lifecycle, escrow, bridge, GUI |
+| [../bounty-rpc.md](../bounty-rpc.md) | Bounty RPC names and contracts |
 | [http.md](http.md) | PQ1 `/btx-model/2/` peer API |
 | [swarm.md](swarm.md) | Rarest-first swarm, endgame, partial serve |
 | [connectivity.md](connectivity.md) | NAT, relay, hole punch, provider routing |

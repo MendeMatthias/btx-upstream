@@ -57,6 +57,12 @@ enum class ResourceKind : uint8_t {
     CIRCLE = 6,
     ALIAS = 7,
     PROVIDER = 8,
+    BOUNTY = 9,
+    BOUNTY_TERMS = 10,
+    FUNDING_ROUND = 11,
+    SUBMISSION = 12,
+    EVALUATION = 13,
+    AWARD = 14,
 };
 
 constexpr uint8_t RESOURCE_VERSION = 1;

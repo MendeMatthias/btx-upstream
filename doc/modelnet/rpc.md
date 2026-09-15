@@ -380,6 +380,16 @@ observations are not wallet authority. `automatic_spend_atoms` is 0.
 See [model-economy.md](model-economy.md), [feed.md](feed.md),
 [explorers.md](explorers.md).
 
+## Model bounties (proposed 0.34.7 contract)
+
+Demand-side bounty RPCs (draft terms through refund recovery and agent
+mandates) are documented separately — they extend the model plane but use
+wallet boundaries for money:
+
+- Overview: [../bounties.md](../bounties.md)
+- Full method reference: [../bounty-rpc.md](../bounty-rpc.md)
+- Machine inventory: [../../contrib/modelnet/bounty/schemas/rpc-catalog.json](../../contrib/modelnet/bounty/schemas/rpc-catalog.json)
+
 Example:
 
 ```bash
