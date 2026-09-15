@@ -32,8 +32,9 @@ struct BrowserBridgeResponse {
  * loopback process (contrib/modelbridge). It is not a native trust root, not a
  * wallet proxy, and not permission to restore classical TLS in the helper.
  *
- * GET /health, GET /open?uri=, optional read-only GET /api/v1/ (no catalog;
- * decode-only stubs — use btx-modeld unix RPC for search/directory), and a bare
+ * GET /health, GET /open?uri=, optional read-only GET /api/v1/ (decode-only
+ * unless BTX_BRIDGE_RPC_SOCKET points at btx-modeld unix RPC; never wallet),
+ * and a bare btx:// token path. Every JSON body discloses pq_end_to_end=false,
  * btx:// token path. Every JSON body discloses pq_end_to_end=false,
  * native_fallback=false, wallet=false.
  *

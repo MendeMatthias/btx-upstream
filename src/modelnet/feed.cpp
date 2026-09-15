@@ -257,12 +257,47 @@ std::vector<FeedEvent> FeedStore::Query(const FeedQuery& q, int64_t now_ms, std:
                 continue;
             }
             break;
+        case FeedMode::FUNDED_AWAITING_RELEASE:
+            if (ev.event_type != FeedEventType::RELEASE_FUNDED) continue;
+            break;
+        case FeedMode::NEARLY_FUNDED:
+            if (!(ev.has_campaign || ev.event_type == FeedEventType::RELEASE_CAMPAIGN_CREATED ||
+                  ev.event_type == FeedEventType::RELEASE_FUNDING_CHANGED)) {
+                continue;
+            }
+            break;
+        case FeedMode::TRENDING:
+            break;
+        case FeedMode::RARE:
+            if (ev.event_type != FeedEventType::MODEL_BECAME_FRAGILE && ev.event_type != FeedEventType::MODEL_PUBLISHED) {
+                continue;
+            }
+            break;
+        case FeedMode::RECENTLY_AVAILABLE:
+            if (ev.event_type != FeedEventType::MODEL_BECAME_AVAILABLE &&
+                ev.event_type != FeedEventType::MODEL_PUBLISHED) {
+                continue;
+            }
+            break;
         default:
             break;
         }
         all.push_back(ev);
     }
-    std::sort(all.begin(), all.end(), [](const FeedEvent& a, const FeedEvent& b) {
+    std::sort(all.begin(), all.end(), [&](const FeedEvent& a, const FeedEvent& b) {
+        if (q.mode == FeedMode::TRENDING) {
+            if (a.sources_observed != b.sources_observed) return a.sources_observed > b.sources_observed;
+        }
+        if (q.mode == FeedMode::NEARLY_FUNDED && a.has_campaign && b.has_campaign) {
+            auto rem = [](const ReleaseCampaign& c) {
+                if (c.target_atoms <= 0) return int64_t{0};
+                const int64_t funded = c.funded_atoms > 0 ? c.funded_atoms : 0;
+                return RemainingAtoms(c.target_atoms, funded);
+            };
+            const int64_t ra = rem(a.campaign);
+            const int64_t rb = rem(b.campaign);
+            if (ra != rb) return ra < rb && ra > 0;
+        }
         if (a.published_at != b.published_at) return a.published_at > b.published_at;
         if (a.first_seen_at != b.first_seen_at) return a.first_seen_at > b.first_seen_at;
         return a.event_id < b.event_id;

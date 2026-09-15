@@ -3,13 +3,19 @@
 // file COPYING or https://opensource.org/license/mit/.
 
 #include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <modelnet/catalog.h>
+#include <modelnet/crypto.h>
 #include <modelnet/economy.h>
+#include <modelnet/helper.h>
 #include <modelnet/identity.h>
 #include <modelnet/release.h>
 #include <modelnet/search.h>
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+
+#include <string>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(modelnet_economy_tests, BasicTestingSetup)
 
@@ -193,6 +199,103 @@ BOOST_AUTO_TEST_CASE(econ_feed_04_nearly_funded_order)
     BOOST_CHECK_EQUAL(static_cast<int>(v[0].hit.rec.model_id.data[0]), 2);
     BOOST_CHECK_EQUAL(static_cast<int>(v[1].hit.rec.model_id.data[0]), 3);
     BOOST_CHECK_EQUAL(static_cast<int>(v[2].hit.rec.model_id.data[0]), 1);
+}
+
+BOOST_AUTO_TEST_CASE(econ_cipher_wrap_unwrap)
+{
+    using namespace modelnet;
+    std::vector<unsigned char> secret(32, 0x5a);
+    std::vector<unsigned char> plain(256, 0x11);
+    plain[0] = 'S';
+    std::vector<unsigned char> wrapped;
+    std::string err;
+    BOOST_REQUIRE(WrapBtxEnc2(secret, plain, wrapped, err));
+    BOOST_CHECK(LooksLikeBtxEnc2(wrapped));
+    BOOST_CHECK(!LooksLikeBtxEnc2(plain));
+    std::vector<unsigned char> out;
+    BOOST_REQUIRE(UnwrapBtxEnc2(secret, wrapped, out, err));
+    BOOST_CHECK(out == plain);
+    std::vector<unsigned char> bad(32, 0x00);
+    std::vector<unsigned char> fail;
+    BOOST_CHECK(!UnwrapBtxEnc2(bad, wrapped, fail, err));
+    BOOST_CHECK(fail.empty());
+}
+
+BOOST_AUTO_TEST_CASE(econ_chain_join_json)
+{
+    using namespace modelnet;
+    UniValue card(UniValue::VOBJ);
+    UniValue rel(UniValue::VOBJ);
+    rel.pushKV("target_atoms", 500);
+    rel.pushKV("funded_atoms", 0);
+    rel.pushKV("release_id", std::string(96, 'a'));
+    card.pushKV("release", rel);
+    card.pushKV("fundable_now", true);
+    UniValue acts(UniValue::VARR);
+    acts.push_back("FUND_RELEASE");
+    card.pushKV("actions", acts);
+    UniValue remote(UniValue::VOBJ);
+    remote.pushKV("confirmed_known", true);
+    remote.pushKV("funding_source", "OBSERVED_NETWORK_STATE");
+    remote.pushKV("confirmed_funded_atoms", 500);
+    ApplyChainObservationJson(card, remote);
+    BOOST_CHECK(card["fundable_now"].isTrue());
+    BOOST_CHECK_EQUAL(card["release"]["funded_atoms"].getInt<int64_t>(), 0);
+
+    UniValue obs(UniValue::VOBJ);
+    obs.pushKV("confirmed_known", true);
+    obs.pushKV("funding_source", "CHAIN_OBSERVATION");
+    obs.pushKV("confirmed_funded_atoms", 500);
+    obs.pushKV("pending_funded_atoms", 0);
+    ApplyChainObservationJson(card, obs);
+    BOOST_CHECK_EQUAL(card["release"]["funding_source"].get_str(), "CHAIN_OBSERVATION");
+    BOOST_CHECK_EQUAL(card["release"]["confirmed_funded_atoms"].getInt<int64_t>(), 500);
+    BOOST_CHECK(card["fundable_now"].isFalse());
+    BOOST_CHECK_EQUAL(card["lifecycle_state"].get_str(), "FUNDED_AWAITING_RELEASE");
+}
+
+BOOST_AUTO_TEST_CASE(econ_ingest_rejects_remote_unsigned)
+{
+    using namespace modelnet;
+    const fs::path tmp = m_args.GetDataDirBase() / "ingest-chain";
+    ModelCatalog cat{tmp, 1 << 20};
+    UniValue obs(UniValue::VOBJ);
+    obs.pushKV("confirmed_known", true);
+    obs.pushKV("funding_source", "OBSERVED_NETWORK_STATE");
+    obs.pushKV("confirmed_funded_atoms", 999);
+    obs.pushKV("release_id", std::string(96, 'a'));
+    UniValue req(UniValue::VOBJ);
+    UniValue params(UniValue::VARR);
+    params.push_back(obs);
+    req.pushKV("method", "ingestchainfundingobservation");
+    req.pushKV("params", params);
+    UniValue result;
+    std::string code, err;
+    BOOST_REQUIRE(DispatchHelperRpc(cat, req, result, code, err));
+    BOOST_CHECK(result.exists("accepted"));
+    BOOST_CHECK(result["accepted"].isFalse());
+}
+
+BOOST_AUTO_TEST_CASE(econ_ciphertext_needs_provider)
+{
+    using namespace modelnet;
+    SearchHit h;
+    h.rec.display_name = "Enc";
+    h.rec.canonical_name = "Enc";
+    ReleaseCampaign c;
+    c.release_id.data[0] = 9;
+    c.model_id.data[0] = 9;
+    c.artifact_id.data[0] = 9;
+    c.target_atoms = 10;
+    FundingObservation f;
+    f.ciphertext_providers_observed = 0;
+    auto e = ComposeEconomyEntry(h, &c, f);
+    BOOST_CHECK(!e.ciphertext_available);
+    BOOST_CHECK(!e.ciphertext_cacheable);
+    f.ciphertext_providers_observed = 1;
+    e = ComposeEconomyEntry(h, &c, f);
+    BOOST_CHECK(e.ciphertext_available);
+    BOOST_CHECK(e.ciphertext_cacheable);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

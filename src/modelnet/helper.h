@@ -85,6 +85,8 @@ struct RetrieveProgress {
     std::atomic<uint32_t> piece_index{0};
     std::atomic<int> inflight{0};
     std::atomic<int> peer_retries{0};
+    /** Extra-peer pieces that finished the file after the primary contact failed. */
+    std::atomic<int> peer_failovers{0};
     /** Unix epoch ms; updated only when bytes_committed changes. */
     std::atomic<uint64_t> last_commit_ms{0};
 };

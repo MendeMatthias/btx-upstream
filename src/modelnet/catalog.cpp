@@ -35,7 +35,7 @@ FileRole RoleFromRelPath(const std::string& rel, bool& skip)
         skip = true;
         return FileRole::WEIGHTS;
     }
-    if (lower.ends_with(".safetensors") || lower.ends_with(".gguf")) return FileRole::WEIGHTS;
+    if (lower.ends_with(".safetensors") || lower.ends_with(".gguf") || lower.ends_with(".btxenc")) return FileRole::WEIGHTS;
     if (lower.find("tokenizer") != std::string::npos || lower == "vocab.json" ||
         lower == "merges.txt" || lower == "special_tokens_map.json") {
         return FileRole::TOKENIZER;

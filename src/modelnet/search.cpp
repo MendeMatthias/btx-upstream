@@ -499,7 +499,7 @@ bool ParseSearchQuery(const UniValue& o, SearchQuery& q, std::string& err)
         if (f.exists("min_provider_count")) q.filters.min_provider_count = f["min_provider_count"].getInt<int>();
         if (f.exists("pinned")) q.filters.pinned = f["pinned"].get_bool();
         if (f.exists("seeded")) q.filters.seeded = f["seeded"].get_bool();
-        if (f.exists("locally_available")) q.filters.locally_available = f["locally_available"].get_bool();
+        if (f.exists("locally_verified")) q.filters.locally_verified = f["locally_verified"].get_bool();
         if (f.exists("funding_only")) q.filters.funding_only = f["funding_only"].get_bool();
         if (f.exists("released_only")) q.filters.released_only = f["released_only"].get_bool();
         if (f.exists("unreleased_only")) q.filters.unreleased_only = f["unreleased_only"].get_bool();
@@ -1104,6 +1104,16 @@ SearchRequest ParseSearchRequest(const UniValue& o, std::string& err)
         for (const auto& t : o["text_terms"].getValues()) {
             if (t.isStr()) r.text_terms.push_back(NormalizeSearchText(t.get_str()));
         }
+    }
+    if (o.exists("sort_hint") && o["sort_hint"].isStr()) ParseSearchSort(o["sort_hint"].get_str(), r.sort_hint);
+    if (o.exists("sort") && o["sort"].isStr()) ParseSearchSort(o["sort"].get_str(), r.sort_hint);
+    if (o.exists("filters") && o["filters"].isObject()) {
+        SearchQuery q;
+        UniValue wrap(UniValue::VOBJ);
+        wrap.pushKV("filters", o["filters"]);
+        std::string perr;
+        ParseSearchQuery(wrap, q, perr);
+        r.filters = q.filters;
     }
     return r;
 }

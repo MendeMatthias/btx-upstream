@@ -38,6 +38,14 @@ bool XChaCha20Poly1305Decrypt(Span<const unsigned char> key,
 
 Hash32 Sha256(Span<const unsigned char> data);
 
+/** BTXENC2 envelope: magic "BTXENC2\\0" || nonce24 || XChaCha20-Poly1305(ct||tag).
+ *  Key is HKDF-SHA384(secret32, info="BTX/ReleaseCipher/v1")[:32]. Never stores the secret. */
+bool LooksLikeBtxEnc2(Span<const unsigned char> bytes);
+bool WrapBtxEnc2(Span<const unsigned char> secret32, Span<const unsigned char> plaintext,
+                 std::vector<unsigned char>& wrapped, std::string& err);
+bool UnwrapBtxEnc2(Span<const unsigned char> secret32, Span<const unsigned char> wrapped,
+                    std::vector<unsigned char>& plaintext, std::string& err);
+
 } // namespace modelnet
 
 #endif // BITCOIN_MODELNET_CRYPTO_H

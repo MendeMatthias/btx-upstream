@@ -112,6 +112,8 @@ MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-release-discovery.sh" || die "e2e-r
 MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-release-transition.sh" || die "e2e-release-transition"
 "$ROOT/contrib/modelnet/e2e-economy-gui.sh" || die "e2e-economy-gui"
 MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-economy-three-host.sh" || die "e2e-economy-three-host"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-economy-four-host.sh" || die "e2e-economy-four-host"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-encrypted-cache.sh" || die "e2e-encrypted-cache"
 BIN="$BIN" "$ROOT/contrib/modelnet/e2e-economy-regtest.sh" || die "e2e-economy-regtest"
 
 step "QUIC deferred + Apple pkg recipe"

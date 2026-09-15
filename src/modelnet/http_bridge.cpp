@@ -3,9 +3,11 @@
 // file COPYING or https://opensource.org/license/mit/.
 
 #include <modelnet/http_bridge.h>
+#include <modelnet/helper.h>
 
 #include <common/url.h>
 #include <univalue.h>
+#include <util/fs.h>
 #include <util/strencodings.h>
 
 #include <algorithm>
@@ -24,6 +26,15 @@ constexpr const char* BRIDGE_NOTE =
     "Browser edge is not end-to-end PQ. Upstream to BTX remains PQ1 or unix RPC.";
 
 constexpr const char* PUBLIC_DOWNLOAD_ENV = "BTX_BRIDGE_PUBLIC_DOWNLOAD";
+constexpr const char* BRIDGE_RPC_ENV = "BTX_BRIDGE_RPC_SOCKET";
+
+bool BridgeReadRpc(const std::string& method, const UniValue& params, UniValue& result)
+{
+    const char* sock = std::getenv(BRIDGE_RPC_ENV);
+    if (sock == nullptr || sock[0] == '\0') return false;
+    std::string err;
+    return CallUnixRpc(fs::PathFromString(sock), method, params, result, err);
+}
 
 constexpr const char* WEB_COMPAT =
     "WEB COMPATIBILITY - NOT NATIVE END-TO-END PQ";
@@ -342,8 +353,22 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
     };
 
     if (route == "/api/v1/search") {
-        UniValue obj = ApiV1Shell();
         const std::string q = QueryParam(path, "q");
+        UniValue params(UniValue::VARR);
+        UniValue req(UniValue::VOBJ);
+        req.pushKV("text", q);
+        params.push_back(std::move(req));
+        UniValue rpc;
+        if (BridgeReadRpc("searchmodels", params, rpc) && rpc.isObject()) {
+            UniValue obj = ApiV1Shell();
+            obj.pushKV("text", q);
+            if (rpc.exists("results")) obj.pushKV("results", rpc["results"]);
+            else obj.pushKV("results", UniValue(UniValue::VARR));
+            obj.pushKV("from_helper", true);
+            obj.pushKV("wallet", false);
+            return finish(std::move(obj), 200, true);
+        }
+        UniValue obj = ApiV1Shell();
         obj.pushKV("text", q);
         UniValue results(UniValue::VARR);
         TryAppendDecodeResult(results, q);
@@ -353,6 +378,17 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
     }
 
     if (route == "/api/v1/models") {
+        UniValue params(UniValue::VARR);
+        params.push_back(UniValue(UniValue::VOBJ));
+        UniValue rpc;
+        if (BridgeReadRpc("getmodeldirectory", params, rpc) && rpc.isObject()) {
+            UniValue obj = ApiV1Shell();
+            if (rpc.exists("results")) obj.pushKV("results", rpc["results"]);
+            else obj.pushKV("results", UniValue(UniValue::VARR));
+            obj.pushKV("from_helper", true);
+            obj.pushKV("wallet", false);
+            return finish(std::move(obj), 200, true);
+        }
         UniValue obj = ApiV1Shell();
         obj.pushKV("results", UniValue(UniValue::VARR));
         return finish(std::move(obj), 200, true);
@@ -368,6 +404,15 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
             return finish(std::move(obj), 404, false);
         }
         if (economy) {
+            UniValue params(UniValue::VARR);
+            params.push_back(id);
+            UniValue rpc;
+            if (BridgeReadRpc("getmodeleconomyentry", params, rpc) && rpc.isObject()) {
+                UniValue obj = rpc;
+                obj.pushKV("from_helper", true);
+                obj.pushKV("wallet", false);
+                return finish(std::move(obj), 200, true);
+            }
             UniValue obj = ApiV1Shell();
             obj.pushKV("authoritative", false);
             obj.pushKV("native_rpc", "getmodeleconomyentry");
@@ -398,18 +443,45 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
     }
 
     if (route == "/api/v1/publishers") {
+        UniValue params(UniValue::VARR);
+        UniValue rpc;
+        if (BridgeReadRpc("searchpublishers", params, rpc) && rpc.isObject()) {
+            UniValue obj = rpc;
+            obj.pushKV("from_helper", true);
+            obj.pushKV("wallet", false);
+            return finish(std::move(obj), 200, true);
+        }
         UniValue obj = ApiV1Shell();
         obj.pushKV("publishers", UniValue(UniValue::VARR));
         return finish(std::move(obj), 200, true);
     }
 
     if (route == "/api/v1/collections") {
+        UniValue params(UniValue::VARR);
+        UniValue rpc;
+        if (BridgeReadRpc("searchcollections", params, rpc) && rpc.isObject()) {
+            UniValue obj = rpc;
+            obj.pushKV("from_helper", true);
+            obj.pushKV("wallet", false);
+            return finish(std::move(obj), 200, true);
+        }
         UniValue obj = ApiV1Shell();
         obj.pushKV("collections", UniValue(UniValue::VARR));
         return finish(std::move(obj), 200, true);
     }
 
     if (route == "/api/v1/releases") {
+        UniValue params(UniValue::VARR);
+        UniValue req(UniValue::VOBJ);
+        req.pushKV("scope", "NETWORK");
+        params.push_back(std::move(req));
+        UniValue rpc;
+        if (BridgeReadRpc("getrecentreleases", params, rpc) && rpc.isObject()) {
+            UniValue obj = rpc;
+            obj.pushKV("from_helper", true);
+            obj.pushKV("wallet", false);
+            return finish(std::move(obj), 200, true);
+        }
         UniValue obj = ApiV1Shell();
         obj.pushKV("results", UniValue(UniValue::VARR));
         obj.pushKV("native_rpc", "getrecentreleases / getmodelfeed");
@@ -418,6 +490,21 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
 
     if (route == "/api/v1/feed" || route == "/api/v1/feed/new" || route == "/api/v1/feed/releases" ||
         route == "/api/v1/feed/unlocked") {
+        UniValue params(UniValue::VARR);
+        UniValue req(UniValue::VOBJ);
+        std::string mode = "NEWEST";
+        if (route == "/api/v1/feed/releases") mode = "NEW_RELEASE_CAMPAIGNS";
+        else if (route == "/api/v1/feed/unlocked") mode = "RECENTLY_UNLOCKED";
+        req.pushKV("mode", mode);
+        params.push_back(std::move(req));
+        UniValue rpc;
+        if (BridgeReadRpc("getmodelfeed", params, rpc) && rpc.isObject()) {
+            UniValue obj = rpc;
+            obj.pushKV("from_helper", true);
+            obj.pushKV("wallet", false);
+            obj.pushKV("funding_writes", false);
+            return finish(std::move(obj), 200, true);
+        }
         UniValue obj = ApiV1Shell();
         obj.pushKV("items", UniValue(UniValue::VARR));
         obj.pushKV("coverage", "incomplete");

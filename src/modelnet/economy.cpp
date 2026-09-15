@@ -274,15 +274,14 @@ ModelEconomyEntry ComposeEconomyEntry(const SearchHit& h, const ReleaseCampaign*
         e.pledged_percent_known = FundedPercentMilli(e.campaign.pledged_atoms, e.campaign.target_atoms, e.pledged_percent_milli);
     }
 
-    e.ciphertext_available = fund.ciphertext_providers_observed > 0 ||
-                             (e.has_campaign && !e.campaign.artifact_id.IsNull() &&
-                              fund.ciphertext_providers_observed >= 0 && fund.funding_source != "UNKNOWN" &&
-                              fund.ciphertext_providers_observed > 0);
-    if (!e.ciphertext_available && e.has_campaign && !e.campaign.artifact_id.IsNull() &&
-        fund.ciphertext_providers_observed > 0) {
-        e.ciphertext_available = true;
+    e.ciphertext_available = false;
+    if (e.has_campaign) {
+        const bool have_id = !e.campaign.artifact_id.IsNull() || !e.campaign.ciphertext_artifact_id.IsNull();
+        if (have_id) {
+            if (h.local.known || h.local.downloaded || h.local.partial) e.ciphertext_available = true;
+            if (fund.ciphertext_providers_observed > 0) e.ciphertext_available = true;
+        }
     }
-    if (fund.ciphertext_providers_observed > 0) e.ciphertext_available = true;
 
     e.downloadable_plaintext = LifecycleIsPublic(e.lifecycle) &&
                                 (h.local.downloaded || h.health.providers_observed > 0 || h.local.known);
@@ -489,6 +488,7 @@ UniValue EconomyReleaseJson(const ModelEconomyEntry& e)
     rel.pushKV("plaintext_verified", e.campaign.plaintext_verified);
     rel.pushKV("ciphertext_artifact_id", e.campaign.ciphertext_artifact_id.IsNull() ? e.campaign.artifact_id.Hex()
                                                                                        : e.campaign.ciphertext_artifact_id.Hex());
+    if (!e.campaign.output_script_hex.empty()) rel.pushKV("output_script", e.campaign.output_script_hex);
     rel.pushKV("ciphertext_providers_observed", e.fund.ciphertext_providers_observed);
     rel.pushKV("funding_source", e.fund.funding_source.empty() ? "UNKNOWN" : e.fund.funding_source);
     rel.pushKV("helper_observation", e.fund.funding_source != "CHAIN_OBSERVATION");
@@ -594,6 +594,111 @@ bool EconomyTouchesMonetaryConsensus()
 int64_t AutomaticSpendAtoms()
 {
     return 0;
+}
+
+void ApplyChainObservationJson(UniValue& card, const UniValue& obs)
+{
+    if (!card.isObject() || !obs.isObject()) return;
+    if (!obs.exists("funding_source") || !obs["funding_source"].isStr() ||
+        obs["funding_source"].get_str() != "CHAIN_OBSERVATION") {
+        return; // remote unsigned / helper-only claims are not chain authority
+    }
+    const bool confirmed_known = obs.exists("confirmed_known") && obs["confirmed_known"].get_bool();
+    if (!confirmed_known && !(obs.exists("chain_height_known") && obs["chain_height_known"].get_bool())) {
+        return;
+    }
+    auto patch_rel = [&](UniValue& rel) {
+        if (!rel.isObject()) return;
+        if (confirmed_known) {
+            const int64_t confirmed = obs.exists("confirmed_funded_atoms") ? obs["confirmed_funded_atoms"].getInt<int64_t>() : 0;
+            const int64_t pending = obs.exists("pending_funded_atoms") ? obs["pending_funded_atoms"].getInt<int64_t>() : 0;
+            const int64_t target = rel.exists("target_atoms") ? rel["target_atoms"].getInt<int64_t>() : 0;
+            rel.pushKV("confirmed_funded_atoms", confirmed);
+            rel.pushKV("pending_funded_atoms", pending);
+            rel.pushKV("funded_atoms", confirmed);
+            rel.pushKV("value_known", target > 0);
+            rel.pushKV("funding_source", "CHAIN_OBSERVATION");
+            rel.pushKV("helper_observation", false);
+            rel.pushKV("chain_observation", true);
+            if (target > 0) {
+                rel.pushKV("remaining_atoms", RemainingAtoms(target, confirmed));
+                int64_t milli = 0;
+                if (FundedPercentMilli(confirmed, target, milli)) {
+                    rel.pushKV("funded_percent", MilliToDisplayPercent(milli));
+                    rel.pushKV("funded_percent_milli", milli);
+                }
+            }
+        }
+        if (obs.exists("wallet_contributor")) rel.pushKV("wallet_local_state", obs["wallet_contributor"].get_bool());
+        if (obs.exists("refund_status") && obs["refund_status"].isStr()) {
+            rel.pushKV("refund_status", obs["refund_status"].get_str());
+        }
+        if (obs.exists("claim_txid") && obs["claim_txid"].isStr() && !obs["claim_txid"].get_str().empty()) {
+            rel.pushKV("claim_txid", obs["claim_txid"].get_str());
+        }
+        if (obs.exists("chain_height")) rel.pushKV("latest_funding_height", obs["chain_height"].getInt<int64_t>());
+    };
+    auto apply_card_flags = [&](UniValue& o) {
+        if (!o.isObject() || !confirmed_known) return;
+        UniValue* relp = nullptr;
+        UniValue rel_copy;
+        if (o.exists("release") && o["release"].isObject()) {
+            rel_copy = o["release"].get_obj();
+            relp = &rel_copy;
+        } else {
+            relp = &o;
+        }
+        const int64_t target = relp->exists("target_atoms") ? (*relp)["target_atoms"].getInt<int64_t>() : 0;
+        const int64_t confirmed = obs.exists("confirmed_funded_atoms") ? obs["confirmed_funded_atoms"].getInt<int64_t>() : 0;
+        if (target > 0 && confirmed >= target) {
+            o.pushKV("fundable_now", false);
+            o.pushKV("lifecycle_state", "FUNDED_AWAITING_RELEASE");
+            UniValue acts(UniValue::VARR);
+            bool has_wait = false;
+            if (o.exists("actions") && o["actions"].isArray()) {
+                for (const auto& a : o["actions"].getValues()) {
+                    if (a.isStr() && a.get_str() == "FUND_RELEASE") continue;
+                    if (a.isStr() && a.get_str() == "WAIT_FOR_UNLOCK") has_wait = true;
+                    acts.push_back(a);
+                }
+            }
+            if (!has_wait) acts.push_back("WAIT_FOR_UNLOCK");
+            o.pushKV("actions", acts);
+        }
+    };
+    if (card.exists("release") && card["release"].isObject()) {
+        UniValue rel = card["release"].get_obj();
+        patch_rel(rel);
+        card.pushKV("release", rel);
+    } else {
+        patch_rel(card);
+    }
+    if (card.exists("entry") && card["entry"].isObject()) {
+        UniValue e = card["entry"].get_obj();
+        if (e.exists("release") && e["release"].isObject()) {
+            UniValue rel = e["release"].get_obj();
+            patch_rel(rel);
+            e.pushKV("release", rel);
+        } else {
+            patch_rel(e);
+        }
+        apply_card_flags(e);
+        card.pushKV("entry", e);
+    }
+    if (card.exists("economy") && card["economy"].isObject()) {
+        UniValue e = card["economy"].get_obj();
+        if (e.exists("release") && e["release"].isObject()) {
+            UniValue rel = e["release"].get_obj();
+            patch_rel(rel);
+            e.pushKV("release", rel);
+        }
+        apply_card_flags(e);
+        card.pushKV("economy", e);
+    }
+    apply_card_flags(card);
+    if (obs.exists("wallet_contributor") && obs["wallet_contributor"].isTrue()) {
+        card.pushKV("requires_wallet", true);
+    }
 }
 
 } // namespace modelnet

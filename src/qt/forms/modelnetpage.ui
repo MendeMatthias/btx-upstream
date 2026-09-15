@@ -160,6 +160,16 @@
            <string>Releases</string>
           </attribute>
          </widget>
+         <widget class="QWidget" name="tabScopePublishers">
+          <attribute name="title">
+           <string>Publishers</string>
+          </attribute>
+         </widget>
+         <widget class="QWidget" name="tabScopeCollections">
+          <attribute name="title">
+           <string>Collections</string>
+          </attribute>
+         </widget>
         </widget>
        </item>
        <item>

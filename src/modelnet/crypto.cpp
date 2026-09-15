@@ -9,6 +9,7 @@
 #include <crypto/hmac_sha384.h>
 #include <crypto/sha256.h>
 #include <crypto/sha384.h>
+#include <random.h>
 #include <support/cleanse.h>
 
 #include <algorithm>
@@ -171,6 +172,73 @@ Hash32 Sha256(Span<const unsigned char> data)
     if (!data.empty()) hasher.Write(data.data(), data.size());
     hasher.Finalize(out.data.data());
     return out;
+}
+
+bool LooksLikeBtxEnc2(Span<const unsigned char> bytes)
+{
+    static const unsigned char magic[8] = {'B', 'T', 'X', 'E', 'N', 'C', '2', 0};
+    return bytes.size() >= 8 + 24 + 16 && std::memcmp(bytes.data(), magic, 8) == 0;
+}
+
+namespace {
+bool ReleaseCipherKey(Span<const unsigned char> secret32, unsigned char key[32], std::string& err)
+{
+    if (secret32.size() != 32) {
+        err = "secret must be 32 bytes";
+        return false;
+    }
+    static const unsigned char info[] = "BTX/ReleaseCipher/v1";
+    const auto okm = HkdfSha384(secret32, Span<const unsigned char>{},
+                                 Span<const unsigned char>{info, sizeof(info) - 1}, 32);
+    if (okm.size() != 32) {
+        err = "hkdf";
+        return false;
+    }
+    std::memcpy(key, okm.data(), 32);
+    return true;
+}
+} // namespace
+
+bool WrapBtxEnc2(Span<const unsigned char> secret32, Span<const unsigned char> plaintext,
+                 std::vector<unsigned char>& wrapped, std::string& err)
+{
+    unsigned char key[32];
+    if (!ReleaseCipherKey(secret32, key, err)) return false;
+    unsigned char nonce[24];
+    GetStrongRandBytes(Span<unsigned char>{nonce, 24});
+    std::vector<unsigned char> ct;
+    if (!XChaCha20Poly1305Encrypt(Span<const unsigned char>{key, 32},
+                                  Span<const unsigned char>{nonce, 24}, {}, plaintext, ct)) {
+        memory_cleanse(key, sizeof(key));
+        err = "encrypt";
+        return false;
+    }
+    wrapped.clear();
+    wrapped.insert(wrapped.end(), {'B', 'T', 'X', 'E', 'N', 'C', '2', 0});
+    wrapped.insert(wrapped.end(), nonce, nonce + 24);
+    wrapped.insert(wrapped.end(), ct.begin(), ct.end());
+    memory_cleanse(key, sizeof(key));
+    return true;
+}
+
+bool UnwrapBtxEnc2(Span<const unsigned char> secret32, Span<const unsigned char> wrapped,
+                    std::vector<unsigned char>& plaintext, std::string& err)
+{
+    if (!LooksLikeBtxEnc2(wrapped)) {
+        err = "not BTXENC2";
+        return false;
+    }
+    unsigned char key[32];
+    if (!ReleaseCipherKey(secret32, key, err)) return false;
+    const auto nonce = Span<const unsigned char>{wrapped.data() + 8, 24};
+    const auto ct = Span<const unsigned char>{wrapped.data() + 32, wrapped.size() - 32};
+    const bool ok = XChaCha20Poly1305Decrypt(Span<const unsigned char>{key, 32}, nonce, {}, ct, plaintext);
+    memory_cleanse(key, sizeof(key));
+    if (!ok) {
+        err = "decrypt failed (wrong secret or corrupt ciphertext)";
+        plaintext.clear();
+    }
+    return ok;
 }
 
 } // namespace modelnet

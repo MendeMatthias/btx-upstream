@@ -34,6 +34,7 @@ struct ReleaseCampaign {
     std::string assurance{"KEY_RELEASE_ONLY"};
     std::string hashlock_algorithm{"SHA256"};
     Digest48 ciphertext_artifact_id;
+    std::string output_script_hex; // P2MR scriptPubKey; hashlock is not in the program bytes
     std::vector<unsigned char> pubkey;
     std::vector<unsigned char> sig;
     bool signed_ok{false};

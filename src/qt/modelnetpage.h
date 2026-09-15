@@ -11,6 +11,7 @@
 #include <univalue.h>
 
 #include <optional>
+#include <cstdint>
 #include <string>
 
 class ClientModel;
@@ -47,6 +48,7 @@ private Q_SLOTS:
     void onResultCopyUri();
     void onResultDetails();
     void onResultFund();
+    void onResultCache();
     void onPublishSearchRecord();
 
 private:
@@ -70,7 +72,9 @@ private:
     void showModelPlan(const QString& full_uri);
     void showModelDetails(const QString& full_uri);
     void showFundPlan(const QString& release_id);
+    void showCachePlan(const QString& release_id);
     void pollCampaign(const QString& id, int attempt);
+    void pollFeedSequence();
     UniValue buildSearchQueryObject(const std::optional<std::string>& scope,
                                     const std::optional<std::string>& sort_override) const;
     int modelsScopeTabIndex() const;
@@ -81,6 +85,7 @@ private:
     UniValue m_last_search_params{UniValue::VNULL};
     std::string m_last_search_method;
     int m_last_results_returned{0};
+    int64_t m_feed_sequence{0};
 };
 
 #endif // BITCOIN_QT_MODELNETPAGE_H

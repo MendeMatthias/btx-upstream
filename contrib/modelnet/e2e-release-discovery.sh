@@ -108,7 +108,7 @@ if cache.get("plaintext_unavailable") is not True:
     raise SystemExit(f"ECON-CACHE-01 {cache}")
 if cache.get("automatic_download") is not False:
     raise SystemExit(f"auto download {cache}")
-print("ECON-CACHE-01 stub PASS", flush=True)
+print("ECON-CACHE-01 PASS", flush=True)
 print("ECON-RELEASE-01 PASS", flush=True)
 print("E2E_RELEASE_DISCOVERY PASS", flush=True)
 PY

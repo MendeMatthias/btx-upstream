@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="${MODELD:-$ROOT/build-gcc13/bin/btx-modeld}"
 SCRATCH="$ROOT/e2e-scratch/disc-failure"
-BYTES=$((16 * 1024 * 1024))
+BYTES=$((32 * 1024 * 1024))
 die() { echo "E2E_DISC_FAIL: $*" >&2; exit 1; }
 [[ -x "$BIN" ]] || die "missing $BIN"
 rm -rf "$SCRATCH"
@@ -16,21 +16,36 @@ python3 "$ROOT/contrib/modelnet/write_safetensors_payload.py" "$SCRATCH/a/src/mo
 pick() { python3 -c 'import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 SEEDER="$(pick)"; PROXY="$(pick)"
 PA=""; PB=""; PP=""
-cleanup() { for p in "$PB" "$PA" "$PP"; do [[ -n "$p" ]] && kill -TERM "$p" 2>/dev/null || true; done; }
+cleanup() {
+  for p in "$PB" "$PA"; do [[ -n "$p" ]] && kill -TERM "$p" 2>/dev/null || true; done
+  [[ -n "$PP" ]] && kill -TERM "$PP" 2>/dev/null || true
+}
 trap cleanup EXIT
 python3 - "$PROXY" "$SEEDER" <<'PY' &
-import socket, sys, threading
+import socket, sys, threading, time
 listen_port, dest = int(sys.argv[1]), int(sys.argv[2])
 ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 ls.bind(("127.0.0.1", listen_port)); ls.listen(32)
+# Shared ceiling so 8 inflight PQ1 sessions cannot finish the payload
+# on loopback before the introducer is killed (DISC-05).
+rate_lock = threading.Lock()
+sent = [0]
+t0 = [time.time()]
+RATE = 1.5 * 1024 * 1024
 def pump(a, b):
     try:
         while True:
-            d = a.recv(65536)
+            d = a.recv(16384)
             if not d:
                 break
             b.sendall(d)
+            with rate_lock:
+                sent[0] += len(d)
+                want = sent[0] / RATE
+                lag = want - (time.time() - t0[0])
+            if lag > 0:
+                time.sleep(min(lag, 0.25))
     except OSError:
         pass
 while True:
@@ -100,7 +115,7 @@ while used() < 4 * 1024 * 1024:
     time.sleep(0.1)
 print("DISC-04 first piece via introducer used_bytes", used(), flush=True)
 rpc(sb, "addmodelnode", ["127.0.0.1:" + seeder])
-os.kill(pp, signal.SIGTERM)
+os.kill(pp, signal.SIGKILL)
 print("DISC-05 introducer killed; independent seeder is now a peer", flush=True)
 try:
     os.kill(pb, 0)

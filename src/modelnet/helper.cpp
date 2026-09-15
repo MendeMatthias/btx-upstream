@@ -1049,6 +1049,7 @@ static QueryDedupe g_search_dedupe;
 static bool g_search_bound{false};
 static FeedStore g_feed;
 static CampaignIndex g_campaigns;
+static std::map<std::string, FundingObservation> g_chain_obs;
 static bool g_feed_loaded{false};
 static fs::path g_econ_dir;
 
@@ -1068,6 +1069,7 @@ void EnsureEconomy(ModelCatalog& cat)
     const fs::path dir = HelperDir(cat);
     if (g_feed_loaded && dir == g_econ_dir) return;
     g_campaigns.Clear();
+    g_chain_obs.clear();
     g_feed = FeedStore();
     g_econ_dir = dir;
     g_feed_loaded = true;
@@ -1089,24 +1091,59 @@ void PersistEconomy(ModelCatalog& cat)
     (void)SaveCampaigns(HelperDir(cat), g_campaigns.List(), err);
 }
 
-FundingObservation ObservationFromHit(const SearchHit& h, const ReleaseCampaign* campaign)
+bool ReadCatalogBytes(ModelCatalog& cat, const CatalogEntry& e, std::vector<unsigned char>& out, std::string& err)
+{
+    if (e.core.files.empty()) {
+        err = "no files";
+        return false;
+    }
+    const auto& f = e.core.files[0];
+    const uint32_t n = f.size == 0 ? 1u : static_cast<uint32_t>((f.size + PIECE_SIZE - 1) / PIECE_SIZE);
+    out.clear();
+    out.reserve(f.size);
+    for (uint32_t i = 0; i < n; ++i) {
+        std::vector<unsigned char> piece;
+        std::vector<Digest48> proof;
+        uint64_t fs = 0;
+        if (!cat.GetVerifiedPiece(e.artifact_id, 0, i, piece, proof, fs, err)) return false;
+        out.insert(out.end(), piece.begin(), piece.end());
+    }
+    if (out.size() > f.size) out.resize(f.size);
+    return true;
+}
+
+FundingObservation ObservationFromHit(const SearchHit& h, const ReleaseCampaign* campaign, ModelCatalog* cat)
 {
     FundingObservation f;
     f.funding_source = "OBSERVED_NETWORK_STATE";
     f.ciphertext_providers_observed = h.health.providers_observed;
     if (campaign) {
-        f.confirmed_known = false;
-        f.confirmed_funded_atoms = 0;
-        if (campaign->refund_height > 0) f.refund_status = RefundStatus::NOT_MATURE;
+        auto it = g_chain_obs.find(campaign->release_id.Hex());
+        if (it != g_chain_obs.end() && it->second.confirmed_known &&
+            it->second.funding_source == "CHAIN_OBSERVATION") {
+            f = it->second;
+            f.ciphertext_providers_observed = std::max(f.ciphertext_providers_observed, h.health.providers_observed);
+        } else {
+            f.confirmed_known = false;
+            f.confirmed_funded_atoms = 0;
+            if (campaign->refund_height > 0) f.refund_status = RefundStatus::NOT_MATURE;
+        }
+        if (cat) {
+            CatalogEntry local;
+            Digest48 cid = campaign->ciphertext_artifact_id.IsNull() ? campaign->artifact_id : campaign->ciphertext_artifact_id;
+            if (!cid.IsNull() && (cat->Find(cid, local) || cat->Find(campaign->model_id, local))) {
+                f.ciphertext_providers_observed = std::max(f.ciphertext_providers_observed, 1);
+            }
+        }
     }
     return f;
 }
 
-ModelEconomyEntry EconomyForHit(const SearchHit& h)
+ModelEconomyEntry EconomyForHit(const SearchHit& h, ModelCatalog* cat = nullptr)
 {
     const ReleaseCampaign* c = g_campaigns.GetByModel(h.rec.model_id);
     if (!c && !h.rec.release_id.empty()) c = g_campaigns.GetByReleaseHex(h.rec.release_id);
-    return ComposeEconomyEntry(h, c, ObservationFromHit(h, c));
+    return ComposeEconomyEntry(h, c, ObservationFromHit(h, c, cat));
 }
 
 UniValue EconomyCard(const SearchHit& h)
@@ -1120,11 +1157,11 @@ void AfterIndexPut(const ModelSearchRecord& rec, int64_t now_ms)
     g_campaigns.IngestFromSearchRecord(rec);
 }
 
-std::vector<ModelEconomyEntry> EconomyHits(std::vector<SearchHit> hits, const SearchQuery& q)
+std::vector<ModelEconomyEntry> EconomyHits(std::vector<SearchHit> hits, const SearchQuery& q, ModelCatalog* cat = nullptr)
 {
     std::vector<ModelEconomyEntry> out;
     for (auto& h : hits) {
-        auto e = EconomyForHit(h);
+        auto e = EconomyForHit(h, cat);
         if (!MatchesEconomyFilters(e, q.filters)) continue;
         out.push_back(std::move(e));
     }
@@ -2493,7 +2530,7 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
                     r.pushKV("seeded", cat.Find(model_id, got) && got.seeded);
                     r.pushKV("propagation", "demand");
                     r.pushKV("model_id", model_id.Hex());
-                    r.pushKV("failed_contacts", static_cast<int>(failed_peers.size()));
+                    r.pushKV("failed_contacts", static_cast<int>(failed_peers.size()) + job->progress.peer_failovers.load());
                     r.pushKV("last_peer", peer);
                     r.pushKV("peer_retries", job->progress.peer_retries.load());
                     std::lock_guard<std::mutex> lock(job->mu);
@@ -2522,16 +2559,15 @@ std::string EnqueueRetrieve(ModelCatalog& cat, const Digest48& model_id, std::at
             last_bytes = now_bytes;
             const bool transient = IsTransientPq1Error(last_err);
             const bool last_remaining = remaining_unfailed() <= 1;
-            const bool connect_class = last_err.find("connect failed") != std::string::npos ||
-                                        last_err.find("handshake") != std::string::npos;
-            // Another healthy contact exists: do not burn the 1024-try WAN
-            // retry budget on a dead seeder (SWARM-CHAOS / CONN-COMBINED).
-            if (transient && !last_remaining && (connect_class || transient_streak >= 2)) {
+            // Another healthy contact exists: fail over immediately so a dead
+            // introducer cannot starve a live seeder (DISC-05). Keep the 1024-try
+            // WAN retry budget only for the last remaining contact.
+            if (!last_remaining) {
                 failed_peers.insert(peer);
                 transient_streak = 0;
                 continue;
             }
-            if (transient && (transient_streak < PQ1_PEER_TRANSIENT_TRIES || last_remaining)) {
+            if (transient && transient_streak < PQ1_PEER_TRANSIENT_TRIES) {
                 job->progress.peer_retries.fetch_add(1);
                 ++transient_streak;
                 if (!progressed) {
@@ -3024,7 +3060,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             }
             decorated.push_back(h);
         }
-        auto entries = EconomyHits(std::move(decorated), q);
+        auto entries = EconomyHits(std::move(decorated), q, &cat);
         if (static_cast<int>(entries.size()) > q.limit && q.limit > 0) entries.resize(q.limit);
         for (const auto& e : entries) arr.push_back(EconomySearchCard(e));
         result.pushKV("results", arr);
@@ -3178,7 +3214,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             q.scope = SearchScope::ALL;
             const auto hits = g_search_idx.Search(q, ConnNowMs());
             UniValue arr(UniValue::VARR);
-            auto entries = EconomyHits(hits, q);
+            auto entries = EconomyHits(hits, q, &cat);
             for (const auto& e : entries) arr.push_back(EconomySearchCard(e));
             result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
             result.pushKV("results", arr);
@@ -3199,7 +3235,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             h.local.pinned = e.pinned;
             h.local.partial = e.incomplete;
         }
-        result = EconomySearchCard(EconomyForHit(h));
+        result = EconomySearchCard(EconomyForHit(h, &cat));
         return true;
     }
     if (method == "getmodelproviders" || method == "getmodelavailability" || method == "getmodelpeercount") {
@@ -3268,7 +3304,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("aliases", arr);
         return true;
     }
-    if (method == "searchpublishers" || method == "getpublisher") {
+    if (method == "searchpublishers" || method == "getpublisher" || method == "getmodelpublishers") {
         EnsureSearchBound();
         std::lock_guard<std::mutex> lock(g_search_mu);
         UniValue arr(UniValue::VARR);
@@ -3299,16 +3335,129 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("publishers", arr);
         return true;
     }
-    if (method == "searchcollections" || method == "getcollection") {
+    if (method == "searchcollections" || method == "getcollection" || method == "getmodelcollections") {
+        EnsureSearchBound();
+        UniValue arr(UniValue::VARR);
+        std::string needle;
+        if (Arg(0).isStr()) needle = ToLower(Arg(0).get_str());
+        else if (Arg(0).isObject() && Arg(0).exists("text") && Arg(0)["text"].isStr()) {
+            needle = ToLower(Arg(0)["text"].get_str());
+        }
+        const int64_t now = static_cast<int64_t>(std::time(nullptr));
+        for (const auto& h : RecordsFor(cat).All(now)) {
+            if (h.kind != RECORD_COLLECTION) continue;
+            UniValue body(UniValue::VOBJ);
+            std::string derr;
+            if (!h.payload.empty()) DecodeRecord(h.kind, Span<const unsigned char>{h.payload.data(), h.payload.size()}, body, derr);
+            UniValue o(UniValue::VOBJ);
+            o.pushKV("id", h.record_id.Hex());
+            o.pushKV("kind", "COLLECTION");
+            o.pushKV("signed_ok", h.signed_ok);
+            o.pushKV("provider_id", h.provider_id);
+            if (body.exists("title")) o.pushKV("title", body["title"]);
+            if (body.exists("description")) o.pushKV("description", body["description"]);
+            if (body.exists("entries")) o.pushKV("entries", body["entries"]);
+            o.pushKV("on_chain_membership", false);
+            o.pushKV("automatic_preservation", false);
+            if (method == "getcollection") {
+                const bool match = Arg(0).isStr() && (Arg(0).get_str() == h.record_id.Hex() ||
+                                                       (!h.provider_id.empty() && Arg(0).get_str() == h.provider_id));
+                if (match) {
+                    result = o;
+                    result.pushKV("schema_version", 2);
+                    return true;
+                }
+                continue;
+            }
+            if (!needle.empty()) {
+                const std::string hay = ToLower(o.write());
+                if (hay.find(needle) == std::string::npos) continue;
+            }
+            arr.push_back(o);
+        }
+        UniValue store;
+        ReadJsonFile(HelperDir(cat) / "community.json", store);
+        if (store.exists("subscriptions") && store["subscriptions"].isArray()) {
+            for (const auto& x : store["subscriptions"].getValues()) {
+                if (!x.isStr()) continue;
+                UniValue o(UniValue::VOBJ);
+                o.pushKV("id", x.get_str());
+                o.pushKV("kind", "COLLECTION");
+                o.pushKV("subscribed_locally", true);
+                o.pushKV("on_chain_membership", false);
+                if (!needle.empty() && ToLower(x.get_str()).find(needle) == std::string::npos) continue;
+                bool dup = false;
+                for (const auto& y : arr.getValues()) {
+                    if (y.isObject() && y.exists("id") && y["id"].isStr() && y["id"].get_str() == x.get_str()) dup = true;
+                }
+                if (!dup) arr.push_back(o);
+            }
+        }
+        if (method == "getcollection") {
+            err_code = "NOT_FOUND";
+            err = "collection not cached";
+            return false;
+        }
         result.pushKV("schema_version", 2);
-        result.pushKV("collections", UniValue(UniValue::VARR));
-        result.pushKV("note", "signed collections remain first-class; empty if none cached");
+        result.pushKV("collections", arr);
+        result.pushKV("global_complete", false);
         return true;
     }
     if (method == "browsemodels" || method == "gettrendingmodels" || method == "getsimilarmodels" ||
         method == "getnewmodels" || method == "getrecentreleases") {
         EnsureSearchBound();
         EnsureEconomy(cat);
+        auto remap_feed = [&](UniValue& feed) {
+            UniValue arr(UniValue::VARR);
+            if (feed.exists("items") && feed["items"].isArray()) {
+                for (const auto& it : feed["items"].getValues()) {
+                    if (it.isObject() && it.exists("entry") && it["entry"].isObject()) arr.push_back(it["entry"]);
+                    else arr.push_back(it);
+                }
+            }
+            feed.pushKV("results", arr);
+        };
+        if (method == "getrecentreleases") {
+            SearchScope scope = SearchScope::NETWORK;
+            if (Arg(0).isObject() && Arg(0).exists("scope")) {
+                ParseSearchScope(Arg(0)["scope"].get_str(), scope);
+            }
+            if (scope != SearchScope::LOCAL) {
+                UniValue o(UniValue::VOBJ);
+                o.pushKV("scope", "NETWORK");
+                o.pushKV("mode", "NEW_RELEASE_CAMPAIGNS");
+                if (Arg(0).isObject() && Arg(0).exists("limit")) o.pushKV("limit", Arg(0)["limit"]);
+                if (Arg(0).isObject() && Arg(0).exists("filters")) o.pushKV("filters", Arg(0)["filters"]);
+                UniValue inner(UniValue::VARR);
+                inner.push_back(o);
+                UniValue req(UniValue::VOBJ);
+                req.pushKV("method", "getmodelfeed");
+                req.pushKV("params", inner);
+                if (!DispatchHelperRpc(cat, req, result, err_code, err, stop)) return false;
+                remap_feed(result);
+                result.pushKV("scope", "NETWORK");
+                return true;
+            }
+        }
+        if (method == "getnewmodels" && Arg(0).isObject() && Arg(0).exists("scope")) {
+            SearchScope scope = SearchScope::LOCAL;
+            ParseSearchScope(Arg(0)["scope"].get_str(), scope);
+            if (scope != SearchScope::LOCAL) {
+                UniValue o(UniValue::VOBJ);
+                o.pushKV("scope", SearchScopeName(scope));
+                o.pushKV("mode", "NEWEST");
+                if (Arg(0).exists("limit")) o.pushKV("limit", Arg(0)["limit"]);
+                UniValue inner(UniValue::VARR);
+                inner.push_back(o);
+                UniValue req(UniValue::VOBJ);
+                req.pushKV("method", "getmodelfeed");
+                req.pushKV("params", inner);
+                if (!DispatchHelperRpc(cat, req, result, err_code, err, stop)) return false;
+                remap_feed(result);
+                result.pushKV("scope", SearchScopeName(scope));
+                return true;
+            }
+        }
         std::lock_guard<std::mutex> lock(g_search_mu);
         IngestCatalogIntoSearch(cat);
         SearchQuery q;
@@ -3345,14 +3494,14 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                     h.rec.refund_height = c.refund_height;
                 }
                 if (h.rec.release_id.empty()) h.rec.release_id = c.release_id.Hex();
-                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c));
+                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c, &cat));
                 if (Arg(0).isObject() && Arg(0).exists("scope") && ToUpper(Arg(0)["scope"].get_str()) == "LOCAL") {
                     // keep
                 }
                 arr.push_back(EconomySearchCard(e));
             }
         } else {
-            auto entries = EconomyHits(hits, q);
+            auto entries = EconomyHits(hits, q, &cat);
             for (const auto& e : entries) arr.push_back(EconomySearchCard(e));
         }
         result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
@@ -3775,25 +3924,44 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     }
     if (method == "createmodelrelease") {
         EnsureEconomy(cat);
+        std::string uri;
+        std::string secret_hex;
+        int64_t refund_height = 0;
+        UniValue options(UniValue::VOBJ);
+        if (Arg(0).isObject()) {
+            if (Arg(0).exists("uri")) uri = Arg(0)["uri"].get_str();
+            if (Arg(0).exists("secret32_hex")) secret_hex = Arg(0)["secret32_hex"].get_str();
+            else if (Arg(0).exists("secret")) secret_hex = Arg(0)["secret"].get_str();
+            if (Arg(0).exists("refund_height")) refund_height = Arg(0)["refund_height"].getInt<int64_t>();
+            options = Arg(0);
+        } else {
+            if (!Arg(0).isStr()) {
+                err_code = "INVALID_PARAMETER";
+                err = "model uri required";
+                return false;
+            }
+            uri = Arg(0).get_str();
+            if (params.isArray() && params.size() < 3) {
+                err_code = "INVALID_PARAMETER";
+                err = "createmodelrelease(uri, secret32_hex, refund_height)";
+                return false;
+            }
+            secret_hex = Arg(1).get_str();
+            refund_height = Arg(2).getInt<int64_t>();
+            if (params.isArray() && params.size() > 4 && Arg(4).isObject()) options = Arg(4);
+            else if (params.isArray() && params.size() > 3 && Arg(3).isObject()) options = Arg(3);
+        }
         Resource r;
-        if (!DecodeResource(Arg(0).get_str(), r, err) || r.kind != ResourceKind::MODEL) {
+        if (!DecodeResource(uri, r, err) || r.kind != ResourceKind::MODEL) {
             err_code = "INVALID_PARAMETER";
             err = "model uri required";
             return false;
         }
-        if (params.isArray() && params.size() < 3) {
-            err_code = "INVALID_PARAMETER";
-            err = "createmodelrelease(uri, secret32_hex, refund_height)";
-            return false;
-        }
-        UniValue options(UniValue::VOBJ);
-        if (params.isArray() && params.size() > 4 && Arg(4).isObject()) options = Arg(4);
-        else if (params.isArray() && params.size() > 3 && Arg(3).isObject()) options = Arg(3);
         if (!RejectHash160Campaign(options, err)) {
             err_code = "INVALID_PARAMETER";
             return false;
         }
-        const auto secret = TryParseHex<unsigned char>(Arg(1).get_str());
+        const auto secret = TryParseHex<unsigned char>(secret_hex);
         if (!secret || secret->size() != 32) {
             err_code = "INVALID_PARAMETER";
             err = "secret must be 32 bytes hex (stored as SHA-256 only)";
@@ -3807,10 +3975,32 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         CatalogEntry local;
         if (cat.Find(r.digest, local)) c.artifact_id = local.artifact_id;
         c.ciphertext_artifact_id = c.artifact_id;
+        if (cat.Find(r.digest, local) && !local.core.files.empty()) {
+            std::vector<unsigned char> plain;
+            std::string rerr;
+            if (ReadCatalogBytes(cat, local, plain, rerr) && !LooksLikeBtxEnc2(Span<const unsigned char>{plain.data(), plain.size()})) {
+                std::vector<unsigned char> wrapped;
+                if (WrapBtxEnc2(Span<const unsigned char>{secret->data(), secret->size()},
+                                 Span<const unsigned char>{plain.data(), plain.size()}, wrapped, rerr)) {
+                    const fs::path tmp = HelperDir(cat) / "tmp-cipher.btxenc";
+                    {
+                        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+                        out.write(reinterpret_cast<const char*>(wrapped.data()), static_cast<std::streamsize>(wrapped.size()));
+                    }
+                    CatalogEntry enc;
+                    if (cat.ImportPath(fs::PathToString(tmp), /*pin=*/false, enc, rerr)) {
+                        c.ciphertext_artifact_id = enc.artifact_id.IsNull() ? enc.model_id : enc.artifact_id;
+                    }
+                    fs::remove(tmp);
+                }
+            } else if (LooksLikeBtxEnc2(Span<const unsigned char>{plain.data(), plain.size()})) {
+                c.ciphertext_artifact_id = local.artifact_id;
+            }
+        }
         c.key_hash = ReleaseHash(*secret);
         c.hashlock_algorithm = "SHA256";
         c.assurance = "KEY_RELEASE_ONLY";
-        c.refund_height = static_cast<uint32_t>(Arg(2).getInt<int64_t>());
+        c.refund_height = static_cast<uint32_t>(refund_height);
         if (params.isArray() && params.size() > 3 && Arg(3).isNum()) c.target_atoms = Arg(3).getInt<int64_t>();
         else if (options.exists("target_atoms")) c.target_atoms = options["target_atoms"].getInt<int64_t>();
         c.campaign_created_at = ConnNowMs();
@@ -3898,7 +4088,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             }
             if (const auto* rec = g_search_idx.Get(c->model_id)) h.rec = *rec;
             else h.rec.model_id = c->model_id;
-            auto e = ComposeEconomyEntry(h, c, ObservationFromHit(h, c));
+            auto e = ComposeEconomyEntry(h, c, ObservationFromHit(h, c, &cat));
             UniValue one = CampaignToJson(*c);
             one.pushKV("lifecycle_state", ModelLifecycleName(e.lifecycle));
             one.pushKV("remaining_atoms", e.remaining_atoms);
@@ -3937,18 +4127,93 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         return true;
     }
     if (method == "claimmodelrelease" || method == "refundmodelrelease") {
+        EnsureEconomy(cat);
         result.pushKV("schema_version", 2);
         result.pushKV("use", method == "claimmodelrelease" ? "buildhtlcclaim" : "buildhtlcrefund");
         result.pushKV("template", "htlc_sha256");
-        result.pushKV("note", "Claim/refund via buildmodelhtlcclaim / buildmodelhtlcrefund (0.34.6 htlc_sha256). HASH160 htlc_tx is recovery-only. After local decrypt of a qualified public artifact, demand-seed advertises the plaintext identity within the storage budget.");
+        result.pushKV("automatic_spend_atoms", 0);
+        result.pushKV("note", "Monetary claim/refund is buildmodelhtlcclaim / buildmodelhtlcrefund. This RPC updates model-plane unlock state only.");
+        Digest48 id;
         if (params.isArray() && params.size() > 0 && Arg(0).isStr()) {
-            CatalogEntry e;
-            const Digest48 id = IdFromUser(Arg(0).get_str(), err);
-            if (!id.IsNull() && cat.Find(id, e)) {
-                cat.ApplyDemandSeed(e.model_id, err);
-                result.pushKV("seeded", cat.Find(id, e) && e.seeded);
-                result.pushKV("propagation", "release");
+            id = IdFromUser(Arg(0).get_str(), err);
+            if (id.IsNull() && !Digest48::FromHex(Arg(0).get_str(), id, err)) {
+                err_code = "INVALID_PARAMETER";
+                return false;
             }
+        }
+        ReleaseCampaign* c = const_cast<ReleaseCampaign*>(g_campaigns.GetByRelease(id));
+        if (!c) c = const_cast<ReleaseCampaign*>(g_campaigns.GetByModel(id));
+        if (method == "claimmodelrelease" && params.isArray() && params.size() > 1 && Arg(1).isStr()) {
+            const auto secret = TryParseHex<unsigned char>(Arg(1).get_str());
+            if (!secret || secret->size() != 32) {
+                err_code = "INVALID_PARAMETER";
+                err = "secret must be 32 bytes hex";
+                return false;
+            }
+            if (!c) {
+                err_code = "NOT_FOUND";
+                err = "unknown release";
+                return false;
+            }
+            if (ReleaseHash(Span<const unsigned char>{secret->data(), secret->size()}) != c->key_hash) {
+                err_code = "INVALID_PARAMETER";
+                err = "secret does not match SHA-256 key_hash";
+                return false;
+            }
+            c->secret_disclosed = true;
+            ModelSearchRecord rec;
+            if (const auto* sr = g_search_idx.Get(c->model_id)) rec = *sr;
+            rec.model_id = c->model_id;
+            rec.release_id = c->release_id.Hex();
+            rec.release_state = "SECRET_DISCLOSED";
+            g_feed.NoteUnlock(c->model_id, c->release_id.Hex(), rec, ConnNowMs());
+            CatalogEntry local;
+            Digest48 cid = c->ciphertext_artifact_id.IsNull() ? c->artifact_id : c->ciphertext_artifact_id;
+            bool unlocked = false;
+            if (!cid.IsNull() && (cat.Find(cid, local) || cat.Find(c->model_id, local))) {
+                std::vector<unsigned char> wrapped;
+                if (ReadCatalogBytes(cat, local, wrapped, err) &&
+                    LooksLikeBtxEnc2(Span<const unsigned char>{wrapped.data(), wrapped.size()})) {
+                    std::vector<unsigned char> plain;
+                    if (UnwrapBtxEnc2(Span<const unsigned char>{secret->data(), secret->size()},
+                                       Span<const unsigned char>{wrapped.data(), wrapped.size()}, plain, err)) {
+                        const fs::path tmp = HelperDir(cat) / "tmp-unlock.safetensors";
+                        {
+                            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+                            out.write(reinterpret_cast<const char*>(plain.data()), static_cast<std::streamsize>(plain.size()));
+                        }
+                        CatalogEntry pub;
+                        if (cat.ImportPath(fs::PathToString(tmp), /*pin=*/true, pub, err)) {
+                            c->plaintext_verified = true;
+                            unlocked = true;
+                            cat.ApplyDemandSeed(pub.model_id, err);
+                            result.pushKV("plaintext_model_id", pub.model_id.Hex());
+                            result.pushKV("plaintext_artifact_id", pub.artifact_id.Hex());
+                        }
+                        fs::remove(tmp);
+                    }
+                } else {
+                    cat.ApplyDemandSeed(local.model_id, err);
+                    unlocked = true;
+                }
+            }
+            SaveCampaigns(HelperDir(cat), g_campaigns.List(), err);
+            PersistEconomy(cat);
+            result.pushKV("secret_disclosed", true);
+            result.pushKV("secret_retained", false);
+            result.pushKV("unlocked_locally", unlocked);
+            result.pushKV("plaintext_verified", c->plaintext_verified);
+            result.pushKV("lifecycle_state", c->plaintext_verified ? "PUBLIC_RELEASED" : "SECRET_DISCLOSED");
+            return true;
+        }
+        if (c && method == "refundmodelrelease") {
+            result.pushKV("release_id", c->release_id.Hex());
+            result.pushKV("refund_height", static_cast<int64_t>(c->refund_height));
+        }
+        CatalogEntry e;
+        if (!id.IsNull() && cat.Find(id, e)) {
+            cat.ApplyDemandSeed(e.model_id, err);
+            result.pushKV("seeded", cat.Find(id, e) && e.seeded);
         }
         return true;
     }
@@ -4345,7 +4610,8 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     }
     if (method == "getmodeleconomyentry" || method == "getmodelreleaseeconomics" || method == "getmodelfeed" ||
         method == "getreleasefeed" || method == "getmodelfeedstatus" || method == "getmodelfeedsequence" ||
-        method == "getfundablemodels" || method == "getrecentlyunlockedmodels" || method == "cacheencryptedmodel") {
+        method == "getfundablemodels" || method == "getrecentlyunlockedmodels" || method == "cacheencryptedmodel" ||
+        method == "ingestchainfundingobservation" || method == "setreleaseoutputscript") {
         EnsureSearchBound();
         EnsureEconomy(cat);
         std::unique_lock<std::mutex> lock(g_search_mu);
@@ -4362,8 +4628,83 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 h.local.partial = e.incomplete;
                 h.local.downloaded = e.bytes_verified;
             }
-            return EconomyForHit(h);
+            return EconomyForHit(h, &cat);
         };
+        if (method == "setreleaseoutputscript") {
+            if (!Arg(0).isObject() || !Arg(0).exists("release_id") || !Arg(0)["release_id"].isStr()) {
+                err_code = "INVALID_PARAMETER";
+                err = "release_id required";
+                return false;
+            }
+            const std::string rid = Arg(0)["release_id"].get_str();
+            Digest48 id;
+            if (!Digest48::FromHex(rid, id, err)) {
+                err_code = "INVALID_PARAMETER";
+                return false;
+            }
+            auto* c = const_cast<ReleaseCampaign*>(g_campaigns.GetByRelease(id));
+            if (!c) {
+                err_code = "NOT_FOUND";
+                err = "unknown release";
+                return false;
+            }
+            if (Arg(0).exists("output_script") && Arg(0)["output_script"].isStr()) {
+                c->output_script_hex = ToLower(Arg(0)["output_script"].get_str());
+            }
+            SaveCampaigns(HelperDir(cat), g_campaigns.List(), err);
+            result.pushKV("accepted", true);
+            result.pushKV("release_id", rid);
+            result.pushKV("output_script", c->output_script_hex);
+            return true;
+        }
+        if (method == "ingestchainfundingobservation") {
+            if (!Arg(0).isObject()) {
+                err_code = "INVALID_PARAMETER";
+                err = "observation object";
+                return false;
+            }
+            const UniValue& o = Arg(0);
+            if (!(o.exists("confirmed_known") && o["confirmed_known"].isTrue()) ||
+                !o.exists("funding_source") || o["funding_source"].get_str() != "CHAIN_OBSERVATION") {
+                result.pushKV("accepted", false);
+                result.pushKV("note", "remote unsigned funding claims are not ingested as confirmed");
+                return true;
+            }
+            FundingObservation f;
+            f.confirmed_known = true;
+            f.funding_source = "CHAIN_OBSERVATION";
+            if (o.exists("confirmed_funded_atoms")) f.confirmed_funded_atoms = o["confirmed_funded_atoms"].getInt<int64_t>();
+            if (o.exists("pending_funded_atoms")) f.pending_funded_atoms = o["pending_funded_atoms"].getInt<int64_t>();
+            if (o.exists("chain_height")) {
+                f.chain_height = static_cast<uint32_t>(o["chain_height"].getInt<int64_t>());
+                f.chain_height_known = true;
+            }
+            f.wallet_contributor = o.exists("wallet_contributor") && o["wallet_contributor"].get_bool();
+            f.refund_available_locally = o.exists("refund_available_locally") && o["refund_available_locally"].get_bool();
+            if (o.exists("claim_txid")) f.claim_txid = o["claim_txid"].get_str();
+            std::string rid;
+            if (o.exists("release_id")) rid = o["release_id"].get_str();
+            if (rid.empty()) {
+                err_code = "INVALID_PARAMETER";
+                err = "release_id required";
+                return false;
+            }
+            g_chain_obs[rid] = f;
+            Digest48 id;
+            if (Digest48::FromHex(rid, id, err)) {
+                if (auto* c = const_cast<ReleaseCampaign*>(g_campaigns.GetByRelease(id))) {
+                    c->funded_atoms = f.confirmed_funded_atoms;
+                    if (f.chain_height_known) c->latest_funding_height = f.chain_height;
+                    g_feed.NoteFundingChanged(*c, ConnNowMs());
+                    SaveCampaigns(HelperDir(cat), g_campaigns.List(), err);
+                }
+            }
+            result.pushKV("accepted", true);
+            result.pushKV("release_id", rid);
+            result.pushKV("confirmed_funded_atoms", f.confirmed_funded_atoms);
+            result.pushKV("funding_source", "CHAIN_OBSERVATION");
+            return true;
+        }
         if (method == "getmodeleconomyentry" || method == "getmodelreleaseeconomics") {
             if (!params.isArray() || params.size() < 1 || !Arg(0).isStr()) {
                 err_code = "INVALID_PARAMETER";
@@ -4377,7 +4718,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             Digest48 mid = c ? c->model_id : id;
             if (const auto* rec = g_search_idx.Get(mid)) h.rec = *rec;
             else h.rec.model_id = mid;
-            auto e = ComposeEconomyEntry(h, c, ObservationFromHit(h, c));
+            auto e = ComposeEconomyEntry(h, c, ObservationFromHit(h, c, &cat));
             result = method == "getmodelreleaseeconomics" ? EconomyReleaseJson(e) : EconomyEntryToJson(e);
             result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
             result.pushKV("lifecycle_state", ModelLifecycleName(e.lifecycle));
@@ -4412,7 +4753,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                     h.rec.key_hash = c.key_hash;
                     h.rec.refund_height = c.refund_height;
                 }
-                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c));
+                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c, &cat));
                 if (!e.fundable_now) continue;
                 if (!MatchesEconomyFilters(e, q.filters)) continue;
                 camp.push_back(std::move(e));
@@ -4454,10 +4795,50 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             result.pushKV("action", "CACHE_ENCRYPTED");
             result.pushKV("plaintext_unavailable", true);
             result.pushKV("automatic_download", false);
-            result.pushKV("note", "explicit ciphertext retrieve only; use getmodel on ciphertext artifact_id");
-            if (params.isArray() && params.size() > 0 && Arg(0).isStr()) {
-                result.pushKV("release_or_model", Arg(0).get_str());
+            result.pushKV("automatic_spend_atoms", 0);
+            if (!params.isArray() || params.size() < 1 || !Arg(0).isStr()) {
+                err_code = "INVALID_PARAMETER";
+                err = "release_id or model id required";
+                return false;
             }
+            const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+            const ReleaseCampaign* c = g_campaigns.GetByRelease(id);
+            if (!c) c = g_campaigns.GetByModel(id);
+            if (!c) c = g_campaigns.GetByReleaseHex(Arg(0).get_str());
+            Digest48 cid;
+            if (c) {
+                cid = c->ciphertext_artifact_id.IsNull() ? c->artifact_id : c->ciphertext_artifact_id;
+                result.pushKV("release_id", c->release_id.Hex());
+                result.pushKV("key_hash", c->key_hash.Hex());
+            } else {
+                cid = id;
+            }
+            if (cid.IsNull()) {
+                err_code = "NOT_FOUND";
+                err = "no ciphertext artifact for this campaign";
+                return false;
+            }
+            result.pushKV("ciphertext_artifact_id", cid.Hex());
+            CatalogEntry local;
+            if (cat.Find(cid, local) || (c && cat.Find(c->model_id, local))) {
+                std::vector<unsigned char> bytes;
+                if (ReadCatalogBytes(cat, local, bytes, err) &&
+                    LooksLikeBtxEnc2(Span<const unsigned char>{bytes.data(), bytes.size()})) {
+                    result.pushKV("status", "local");
+                    result.pushKV("verified_ciphertext", true);
+                    result.pushKV("plaintext_unavailable", true);
+                    if (cat.Policy().allow_encrypted) {
+                        cat.ApplyDemandSeed(local.model_id, err);
+                        result.pushKV("seeded_ciphertext", true);
+                    }
+                    return true;
+                }
+            }
+            lock.unlock();
+            const std::string job_id = EnqueueRetrieve(cat, cid, stop);
+            result.pushKV("status", "running");
+            result.pushKV("job_id", job_id);
+            result.pushKV("note", "poll getmodeljob; ciphertext retrieve does not reveal plaintext");
             return true;
         }
         // getmodelfeed / getreleasefeed
@@ -4571,7 +4952,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                     h.rec.release_target_atoms = c.target_atoms;
                     h.rec.key_hash = c.key_hash;
                 }
-                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c));
+                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c, &cat));
                 if (fq.mode == FeedMode::NEARLY_FUNDED && !e.fundable_now) continue;
                 if (fq.mode == FeedMode::FUNDED_AWAITING_RELEASE &&
                     e.lifecycle != ModelLifecycle::FUNDED_AWAITING_RELEASE) {
@@ -4708,6 +5089,14 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                 (void)g_swarm.pex.Ingest(host + ":" + std::to_string(port), pexj, now, acc, ierr);
                 for (const auto& h : acc) cat.AddPeer(h.endpoint);
             }
+        }
+    }
+
+    std::vector<std::string> extras = extra_peers;
+    {
+        const std::string self = host + ":" + std::to_string(port);
+        for (const auto& p : cat.Peers()) {
+            if (p != self && std::find(extras.begin(), extras.end(), p) == extras.end()) extras.push_back(p);
         }
     }
 
@@ -4884,7 +5273,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
         }
         std::vector<std::thread> extra_threads;
         std::atomic<int> extra_ok{0};
-        if (!missing.empty() && !extra_peers.empty()) {
+        if (!missing.empty() && !extras.empty()) {
             std::vector<SourceAvailability> sources;
             std::map<std::string, PeerMetrics> metrics;
             auto add_av = [&](const std::string& eh, uint16_t eport) {
@@ -4907,7 +5296,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                 (void)ParseAvailabilitySources(aj, pid.endpoint, pid, artifact, sources, perr);
             };
             add_av(host, port);
-            for (const auto& ep : extra_peers) {
+            for (const auto& ep : extras) {
                 std::string eh;
                 uint16_t eport = 0;
                 if (SplitHostPort(ep, eh, eport)) add_av(eh, eport);
@@ -5032,7 +5421,26 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
             if (progress) progress->inflight.store(0);
             if (fail.load()) {
                 for (auto& t : extra_threads) if (t.joinable()) t.join();
-                return false;
+                bool extras_have_rest = extra_ok.load() > 0;
+                if (extras_have_rest) {
+                    for (uint64_t i = 0; i < n; ++i) {
+                        std::vector<unsigned char> raw;
+                        std::string skip_err;
+                        if (cat.Store().HasPiece(artifact, file_index, static_cast<uint32_t>(i)) &&
+                            cat.Store().GetPiece(artifact, file_index, static_cast<uint32_t>(i), raw, skip_err)) {
+                            leaves[i] = ChunkLeaf(i, raw);
+                        } else {
+                            extras_have_rest = false;
+                            break;
+                        }
+                    }
+                }
+                if (extras_have_rest) {
+                    if (progress) progress->peer_failovers.fetch_add(1);
+                    err.clear();
+                } else {
+                    return false;
+                }
             }
         }
         for (auto& t : extra_threads) if (t.joinable()) t.join();

@@ -8,6 +8,7 @@
 #include <coins.h>
 #include <consensus/amount.h>
 #include <core_io.h>
+#include <crypto/sha256.h>
 #include <key_io.h>
 #include <modelnet/types.h>
 #include <pqkey.h>
@@ -16,6 +17,7 @@
 #include <script/descriptor.h>
 #include <script/interpreter.h>
 #include <script/signingprovider.h>
+#include <span.h>
 #include <util/result.h>
 #include <util/strencodings.h>
 #include <util/translation.h>
@@ -488,6 +490,86 @@ bool SignFrozenFunding(CWallet& wallet, CMutableTransaction& mtx, bool& complete
         err = input_errors.begin()->second.original;
     }
     return true;
+}
+
+UniValue ObserveReleaseFunding(CWallet& wallet, const std::string& key_hash_hex, uint32_t refund_height,
+                               const std::string& output_script_hex)
+{
+    UniValue o(UniValue::VOBJ);
+    o.pushKV("confirmed_known", false);
+    o.pushKV("confirmed_funded_atoms", 0);
+    o.pushKV("pending_funded_atoms", 0);
+    o.pushKV("wallet_contributor", false);
+    o.pushKV("funding_source", "CHAIN_OBSERVATION");
+    o.pushKV("helper_observation", false);
+    o.pushKV("chain_observation", true);
+    const std::string needle = ToLower(key_hash_hex);
+    CScript want;
+    if (!output_script_hex.empty() && IsHex(output_script_hex)) {
+        const auto raw = ParseHex(ToLower(output_script_hex));
+        want = CScript(raw.begin(), raw.end());
+    }
+    if (want.empty() && (needle.size() != 64 || !IsHex(needle))) {
+        o.pushKV("note", "key_hash or output_script required to join chain UTXOs");
+        return o;
+    }
+    int64_t confirmed = 0;
+    int64_t pending = 0;
+    bool contributor = false;
+    std::string claim_txid;
+    int tip = 0;
+    {
+        LOCK(wallet.cs_wallet);
+        tip = wallet.GetLastBlockHeight();
+        o.pushKV("chain_height", tip);
+        o.pushKV("chain_height_known", true);
+        for (const auto& [txid, wtx] : wallet.mapWallet) {
+            if (!wtx.tx) continue;
+            const int depth = wallet.GetTxDepthInMainChain(wtx);
+            for (const auto& out : wtx.tx->vout) {
+                bool match = false;
+                if (!want.empty() && out.scriptPubKey == want) match = true;
+                else if (want.empty() && needle.size() == 64 &&
+                         ToLower(HexStr(out.scriptPubKey)).find(needle) != std::string::npos) {
+                    match = true;
+                }
+                if (!match) continue;
+                contributor = true;
+                if (depth > 0) confirmed += out.nValue;
+                else if (depth >= 0) pending += out.nValue;
+            }
+            for (const auto& in : wtx.tx->vin) {
+                for (const auto& item : in.scriptWitness.stack) {
+                    if (item.size() != 32) continue;
+                    unsigned char digest[32];
+                    CSHA256().Write(item.data(), item.size()).Finalize(digest);
+                    if (needle.size() == 64 && ToLower(HexStr(Span<const unsigned char>{digest, 32})) == needle) {
+                        contributor = true;
+                        claim_txid = txid.GetHex();
+                    }
+                }
+            }
+        }
+    }
+    o.pushKV("confirmed_known", true);
+    o.pushKV("confirmed_funded_atoms", confirmed);
+    o.pushKV("pending_funded_atoms", pending);
+    o.pushKV("wallet_contributor", contributor);
+    const bool mature = refund_height > 0 && static_cast<uint32_t>(tip) >= refund_height;
+    o.pushKV("refund_available_locally", contributor && mature && claim_txid.empty());
+    if (!claim_txid.empty()) {
+        o.pushKV("claim_txid", claim_txid);
+        o.pushKV("refund_status", "CLAIM_COMPETING");
+    } else if (refund_height == 0) {
+        o.pushKV("refund_status", "UNKNOWN");
+    } else if (!mature) {
+        o.pushKV("refund_status", "NOT_MATURE");
+    } else if (contributor) {
+        o.pushKV("refund_status", "AVAILABLE");
+    } else {
+        o.pushKV("refund_status", "NOT_MATURE");
+    }
+    return o;
 }
 
 } // namespace wallet

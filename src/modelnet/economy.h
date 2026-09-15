@@ -139,6 +139,10 @@ UniValue EconomyLifecycleJson(const ModelEconomyEntry& e);
 /** Join search card + economics. Keeps v2 directory keys. */
 UniValue EconomySearchCard(const ModelEconomyEntry& e);
 
+/** Join chain/wallet observation onto a schema-3 economy or release JSON object.
+ *  Never copies wallet secrets. Remote unsigned "fully funded" claims are ignored. */
+void ApplyChainObservationJson(UniValue& card, const UniValue& obs);
+
 bool EconomyTouchesMonetaryConsensus();
 int64_t AutomaticSpendAtoms();
 

@@ -129,6 +129,7 @@ UniValue CampaignToJson(const ReleaseCampaign& c)
     o.pushKV("model_id", c.model_id.Hex());
     o.pushKV("artifact_id", c.artifact_id.Hex());
     o.pushKV("ciphertext_artifact_id", c.ciphertext_artifact_id.IsNull() ? c.artifact_id.Hex() : c.ciphertext_artifact_id.Hex());
+    if (!c.output_script_hex.empty()) o.pushKV("output_script", c.output_script_hex);
     o.pushKV("key_hash", c.key_hash.Hex());
     o.pushKV("hashlock_algorithm", "SHA256");
     o.pushKV("assurance", c.assurance.empty() ? "KEY_RELEASE_ONLY" : c.assurance);
@@ -179,6 +180,7 @@ bool CampaignFromJson(const UniValue& o, ReleaseCampaign& c, std::string& err)
     c.plaintext_verified = o.exists("plaintext_verified") && o["plaintext_verified"].get_bool();
     if (o.exists("assurance")) c.assurance = o["assurance"].get_str();
     if (o.exists("hashlock_algorithm")) c.hashlock_algorithm = o["hashlock_algorithm"].get_str();
+    if (o.exists("output_script") && o["output_script"].isStr()) c.output_script_hex = ToLower(o["output_script"].get_str());
     if (o.exists("pubkey")) c.pubkey = ParseHex(o["pubkey"].get_str());
     if (o.exists("signature")) c.sig = ParseHex(o["signature"].get_str());
     c.signed_ok = !c.sig.empty();
@@ -276,6 +278,9 @@ void CampaignIndex::IngestFromSearchRecord(const ModelSearchRecord& r)
         if (existing->key_hash.IsNull()) existing->key_hash = c.key_hash;
         if (existing->refund_height == 0) existing->refund_height = c.refund_height;
         if (existing->campaign_created_at == 0) existing->campaign_created_at = c.campaign_created_at;
+        if (existing->ciphertext_artifact_id.IsNull() && !c.ciphertext_artifact_id.IsNull()) {
+            existing->ciphertext_artifact_id = c.ciphertext_artifact_id;
+        }
         return;
     }
     (void)Put(c, err);

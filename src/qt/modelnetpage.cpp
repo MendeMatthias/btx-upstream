@@ -327,6 +327,10 @@ ModelNetPage::ModelNetPage(QWidget *parent) :
             tr("Scope changed — run Search to refresh results (coverage always incomplete)."));
     });
 
+    auto* feed_timer = new QTimer(this);
+    connect(feed_timer, &QTimer::timeout, this, &ModelNetPage::pollFeedSequence);
+    feed_timer->start(4000);
+
     ui->uriDisplayLabel->installEventFilter(this);
     ui->uriRowWidget->setVisible(false);
     refresh();
@@ -705,6 +709,20 @@ void ModelNetPage::renderModelCards(const UniValue& models, const UniValue* meta
             connect(fund_btn, &QPushButton::clicked, this, &ModelNetPage::onResultFund);
             btn_row->addWidget(fund_btn);
         }
+        bool cacheable = false;
+        if (m.exists("ciphertext_cacheable") && m["ciphertext_cacheable"].isTrue()) cacheable = true;
+        if (m.exists("actions") && m["actions"].isArray()) {
+            for (const auto& a : m["actions"].getValues()) {
+                if (a.isStr() && a.get_str() == "CACHE_ENCRYPTED") cacheable = true;
+            }
+        }
+        if (cacheable) {
+            auto* cache_btn = new QPushButton(tr("Cache Encrypted"));
+            cache_btn->setProperty("releaseId", release_id);
+            cache_btn->setProperty("modelUri", full_uri);
+            connect(cache_btn, &QPushButton::clicked, this, &ModelNetPage::onResultCache);
+            btn_row->addWidget(cache_btn);
+        }
         btn_row->addStretch();
         layout->addLayout(btn_row);
 
@@ -720,6 +738,10 @@ void ModelNetPage::renderSearchResponse(const UniValue& result)
         models = result["results"];
     } else if (result.exists("models") && result["models"].isArray()) {
         models = result["models"];
+    } else if (result.exists("publishers") && result["publishers"].isArray()) {
+        models = result["publishers"];
+    } else if (result.exists("collections") && result["collections"].isArray()) {
+        models = result["collections"];
     } else if (result.exists("items") && result["items"].isArray()) {
         for (const auto& it : result["items"].getValues()) {
             if (it.isObject() && it.exists("entry") && it["entry"].isObject()) models.push_back(it["entry"]);
@@ -832,6 +854,12 @@ void ModelNetPage::runModelSearch()
     case 6:
         method = "getrecentreleases";
         break;
+    case 7:
+        method = "searchpublishers";
+        break;
+    case 8:
+        method = "searchcollections";
+        break;
     case 0:
     default:
         if (ui->searchLineEdit->text().trimmed().isEmpty()) {
@@ -919,6 +947,15 @@ void ModelNetPage::onResultFund()
     showFundPlan(btn->property("releaseId").toString());
 }
 
+void ModelNetPage::onResultCache()
+{
+    const auto* btn = qobject_cast<QPushButton*>(sender());
+    if (!btn) return;
+    QString id = btn->property("releaseId").toString();
+    if (id.isEmpty()) id = btn->property("modelUri").toString();
+    showCachePlan(id);
+}
+
 void ModelNetPage::showFundPlan(const QString& release_id)
 {
     if (release_id.isEmpty()) {
@@ -930,9 +967,83 @@ void ModelNetPage::showFundPlan(const QString& release_id)
     UniValue opts(UniValue::VOBJ);
     opts.pushKV("automatic_spend_atoms", 0);
     params.push_back(opts);
+    const auto result = tryRpc("preparefundmodelrelease", params);
+    if (!result) {
+        ui->modelsOutput->setPlainText(
+            tr("preparefundmodelrelease failed.\n") + callRpc("preparefundmodelrelease", params));
+        return;
+    }
+    auto field = [&](const char* k) -> QString {
+        if (!result->exists(k)) return QStringLiteral("—");
+        const UniValue& v = (*result)[k];
+        if (v.isNum()) return QString::number(v.getInt<int64_t>());
+        if (v.isStr()) return QString::fromStdString(v.get_str());
+        if (v.isBool()) return v.get_bool() ? QStringLiteral("true") : QStringLiteral("false");
+        return QString::fromStdString(v.write());
+    };
+    QStringList lines;
+    lines << tr("Unsigned funding plan — this page never spends (automatic_spend_atoms=0).");
+    lines << tr("Confirm in the wallet after reviewing every field below.");
+    lines << QString();
+    lines << tr("Release identity: %1").arg(release_id);
+    lines << tr("Amount (atoms): %1").arg(field("amount_atoms"));
+    lines << tr("Fee (atoms): %1").arg(field("fee_atoms"));
+    lines << tr("Fee cap (atoms): %1").arg(field("fee_cap_atoms"));
+    lines << tr("SHA-256 hashlock: %1").arg(field("key_hash"));
+    lines << tr("Hashlock algorithm: %1").arg(field("hashlock_algorithm").isEmpty() ? field("htlc") : field("hashlock_algorithm"));
+    lines << tr("Refund height: %1").arg(field("refund_height"));
+    lines << tr("Descriptor: %1").arg(field("descriptor"));
+    lines << tr("Next: signmodelfunding, then submitmodelfunding.");
+    lines << QString();
+    lines << QString::fromStdString(result->write(2));
+    ui->modelsOutput->setPlainText(lines.join(QLatin1Char('\n')));
+}
+
+void ModelNetPage::showCachePlan(const QString& release_id)
+{
+    if (release_id.isEmpty()) {
+        ui->modelsOutput->setPlainText(tr("No release id on this card."));
+        return;
+    }
+    UniValue params(UniValue::VARR);
+    params.push_back(release_id.toStdString());
     ui->modelsOutput->setPlainText(
-        tr("preparefundmodelrelease (unsigned plan — no spend). Confirm in the wallet after reviewing amount, fee, SHA-256 hashlock, refund height, and exact release identity.\n") +
-        callRpc("preparefundmodelrelease", params));
+        tr("cacheencryptedmodel (ciphertext only; never auto-download from a feed card; plaintext stays sealed)\n") +
+        callRpc("cacheencryptedmodel", params));
+}
+
+void ModelNetPage::pollFeedSequence()
+{
+#ifdef ENABLE_MODELNET
+    if (!m_client_model) return;
+    const auto st = tryRpc("getmodelfeedsequence");
+    if (!st) return;
+    int64_t seq = 0;
+    if (st->exists("feed_sequence") && (*st)["feed_sequence"].isNum()) {
+        seq = (*st)["feed_sequence"].getInt<int64_t>();
+    }
+    if (seq <= 0 || seq == m_feed_sequence) return;
+    const bool first = m_feed_sequence == 0;
+    m_feed_sequence = seq;
+    if (first) return;
+    if (m_last_search_method == "getmodelfeed" || m_last_search_method == "getrecentreleases" ||
+        m_last_search_method == "getrecentlyunlockedmodels" || m_last_search_method.empty()) {
+        UniValue q(UniValue::VOBJ);
+        q.pushKV("scope", "NETWORK");
+        q.pushKV("mode", "NEWEST");
+        q.pushKV("limit", 25);
+        UniValue params(UniValue::VARR);
+        params.push_back(q);
+        if (const auto feed = tryRpc("getmodelfeed", params)) {
+            renderSearchResponse(*feed);
+            ui->searchCoverageLabel->setText(
+                tr("Feed sequence %1 — live (no restart). Coverage remains incomplete.")
+                    .arg(QString::number(seq)));
+        }
+    }
+#else
+    (void)0;
+#endif
 }
 
 void ModelNetPage::pollCampaign(const QString& id, int attempt)
@@ -1029,20 +1140,20 @@ void ModelNetPage::refresh()
         QLatin1String("\n\n") + callRpc("listmodels") +
         rpc_note.arg(QStringLiteral("listmodels")));
     ui->collectionsOutput->setPlainText(
-        tr("Collections are signed immutable membership snapshots.\n"
-           "Preview or subscribe with:\n"
-           "  btx-cli resolveresource\n"
-           "  btx-cli subscribemodelcollection\n"
-           "This GUI does not auto-subscribe or auto-fetch.") +
-        rpc_note.arg(QStringLiteral("subscribemodelcollection")));
+        tr("searchcollections — signed immutable membership snapshots. This GUI does not auto-subscribe or auto-fetch.\n") +
+        callRpc("searchcollections") +
+        rpc_note.arg(QStringLiteral("searchcollections, getcollection, subscribemodelcollection")));
+    ui->identityOutput->setPlainText(
+        tr("searchpublishers (local/network-sample identities; not a global directory)\n") +
+        callRpc("searchpublishers") +
+        QLatin1String("\n\n") +
+        tr("Research identities are not spending keys and not the wallet.\n\nlistmodelidentities\n") +
+        callRpc("listmodelidentities") +
+        rpc_note.arg(QStringLiteral("searchpublishers, getpublisher, listmodelidentities, createmodelidentity")));
     ui->preservationOutput->setPlainText(
         tr("getmodelpolicy") + QLatin1Char('\n') + callRpc("getmodelpolicy") +
         rpc_note.arg(QStringLiteral("getmodelpolicy")));
     ui->peersOutput->setPlainText(
         tr("getmodelpeers") + QLatin1Char('\n') + callRpc("getmodelpeers") +
         rpc_note.arg(QStringLiteral("getmodelpeers")));
-    ui->identityOutput->setPlainText(
-        tr("Research identities are not spending keys and not the wallet.\n\nlistmodelidentities\n") +
-        callRpc("listmodelidentities") +
-        rpc_note.arg(QStringLiteral("listmodelidentities, createmodelidentity")));
 }

@@ -34,7 +34,13 @@ trap cleanup EXIT
 
 "$BTXD" -regtest -datadir="$DATADIR" -listen=0 -server=1 \
   -rpcuser=u -rpcpassword=p -fallbackfee=0.0001 \
-  -modelhelper="$MODELD" -daemon=0 \
+  -modelhelper="$MODELD" -modelstorage=8MiB \
+  -autoshieldcoinbase=0 \
+  -regtestmatmulbindingheight=2147483647 \
+  -regtestmatmulproductdigestheight=2147483647 \
+  -regtestmatmulv4height=2147483647 \
+  -regtestmatmulrequireproductpayload=0 \
+  -daemon=0 \
   >"$WORKDIR/btxd.log" 2>&1 &
 PID=$!
 ok=0
@@ -85,4 +91,91 @@ assert (j.get("lifecycle") or {}).get("state") or j.get("lifecycle_state")
 assert j.get("automatic_spend_atoms")==0
 '
 "$CLI" -regtest -datadir="$DATADIR" -rpcuser=u -rpcpassword=p getblockchaininfo >/dev/null
+
+CLIW=("$CLI" -regtest -datadir="$DATADIR" -rpcuser=u -rpcpassword=p)
+"${CLIW[@]}" createwallet w >/dev/null
+ADDR="$("${CLIW[@]}" -rpcwallet=w getnewaddress)"
+"${CLIW[@]}" generatetoaddress 101 "$ADDR" >/dev/null
+python3 - "$DATADIR" "$WORKDIR" "$CLI" <<'PY'
+import json, os, socket, struct, subprocess, sys, time
+from pathlib import Path
+datadir, workdir, cli = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+cliw = [cli, "-regtest", f"-datadir={datadir}", "-rpcuser=u", "-rpcpassword=p", "-rpcwallet=w"]
+
+def cli(*args):
+    out = subprocess.check_output([*cliw, *args], text=True)
+    out = out.strip()
+    if not out:
+        return {}
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return out
+
+src = workdir / "weights.safetensors"
+n = 64
+header = {"w": {"dtype": "F32", "shape": [n], "data_offsets": [0, n * 4]}}
+hb = json.dumps(header, separators=(",", ":")).encode()
+src.write_bytes(struct.pack("<Q", len(hb)) + hb + bytes(n * 4))
+imp = cli("importmodel", str(src), '{"pin":true}')
+uri = imp.get("uri")
+if not uri:
+    raise SystemExit(f"importmodel {imp}")
+secret = "22" * 32
+height = int(cli("getblockcount")) + 1000
+rel = cli("createmodelrelease", json.dumps({
+    "uri": uri,
+    "secret32_hex": secret,
+    "refund_height": height,
+    "target_atoms": 100000,
+    "publish_search_record": True,
+    "display_name": "RegtestFunded",
+    "short_description": "chain join campaign",
+}))
+rid = rel.get("release_id") or rel.get("id")
+econ = cli("getmodelreleaseeconomics", rid)
+kh = (econ.get("key_hash") or (econ.get("release") or {}).get("key_hash") or
+      rel.get("key_hash"))
+if not kh:
+    raise SystemExit(f"no key_hash {econ} {rel}")
+def dummy(seed):
+    return bytes((seed + i) & 0xFF for i in range(1312)).hex()
+opts = {
+    "release_id": rid,
+    "key_hash": kh,
+    "claimant": dummy(0x21),
+    "refund_pubkey": dummy(0x31),
+    "refund_height": height,
+    "amount_atoms": 100000,
+    "auto_pay": False,
+    "assurance": "KEY_RELEASE_ONLY",
+}
+frozen = cli("preparemodelfunding", json.dumps(opts))
+if not isinstance(frozen, dict) or "unsigned_hex" not in frozen:
+    raise SystemExit(f"preparemodelfunding {frozen}")
+if frozen.get("automatic_spend", 1) != 0:
+    raise SystemExit(f"auto spend {frozen}")
+unsigned = frozen["unsigned_hex"]
+signed = cli("signmodelfunding", unsigned, json.dumps(frozen))
+if not signed.get("complete"):
+    raise SystemExit(f"sign incomplete {signed}")
+submitted = cli("submitmodelfunding", signed["hex"], json.dumps(frozen))
+txid = submitted.get("txid")
+if not txid:
+    raise SystemExit(f"submit {submitted}")
+addr = cli("getnewaddress")
+if isinstance(addr, dict):
+    raise SystemExit(addr)
+cli("generatetoaddress", "1", addr)
+# Join confirmed funding into economy cards.
+econ2 = cli("getmodelreleaseeconomics", rid)
+rel2 = econ2.get("release") if isinstance(econ2.get("release"), dict) else econ2
+src = rel2.get("funding_source") or econ2.get("funding_source")
+confirmed = rel2.get("confirmed_funded_atoms", econ2.get("confirmed_funded_atoms"))
+if src != "CHAIN_OBSERVATION":
+    raise SystemExit(f"funding_source {src} card={econ2}")
+if not confirmed or int(confirmed) <= 0:
+    raise SystemExit(f"confirmed_funded_atoms {confirmed} {econ2}")
+print("ECON chain-join PASS", confirmed, flush=True)
+PY
 echo "e2e-economy-regtest: PASS"

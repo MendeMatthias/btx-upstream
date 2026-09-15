@@ -8,6 +8,7 @@
 #include <modelnet/catalog.h>
 #include <modelnet/helper.h>
 #include <modelnet/bridge.h>
+#include <modelnet/economy.h>
 #include <modelnet/policy.h>
 #include <modelnet/resource_uri.h>
 #include <modelnet/supervisor.h>
@@ -26,12 +27,14 @@
 #include <sync.h>
 #include <univalue.h>
 #include <util/fs.h>
+#include <util/strencodings.h>
 
 #ifdef ENABLE_WALLET
 #include <interfaces/wallet.h>
 #include <wallet/model_funding.h>
 #include <wallet/rpc/util.h>
 #include <wallet/wallet.h>
+#include <wallet/context.h>
 #endif
 
 namespace {
@@ -90,6 +93,22 @@ std::shared_ptr<wallet::CWallet> WalletForModelFunding(const JSONRPCRequest& req
     return wallet::GetWalletForJSONRPCRequest(wallet_req);
 }
 
+/** Optional wallet for joining confirmed HTLC UTXOs into economy cards. Never throws. */
+std::shared_ptr<wallet::CWallet> MaybeWalletForObservation(const JSONRPCRequest& request)
+{
+    try {
+        node::NodeContext& node = EnsureAnyNodeContext(request.context);
+        if (!node.wallet_loader || !node.wallet_loader->context()) return nullptr;
+        JSONRPCRequest wallet_req = request;
+        node.wallet_loader->assignContextHACK(wallet_req.context);
+        wallet::WalletContext& context = wallet::EnsureWalletContext(wallet_req.context);
+        size_t count = 0;
+        return wallet::GetDefaultWallet(context, count);
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 wallet::FrozenFundingQuote QuoteFromRequest(const std::string& release_id, const UniValue& options)
 {
     wallet::FrozenFundingQuote q;
@@ -146,6 +165,66 @@ RPCHelpMan ProxyOrLocal(const std::string& name, const std::string& help, std::v
                         const bool reachable = result.exists("public_host_reachable") && result["public_host_reachable"].isTrue();
                         result.pushKV("nat_limited", !reachable);
                     }
+                }
+                if (name == "getmodeleconomyentry" || name == "getmodelreleaseeconomics" ||
+                    name == "getmodelfeed" || name == "getrecentreleases" || name == "getfundablemodels" ||
+                    name == "getrecentlyunlockedmodels" || name == "getreleasefeed") {
+#ifdef ENABLE_WALLET
+                    auto join_card = [&](UniValue& card) {
+                        std::string kh;
+                        uint32_t rh = 0;
+                        const UniValue* rel = (card.exists("release") && card["release"].isObject()) ? &card["release"] : &card;
+                        if (rel->exists("key_hash") && (*rel)["key_hash"].isStr()) kh = (*rel)["key_hash"].get_str();
+                        else if (rel->exists("key_hash_sha256") && (*rel)["key_hash_sha256"].isStr()) {
+                            kh = (*rel)["key_hash_sha256"].get_str();
+                        }
+                        if (rel->exists("refund_height") && (*rel)["refund_height"].isNum()) {
+                            rh = static_cast<uint32_t>((*rel)["refund_height"].getInt<int64_t>());
+                        }
+                        std::string os;
+                        if (rel->exists("output_script") && (*rel)["output_script"].isStr()) {
+                            os = (*rel)["output_script"].get_str();
+                        }
+                        if (kh.empty() && os.empty()) return;
+                        std::shared_ptr<wallet::CWallet> w = MaybeWalletForObservation(request);
+                        if (!w) return;
+                        UniValue obs = wallet::ObserveReleaseFunding(*w, kh, rh, os);
+                        if (rel->exists("release_id") && (*rel)["release_id"].isStr()) {
+                            obs.pushKV("release_id", (*rel)["release_id"].get_str());
+                        } else if (card.exists("release_id") && card["release_id"].isStr()) {
+                            obs.pushKV("release_id", card["release_id"].get_str());
+                        }
+                        modelnet::ApplyChainObservationJson(card, obs);
+                        UniValue ingest_params(UniValue::VARR);
+                        ingest_params.push_back(obs);
+                        UniValue ign;
+                        std::string ierr;
+                        HelperCall("ingestchainfundingobservation", ingest_params, ign, ierr);
+                    };
+                    if (result.exists("results") && result["results"].isArray()) {
+                        UniValue arr(UniValue::VARR);
+                        for (UniValue card : result["results"].getValues()) {
+                            join_card(card);
+                            arr.push_back(card);
+                        }
+                        result.pushKV("results", arr);
+                    } else if (result.exists("items") && result["items"].isArray()) {
+                        UniValue arr(UniValue::VARR);
+                        for (UniValue it : result["items"].getValues()) {
+                            if (it.isObject() && it.exists("entry") && it["entry"].isObject()) {
+                                UniValue e = it["entry"];
+                                join_card(e);
+                                it.pushKV("entry", e);
+                            } else {
+                                join_card(it);
+                            }
+                            arr.push_back(it);
+                        }
+                        result.pushKV("items", arr);
+                    } else {
+                        join_card(result);
+                    }
+#endif
                 }
                 return result;
             }
@@ -827,6 +906,17 @@ static RPCHelpMan preparemodelfunding()
             if (!wallet::CreateUnsignedFunding(*pwallet, q, err)) {
                 const bool funds = err.find("nsufficient") != std::string::npos;
                 throw JSONRPCError(funds ? RPC_WALLET_INSUFFICIENT_FUNDS : RPC_WALLET_ERROR, err);
+            }
+            if (!q.release_id.empty() && !q.output_script.empty()) {
+                UniValue notify_params(UniValue::VARR);
+                UniValue body(UniValue::VOBJ);
+                body.pushKV("release_id", q.release_id);
+                body.pushKV("output_script", HexStr(q.output_script));
+                if (!q.key_hash_hex.empty()) body.pushKV("key_hash", q.key_hash_hex);
+                notify_params.push_back(body);
+                UniValue ign;
+                std::string ierr;
+                HelperCall("setreleaseoutputscript", notify_params, ign, ierr);
             }
             return wallet::FrozenQuoteToJson(q);
 #else

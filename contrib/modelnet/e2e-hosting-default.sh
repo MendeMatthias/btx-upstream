@@ -52,18 +52,22 @@ echo "$info"
 echo "$info" | grep -q '"enabled": true'
 echo "$info" | grep -E -q '"helper_ready": true|"helper_state": "READY"'
 echo "$info" | grep -q '"automatic_spend_atoms": 0'
-# AUTO storage must be nonzero on a real filesystem with free space.
-python3 - <<'PY' "$info"
-import json,sys
-j=json.loads(sys.argv[1]) if False else None
-PY
+# AUTO must keep 10% / 32GiB reserve. Effective quota is positive only when
+# available > reserve; a 90% root disk correctly reports 0.
 python3 -c '
 import json,sys
 raw=sys.stdin.read()
 j=json.loads(raw)
-quota=int(j.get("storage_effective_quota_bytes") or j.get("quota_bytes") or 0)
-assert quota>0, raw
+assert j.get("storage_mode") == "AUTO", raw
 assert j.get("automatic_spend_atoms",1)==0
+quota=int(j.get("storage_effective_quota_bytes") or 0)
+avail=int(j.get("filesystem_available_bytes") or 0)
+reserve=int(j.get("filesystem_reserve_bytes") or 0)
+assert reserve > 0, raw
+if avail > reserve:
+    assert quota > 0, raw
+else:
+    assert quota == 0, raw
 ' <<<"$info"
 
 # START-02: -modelnet=0 never starts helper

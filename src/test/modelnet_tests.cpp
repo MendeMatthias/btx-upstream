@@ -908,8 +908,14 @@ BOOST_AUTO_TEST_CASE(catalog_import_seed_list_and_native_http)
 
     UniValue listed_after_seed;
     BOOST_REQUIRE(cat.List(listed_after_seed));
-    BOOST_REQUIRE_EQUAL(listed_after_seed["models"].size(), 1);
-    BOOST_CHECK(listed_after_seed["models"][0]["bytes_verified"].get_bool());
+    BOOST_REQUIRE(listed_after_seed["models"].size() >= 1);
+    bool orig_verified = false;
+    for (const auto& m : listed_after_seed["models"].getValues()) {
+        if (m.exists("model_id") && m["model_id"].isStr() && m["model_id"].get_str() == imported.model_id.Hex()) {
+            orig_verified = m.exists("bytes_verified") && m["bytes_verified"].get_bool();
+        }
+    }
+    BOOST_CHECK(orig_verified);
 }
 
 BOOST_AUTO_TEST_CASE(catalog_quota_zero_refuses_import)

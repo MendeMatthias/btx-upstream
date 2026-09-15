@@ -52,6 +52,10 @@ UniValue ExportModelRecoveryJson(const FrozenFundingQuote& q);
 bool CreateUnsignedFunding(CWallet& wallet, FrozenFundingQuote& q, std::string& err);
 bool SignFrozenFunding(CWallet& wallet, CMutableTransaction& mtx, bool& complete, std::string& err);
 
+/** Local wallet+chain view of a campaign HTLC. Not a remote peer claim. Never returns secrets. */
+UniValue ObserveReleaseFunding(CWallet& wallet, const std::string& key_hash_hex, uint32_t refund_height,
+                               const std::string& output_script_hex = {});
+
 } // namespace wallet
 
 #endif // BITCOIN_WALLET_MODEL_FUNDING_H
