@@ -29,6 +29,25 @@ Defaults for a packaged install (`-modelnet=1`, `-modelstorage=auto`):
 
 `seedmodel` is only for `-modelseed=manual`.
 
+## Search, feed, and funding (GUI + RPC)
+
+The Models page default is **Latest** (`getmodelfeed` NETWORK NEWEST), not
+a local-only file manager. Tabs: Latest, Nearly Funded, Available, Rare,
+Just Released, Local, Releases.
+
+```bash
+btx-cli searchmodels '{"text":"coding agent","scope":"NETWORK"}'
+btx-cli getmodelfeed '{"scope":"NETWORK","mode":"NEARLY_FUNDED"}'
+btx-cli getmodeleconomyentry '<model_id>'
+# Fund Release in the GUI calls preparefundmodelrelease (unsigned). Wallet signs.
+```
+
+Creator path: `importmodel` → `publishmodelsearchrecord` →
+`createmodelrelease` (SHA-256 only) → campaign appears in network search/feed
+→ fund → claim reveals secret → public model.
+
+See [model-economy.md](model-economy.md) and [feed.md](feed.md).
+
 ## Build (one compile tree)
 
 ```bash

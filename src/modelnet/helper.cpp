@@ -25,6 +25,8 @@
 #include <modelnet/records.h>
 #include <modelnet/qualification.h>
 #include <modelnet/release.h>
+#include <modelnet/economy.h>
+#include <modelnet/feed.h>
 #include <modelnet/resource_uri.h>
 #include <modelnet/router.h>
 #include <modelnet/swarm.h>
@@ -888,8 +890,8 @@ struct Pq1Session {
     }
 };
 
-bool QuerySearchPeer(Pq1Context& pq, const fs::path& pinfile, const std::string& endpoint,
-                     const UniValue& query_body, UniValue& out, bool& timed_out, std::string& err)
+bool QueryExtPeer(Pq1Context& pq, const fs::path& pinfile, const std::string& endpoint, const std::string& ext_path,
+                  const UniValue& query_body, UniValue& out, bool& timed_out, std::string& err)
 {
     timed_out = false;
     std::string host;
@@ -909,18 +911,24 @@ bool QuerySearchPeer(Pq1Context& pq, const fs::path& pinfile, const std::string&
     NativeRequest req;
     NativeResponse resp;
     req.method = "POST";
-    req.path = std::string(MODEL_HTTP_ROOT) + "ext/search";
+    req.path = std::string(MODEL_HTTP_ROOT) + ext_path;
     req.body = query_body.write();
     if (!sess.Request(req, resp, err) || resp.status != 200) {
         timed_out = true;
-        if (err.empty()) err = "search peer http";
+        if (err.empty()) err = "ext peer http";
         return false;
     }
     if (!out.read(resp.body) || !out.isObject()) {
-        err = "search peer json";
+        err = "ext peer json";
         return false;
     }
     return true;
+}
+
+bool QuerySearchPeer(Pq1Context& pq, const fs::path& pinfile, const std::string& endpoint,
+                     const UniValue& query_body, UniValue& out, bool& timed_out, std::string& err)
+{
+    return QueryExtPeer(pq, pinfile, endpoint, "ext/search", query_body, out, timed_out, err);
 }
 
 Digest48 IdFromUser(const std::string& s, std::string& err)
@@ -1039,6 +1047,10 @@ static std::mutex g_search_mu;
 static std::map<std::string, std::vector<ProviderObservation>> g_search_obs;
 static QueryDedupe g_search_dedupe;
 static bool g_search_bound{false};
+static FeedStore g_feed;
+static CampaignIndex g_campaigns;
+static bool g_feed_loaded{false};
+static fs::path g_econ_dir;
 
 bool AllowModelSeedBytes(const ModelCatalog& cat, size_t n);
 
@@ -1048,6 +1060,76 @@ void EnsureSearchBound()
         g_search_rt.Bind(&g_search_idx);
         g_search_bound = true;
     }
+}
+
+void EnsureEconomy(ModelCatalog& cat)
+{
+    EnsureSearchBound();
+    const fs::path dir = HelperDir(cat);
+    if (g_feed_loaded && dir == g_econ_dir) return;
+    g_campaigns.Clear();
+    g_feed = FeedStore();
+    g_econ_dir = dir;
+    g_feed_loaded = true;
+    g_feed.SetPath(dir / "feed.json");
+    std::string err;
+    (void)g_search_idx.Load(dir / "search-index.json", ConnNowMs(), err);
+    (void)g_feed.Load(ConnNowMs(), err);
+    std::vector<ReleaseCampaign> local;
+    if (LoadCampaigns(dir, local, err)) {
+        for (const auto& c : local) g_campaigns.Put(c, err);
+    }
+}
+
+void PersistEconomy(ModelCatalog& cat)
+{
+    std::string err;
+    (void)g_search_idx.Save(HelperDir(cat) / "search-index.json", err);
+    (void)g_feed.Save(err);
+    (void)SaveCampaigns(HelperDir(cat), g_campaigns.List(), err);
+}
+
+FundingObservation ObservationFromHit(const SearchHit& h, const ReleaseCampaign* campaign)
+{
+    FundingObservation f;
+    f.funding_source = "OBSERVED_NETWORK_STATE";
+    f.ciphertext_providers_observed = h.health.providers_observed;
+    if (campaign) {
+        f.confirmed_known = false;
+        f.confirmed_funded_atoms = 0;
+        if (campaign->refund_height > 0) f.refund_status = RefundStatus::NOT_MATURE;
+    }
+    return f;
+}
+
+ModelEconomyEntry EconomyForHit(const SearchHit& h)
+{
+    const ReleaseCampaign* c = g_campaigns.GetByModel(h.rec.model_id);
+    if (!c && !h.rec.release_id.empty()) c = g_campaigns.GetByReleaseHex(h.rec.release_id);
+    return ComposeEconomyEntry(h, c, ObservationFromHit(h, c));
+}
+
+UniValue EconomyCard(const SearchHit& h)
+{
+    return EconomySearchCard(EconomyForHit(h));
+}
+
+void AfterIndexPut(const ModelSearchRecord& rec, int64_t now_ms)
+{
+    g_feed.NoteSearchRecord(rec, now_ms);
+    g_campaigns.IngestFromSearchRecord(rec);
+}
+
+std::vector<ModelEconomyEntry> EconomyHits(std::vector<SearchHit> hits, const SearchQuery& q)
+{
+    std::vector<ModelEconomyEntry> out;
+    for (auto& h : hits) {
+        auto e = EconomyForHit(h);
+        if (!MatchesEconomyFilters(e, q.filters)) continue;
+        out.push_back(std::move(e));
+    }
+    SortEconomyEntries(out, q.sort);
+    return out;
 }
 
 void IngestCatalogIntoSearch(ModelCatalog& cat)
@@ -1607,6 +1689,38 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         o.pushKV("forward", ShouldForwardSearch(ttl - 1, 1));
         o.pushKV("authoritative", false);
         o.pushKV("node_model_index", true);
+        resp.body = o.write();
+        return true;
+    }
+    if (req.path == root + "ext/feed" && req.method == "POST") {
+        EnsureEconomy(cat);
+        UniValue body;
+        if (!body.read(req.body) || !body.isObject()) {
+            resp.status = 400;
+            resp.body = JsonError("BAD_JSON", "feed body");
+            return true;
+        }
+        FeedQuery fq;
+        if (body.exists("mode")) ParseFeedMode(body["mode"].get_str(), fq.mode);
+        if (body.exists("limit")) fq.limit = body["limit"].getInt<int>();
+        if (body.exists("cursor")) fq.cursor = body["cursor"].get_str();
+        fq.scope = SearchScope::LOCAL;
+        std::lock_guard<std::mutex> lock(g_search_mu);
+        std::string next;
+        const auto items = g_feed.Query(fq, ConnNowMs(), next);
+        std::vector<ModelEconomyEntry> entries;
+        UniValue recs(UniValue::VARR);
+        for (const auto& ev : items) {
+            SearchHit h;
+            h.rec = ev.rec;
+            if (h.rec.model_id.IsNull()) h.rec.model_id = ev.model_id;
+            entries.push_back(EconomyForHit(h));
+            recs.push_back(SearchRecordToJson(h.rec));
+        }
+        FeedCoverage cov;
+        UniValue o = FeedPageJson(items, entries, fq, cov, g_feed.Sequence(), next);
+        o.pushKV("records", recs);
+        o.pushKV("authoritative", false);
         resp.body = o.write();
         return true;
     }
@@ -2758,6 +2872,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     }
     if (method == "searchmodels") {
         EnsureSearchBound();
+        EnsureEconomy(cat);
         std::unique_lock<std::mutex> lock(g_search_mu);
         IngestCatalogIntoSearch(cat);
         SearchQuery q;
@@ -2840,9 +2955,10 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             ModelSearchRecord rec;
             std::string ierr;
             if (!SearchRecordFromJson(recj, rec, ierr)) continue;
-            (void)g_search_idx.Put(rec, ConnNowMs(), ierr);
+            if (g_search_idx.Put(rec, ConnNowMs(), ierr)) AfterIndexPut(rec, ConnNowMs());
         }
         MergeRemoteSearchHits(job, std::move(remote_hits));
+        job.hits = g_search_idx.Search(q, ConnNowMs());
         lock.unlock();
         int routing_known = 0;
         std::map<std::string, std::vector<ProviderObservation>> extra_obs;
@@ -2878,7 +2994,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 if (!dup) obs.push_back(o);
             }
         }
-        result.pushKV("schema_version", 2);
+        result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
         result.pushKV("query_id", job.query_id);
         result.pushKV("text", q.text);
         result.pushKV("scope", SearchScopeName(q.scope));
@@ -2894,6 +3010,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         cov.pushKV("global_complete", false);
         result.pushKV("coverage", cov);
         UniValue arr(UniValue::VARR);
+        std::vector<SearchHit> decorated;
         for (auto& h : job.hits) {
             auto it = g_search_obs.find(h.rec.model_id.Hex());
             if (it != g_search_obs.end()) h.health = ComputeSwarmHealth(0, 0, it->second);
@@ -2905,8 +3022,11 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 h.local.partial = e.incomplete;
                 h.local.downloaded = e.bytes_verified;
             }
-            arr.push_back(SearchResultCard(h));
+            decorated.push_back(h);
         }
+        auto entries = EconomyHits(std::move(decorated), q);
+        if (static_cast<int>(entries.size()) > q.limit && q.limit > 0) entries.resize(q.limit);
+        for (const auto& e : entries) arr.push_back(EconomySearchCard(e));
         result.pushKV("results", arr);
         result.pushKV("results_returned", static_cast<int>(arr.size()));
         result.pushKV("total_candidates_seen", static_cast<int>(job.hits.size()));
@@ -2914,6 +3034,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("unsupported_filters", UniValue(UniValue::VARR));
         result.pushKV("remote_count", job.coverage.responses_received);
         result.pushKV("note", "current network view; not a complete global directory");
+        result.pushKV("automatic_spend_atoms", 0);
         return true;
     }
     if (method == "getmodelsearchrecord") {
@@ -2936,6 +3057,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     }
     if (method == "publishmodelsearchrecord" || method == "updatemodelsearchrecord") {
         EnsureSearchBound();
+        EnsureEconomy(cat);
         ModelSearchRecord rec;
         if (Arg(1).isObject()) {
             if (!SearchRecordFromJson(Arg(1), rec, err)) {
@@ -2979,6 +3101,8 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             err_code = "REJECTED";
             return false;
         }
+        AfterIndexPut(rec, ConnNowMs());
+        PersistEconomy(cat);
         const auto* stored = g_search_idx.Get(rec.model_id);
         result.pushKV("schema_version", 2);
         result.pushKV("model_id", rec.model_id.Hex());
@@ -3032,7 +3156,10 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             ModelSearchRecord rec;
             std::string ierr;
             if (!SearchRecordFromJson(recj, rec, ierr) || !g_search_idx.Put(rec, ConnNowMs(), err)) ++bad;
-            else ++ok;
+            else {
+                AfterIndexPut(rec, ConnNowMs());
+                ++ok;
+            }
         }
         result.pushKV("schema_version", 2);
         result.pushKV("imported", ok);
@@ -3042,6 +3169,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     }
     if (method == "getmodeldirectoryentry" || method == "getmodeldirectory") {
         EnsureSearchBound();
+        EnsureEconomy(cat);
         std::lock_guard<std::mutex> lock(g_search_mu);
         IngestCatalogIntoSearch(cat);
         if (method == "getmodeldirectory") {
@@ -3050,8 +3178,9 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             q.scope = SearchScope::ALL;
             const auto hits = g_search_idx.Search(q, ConnNowMs());
             UniValue arr(UniValue::VARR);
-            for (const auto& h : hits) arr.push_back(DirectoryEntryJson(h));
-            result.pushKV("schema_version", 2);
+            auto entries = EconomyHits(hits, q);
+            for (const auto& e : entries) arr.push_back(EconomySearchCard(e));
+            result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
             result.pushKV("results", arr);
             result.pushKV("global_complete", false);
             return true;
@@ -3070,7 +3199,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             h.local.pinned = e.pinned;
             h.local.partial = e.incomplete;
         }
-        result = DirectoryEntryJson(h);
+        result = EconomySearchCard(EconomyForHit(h));
         return true;
     }
     if (method == "getmodelproviders" || method == "getmodelavailability" || method == "getmodelpeercount") {
@@ -3179,6 +3308,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     if (method == "browsemodels" || method == "gettrendingmodels" || method == "getsimilarmodels" ||
         method == "getnewmodels" || method == "getrecentreleases") {
         EnsureSearchBound();
+        EnsureEconomy(cat);
         std::lock_guard<std::mutex> lock(g_search_mu);
         IngestCatalogIntoSearch(cat);
         SearchQuery q;
@@ -3188,8 +3318,11 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 return false;
             }
         }
-        if (method == "getnewmodels") q.sort = SearchSort::NEWEST;
-        if (method == "gettrendingmodels") q.sort = SearchSort::PROVIDERS;
+        if (method == "getnewmodels") {
+            if (!Arg(0).isObject() || !Arg(0).exists("scope")) q.scope = SearchScope::LOCAL;
+            q.sort = SearchSort::NEWEST;
+        }
+        if (method == "gettrendingmodels") q.sort = SearchSort::TRENDING;
         if (method == "browsemodels" && (!Arg(0).isObject() || !Arg(0).exists("sort"))) {
             q.sort = SearchSort::AVAILABILITY;
         }
@@ -3198,25 +3331,38 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         }
         const auto hits = g_search_idx.Search(q, ConnNowMs());
         UniValue arr(UniValue::VARR);
-        std::map<std::string, std::string> campaign_ids;
         if (method == "getrecentreleases") {
-            std::vector<ReleaseCampaign> campaigns;
-            std::string cerr;
-            LoadCampaigns(HelperDir(cat), campaigns, cerr);
-            for (const auto& c : campaigns) campaign_ids[c.model_id.Hex()] = c.release_id.Hex();
-        }
-        for (auto h : hits) {
-            if (method == "getrecentreleases") {
-                auto it = campaign_ids.find(h.rec.model_id.Hex());
-                if (it != campaign_ids.end() && h.rec.release_id.empty()) h.rec.release_id = it->second;
-                if (h.rec.release_id.empty()) continue;
+            for (const auto& c : g_campaigns.List()) {
+                SearchHit h;
+                if (const auto* r = g_search_idx.Get(c.model_id)) h.rec = *r;
+                else {
+                    h.rec.model_id = c.model_id;
+                    h.rec.artifact_id = c.artifact_id;
+                    h.rec.release_id = c.release_id.Hex();
+                    h.rec.release_state = "FUNDING";
+                    h.rec.release_target_atoms = c.target_atoms;
+                    h.rec.key_hash = c.key_hash;
+                    h.rec.refund_height = c.refund_height;
+                }
+                if (h.rec.release_id.empty()) h.rec.release_id = c.release_id.Hex();
+                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c));
+                if (Arg(0).isObject() && Arg(0).exists("scope") && ToUpper(Arg(0)["scope"].get_str()) == "LOCAL") {
+                    // keep
+                }
+                arr.push_back(EconomySearchCard(e));
             }
-            arr.push_back(SearchResultCard(h));
+        } else {
+            auto entries = EconomyHits(hits, q);
+            for (const auto& e : entries) arr.push_back(EconomySearchCard(e));
         }
-        result.pushKV("schema_version", 2);
+        result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
         result.pushKV("results", arr);
         result.pushKV("metric", method == "gettrendingmodels" ? "observed_provider_growth_local" : SearchSortName(q.sort));
         result.pushKV("global_complete", false);
+        if (method == "getnewmodels" && (!Arg(0).isObject() || !Arg(0).exists("scope"))) {
+            result.pushKV("scope", "LOCAL");
+            result.pushKV("note", "bare getnewmodels remains local-index; use getmodelfeed scope=NETWORK");
+        }
         return true;
     }
     if (method == "getsearchstatus") {
@@ -3628,6 +3774,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         return true;
     }
     if (method == "createmodelrelease") {
+        EnsureEconomy(cat);
         Resource r;
         if (!DecodeResource(Arg(0).get_str(), r, err) || r.kind != ResourceKind::MODEL) {
             err_code = "INVALID_PARAMETER";
@@ -3637,6 +3784,13 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         if (params.isArray() && params.size() < 3) {
             err_code = "INVALID_PARAMETER";
             err = "createmodelrelease(uri, secret32_hex, refund_height)";
+            return false;
+        }
+        UniValue options(UniValue::VOBJ);
+        if (params.isArray() && params.size() > 4 && Arg(4).isObject()) options = Arg(4);
+        else if (params.isArray() && params.size() > 3 && Arg(3).isObject()) options = Arg(3);
+        if (!RejectHash160Campaign(options, err)) {
+            err_code = "INVALID_PARAMETER";
             return false;
         }
         const auto secret = TryParseHex<unsigned char>(Arg(1).get_str());
@@ -3652,75 +3806,134 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         c.model_id = r.digest;
         CatalogEntry local;
         if (cat.Find(r.digest, local)) c.artifact_id = local.artifact_id;
+        c.ciphertext_artifact_id = c.artifact_id;
         c.key_hash = ReleaseHash(*secret);
-        c.refund_height = Arg(2).getInt<uint32_t>();
-        c.target_atoms = (params.isArray() && params.size() > 3) ? Arg(3).getInt<int64_t>() : 0;
+        c.hashlock_algorithm = "SHA256";
+        c.assurance = "KEY_RELEASE_ONLY";
+        c.refund_height = static_cast<uint32_t>(Arg(2).getInt<int64_t>());
+        if (params.isArray() && params.size() > 3 && Arg(3).isNum()) c.target_atoms = Arg(3).getInt<int64_t>();
+        else if (options.exists("target_atoms")) c.target_atoms = options["target_atoms"].getInt<int64_t>();
+        c.campaign_created_at = ConnNowMs();
         if (!ValidRefundWindow(1, 1, 1, c.refund_height) && c.refund_height < 10) {
             err_code = "INVALID_PARAMETER";
             err = "refund_height too low";
             return false;
         }
-        std::vector<ReleaseCampaign> campaigns;
-        const fs::path dir = cat.Store().Root().parent_path();
-        if (!LoadCampaigns(dir, campaigns, err)) {
-            err_code = "IO";
-            return false;
+        {
+            UniValue store;
+            ReadJsonFile(HelperDir(cat) / "identities.json", store);
+            if (store.exists("identities") && store["identities"].isArray() && !store["identities"].getValues().empty()) {
+                const UniValue& idj = store["identities"].getValues().front();
+                if (idj.exists("pubkey_hex") && idj.exists("id")) {
+                    c.pubkey = ParseHex(idj["pubkey_hex"].get_str());
+                    const std::string hexid = idj["id"].get_str();
+                    const fs::path skpath = HelperDir(cat) / "tls" /
+                                            fs::PathFromString("identity-" + hexid.substr(0, 16) + ".sk");
+                    std::ifstream skf(fs::PathToString(skpath), std::ios::binary);
+                    std::vector<unsigned char> sk((std::istreambuf_iterator<char>(skf)), std::istreambuf_iterator<char>());
+                    std::string serr;
+                    if (!sk.empty() && SignReleaseCampaign(c, Span<const unsigned char>{sk.data(), sk.size()}, serr)) {
+                        c.signed_ok = true;
+                    }
+                }
+            }
         }
-        campaigns.push_back(c);
-        if (!SaveCampaigns(dir, campaigns, err)) {
-            err_code = "IO";
-            return false;
+        std::string cerr;
+        g_campaigns.Put(c, cerr);
+        SaveCampaigns(HelperDir(cat), g_campaigns.List(), err);
+        g_feed.NoteCampaign(c, ConnNowMs());
+        bool published_search = false;
+        std::string search_record_id;
+        const bool want_pub = !options.exists("publish_search_record") || options["publish_search_record"].get_bool();
+        if (want_pub && (options.exists("searchable_metadata") || options.exists("display_name") || options.exists("short_description"))) {
+            ModelSearchRecord rec;
+            if (options.exists("searchable_metadata") && options["searchable_metadata"].isObject()) {
+                SearchRecordFromJson(options["searchable_metadata"], rec, err);
+            }
+            rec.model_id = c.model_id;
+            rec.artifact_id = c.artifact_id;
+            rec.release_id = c.release_id.Hex();
+            rec.release_state = "FUNDING";
+            rec.release_target_atoms = c.target_atoms;
+            rec.key_hash = c.key_hash;
+            rec.refund_height = c.refund_height;
+            rec.campaign_created_at = c.campaign_created_at;
+            rec.ciphertext_artifact_id = c.ciphertext_artifact_id;
+            rec.assurance = "KEY_RELEASE_ONLY";
+            if (options.exists("display_name")) rec.display_name = options["display_name"].get_str();
+            if (options.exists("short_description")) rec.short_description = options["short_description"].get_str();
+            if (rec.canonical_name.empty()) rec.canonical_name = rec.display_name;
+            rec.published_at = c.campaign_created_at;
+            std::lock_guard<std::mutex> lock(g_search_mu);
+            if (g_search_idx.Put(rec, ConnNowMs(), err)) {
+                AfterIndexPut(rec, ConnNowMs());
+                published_search = true;
+                search_record_id = rec.model_id.Hex();
+            }
         }
+        PersistEconomy(cat);
         result = CampaignToJson(c);
         result.pushKV("secret_retained", false);
+        result.pushKV("search_record_id", search_record_id);
+        result.pushKV("publish_state", published_search ? "published" : "local_campaign_only");
+        result.pushKV("lifecycle_state", "FUNDING");
+        result.pushKV("automatic_spend_atoms", 0);
         return true;
     }
     if (method == "getmodelrelease") {
-        std::vector<ReleaseCampaign> campaigns;
-        const fs::path dir = cat.Store().Root().parent_path();
-        LoadCampaigns(dir, campaigns, err);
-        result.pushKV("schema_version", 2);
+        EnsureEconomy(cat);
+        result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
         UniValue arr(UniValue::VARR);
         if (params.isArray() && params.size() > 0 && Arg(0).isStr() && !Arg(0).get_str().empty()) {
             Digest48 id;
-            if (!Digest48::FromHex(Arg(0).get_str(), id, err)) {
-                err_code = "INVALID_PARAMETER";
+            SearchHit h;
+            const Digest48 user = IdFromUser(Arg(0).get_str(), err);
+            const ReleaseCampaign* c = g_campaigns.GetByRelease(user);
+            if (!c) c = g_campaigns.GetByModel(user);
+            if (!c && Digest48::FromHex(Arg(0).get_str(), id, err)) c = g_campaigns.GetByRelease(id);
+            if (!c) {
+                err_code = "NOT_FOUND";
+                err = "unknown release";
                 return false;
             }
-            for (const auto& c : campaigns) {
-                if (c.release_id == id) arr.push_back(CampaignToJson(c));
-            }
+            if (const auto* rec = g_search_idx.Get(c->model_id)) h.rec = *rec;
+            else h.rec.model_id = c->model_id;
+            auto e = ComposeEconomyEntry(h, c, ObservationFromHit(h, c));
+            UniValue one = CampaignToJson(*c);
+            one.pushKV("lifecycle_state", ModelLifecycleName(e.lifecycle));
+            one.pushKV("remaining_atoms", e.remaining_atoms);
+            if (e.funded_percent_known) one.pushKV("funded_percent", MilliToDisplayPercent(e.funded_percent_milli));
+            if (e.pledged_percent_known) one.pushKV("pledged_percent", MilliToDisplayPercent(e.pledged_percent_milli));
+            one.pushKV("actions", EconomyActionsJson(e.actions));
+            one.pushKV("ciphertext_available", e.ciphertext_available);
+            arr.push_back(one);
         } else {
-            for (const auto& c : campaigns) arr.push_back(CampaignToJson(c));
+            for (const auto& c : g_campaigns.List()) arr.push_back(CampaignToJson(c));
         }
         result.pushKV("campaigns", arr);
+        result.pushKV("automatic_spend_atoms", 0);
         return true;
     }
     if (method == "pledgemodelrelease") {
+        EnsureEconomy(cat);
         Digest48 id;
         if (!Digest48::FromHex(Arg(0).get_str(), id, err)) {
             err_code = "INVALID_PARAMETER";
             return false;
         }
         const int64_t atoms = Arg(1).getInt<int64_t>();
-        std::vector<ReleaseCampaign> campaigns;
-        const fs::path dir = cat.Store().Root().parent_path();
-        LoadCampaigns(dir, campaigns, err);
-        bool found = false;
-        for (auto& c : campaigns) {
-            if (c.release_id == id) {
-                c.pledged_atoms += atoms;
-                found = true;
-                result = CampaignToJson(c);
-            }
-        }
-        if (!found) {
+        auto* c = const_cast<ReleaseCampaign*>(g_campaigns.GetByRelease(id));
+        if (!c) {
             err_code = "NOT_FOUND";
             err = "unknown release";
             return false;
         }
-        SaveCampaigns(dir, campaigns, err);
-        result.pushKV("note", "pledge is local accounting; send BTX with 0.34.6 HTLC separately");
+        c->pledged_atoms += atoms;
+        result = CampaignToJson(*c);
+        g_feed.NoteFundingChanged(*c, ConnNowMs());
+        SaveCampaigns(HelperDir(cat), g_campaigns.List(), err);
+        result.pushKV("note", "pledge is local accounting; send BTX with 0.34.6 HTLC separately. pledged is not funded.");
+        result.pushKV("automatic_spend_atoms", 0);
         return true;
     }
     if (method == "claimmodelrelease" || method == "refundmodelrelease") {
@@ -4095,8 +4308,303 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         return true;
     }
     if (method == "preparemodelfunding" || method == "signmodelfunding" || method == "submitmodelfunding" ||
-        method == "exportmodelrecovery" || method == "buildmodelhtlcclaim" || method == "buildmodelhtlcrefund") {
+        method == "exportmodelrecovery" || method == "buildmodelhtlcclaim" || method == "buildmodelhtlcrefund" ||
+        method == "preparefundmodelrelease") {
+        if (method == "preparefundmodelrelease") {
+            EnsureEconomy(cat);
+            UniValue opts = Arg(1).isObject() ? Arg(1) : UniValue(UniValue::VOBJ);
+            if (params.isArray() && params.size() > 2 && Arg(2).isObject()) opts = Arg(2);
+            if (params.isArray() && params.size() > 1 && Arg(1).isNum()) {
+                opts.pushKV("amount_atoms", Arg(1).getInt<int64_t>());
+            }
+            opts.pushKV("automatic_spend_atoms", 0);
+            opts.pushKV("auto_pay", false);
+            const std::string rid = Arg(0).get_str();
+            Digest48 id;
+            const ReleaseCampaign* c = nullptr;
+            if (Digest48::FromHex(rid, id, err)) c = g_campaigns.GetByRelease(id);
+            if (!c) c = g_campaigns.GetByModel(IdFromUser(rid, err));
+            if (c) {
+                opts.pushKV("release_id", c->release_id.Hex());
+                opts.pushKV("key_hash", c->key_hash.Hex());
+                opts.pushKV("refund_height", static_cast<int64_t>(c->refund_height));
+                opts.pushKV("hashlock_algorithm", "SHA256");
+                opts.pushKV("assurance", "KEY_RELEASE_ONLY");
+            }
+            UniValue wrapped(UniValue::VARR);
+            wrapped.push_back(opts);
+            const bool ok = DispatchFundingRpc(cat, "preparemodelfunding", wrapped, result, err_code, err);
+            if (ok) {
+                result.pushKV("automatic_spend_atoms", 0);
+                result.pushKV("wallet_authorization_required", true);
+                result.pushKV("silently_spend", false);
+            }
+            return ok;
+        }
         return DispatchFundingRpc(cat, method, params, result, err_code, err);
+    }
+    if (method == "getmodeleconomyentry" || method == "getmodelreleaseeconomics" || method == "getmodelfeed" ||
+        method == "getreleasefeed" || method == "getmodelfeedstatus" || method == "getmodelfeedsequence" ||
+        method == "getfundablemodels" || method == "getrecentlyunlockedmodels" || method == "cacheencryptedmodel") {
+        EnsureSearchBound();
+        EnsureEconomy(cat);
+        std::unique_lock<std::mutex> lock(g_search_mu);
+        IngestCatalogIntoSearch(cat);
+        for (const auto& rec : g_search_idx.All()) AfterIndexPut(rec, ConnNowMs());
+        auto decorate = [&](SearchHit h) {
+            auto it = g_search_obs.find(h.rec.model_id.Hex());
+            if (it != g_search_obs.end()) h.health = ComputeSwarmHealth(0, 0, it->second);
+            CatalogEntry e;
+            if (cat.Find(h.rec.model_id, e)) {
+                h.local.known = true;
+                h.local.seeded = e.seeded;
+                h.local.pinned = e.pinned;
+                h.local.partial = e.incomplete;
+                h.local.downloaded = e.bytes_verified;
+            }
+            return EconomyForHit(h);
+        };
+        if (method == "getmodeleconomyentry" || method == "getmodelreleaseeconomics") {
+            if (!params.isArray() || params.size() < 1 || !Arg(0).isStr()) {
+                err_code = "INVALID_PARAMETER";
+                return false;
+            }
+            const Digest48 id = IdFromUser(Arg(0).get_str(), err);
+            const ReleaseCampaign* c = g_campaigns.GetByRelease(id);
+            if (!c) c = g_campaigns.GetByModel(id);
+            if (!c && !Arg(0).get_str().empty()) c = g_campaigns.GetByReleaseHex(Arg(0).get_str());
+            SearchHit h;
+            Digest48 mid = c ? c->model_id : id;
+            if (const auto* rec = g_search_idx.Get(mid)) h.rec = *rec;
+            else h.rec.model_id = mid;
+            auto e = ComposeEconomyEntry(h, c, ObservationFromHit(h, c));
+            result = method == "getmodelreleaseeconomics" ? EconomyReleaseJson(e) : EconomyEntryToJson(e);
+            result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
+            result.pushKV("lifecycle_state", ModelLifecycleName(e.lifecycle));
+            result.pushKV("automatic_spend_atoms", 0);
+            return true;
+        }
+        if (method == "getmodelfeedstatus" || method == "getmodelfeedsequence") {
+            int pub = 0, unrel = 0, unlocked = 0;
+            for (const auto& rec : g_search_idx.All()) {
+                if (rec.release_id.empty()) ++pub;
+                else ++unrel;
+            }
+            FeedCoverage cov;
+            result = g_feed.StatusJson(pub, static_cast<int>(g_campaigns.Size()), unrel, unlocked, cov);
+            result.pushKV("feed_sequence", static_cast<int64_t>(g_feed.Sequence()));
+            return true;
+        }
+        if (method == "getfundablemodels") {
+            SearchQuery q;
+            if (Arg(0).isObject()) ParseSearchQuery(Arg(0), q, err);
+            q.filters.fundable_only = true;
+            if (!Arg(0).isObject() || !Arg(0).exists("sort")) q.sort = SearchSort::NEARLY_FUNDED;
+            std::vector<ModelEconomyEntry> camp;
+            for (const auto& c : g_campaigns.List()) {
+                SearchHit h;
+                if (const auto* rec = g_search_idx.Get(c.model_id)) h.rec = *rec;
+                else {
+                    h.rec.model_id = c.model_id;
+                    h.rec.release_id = c.release_id.Hex();
+                    h.rec.release_state = "FUNDING";
+                    h.rec.release_target_atoms = c.target_atoms;
+                    h.rec.key_hash = c.key_hash;
+                    h.rec.refund_height = c.refund_height;
+                }
+                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c));
+                if (!e.fundable_now) continue;
+                if (!MatchesEconomyFilters(e, q.filters)) continue;
+                camp.push_back(std::move(e));
+            }
+            SortEconomyEntries(camp, q.sort);
+            if (q.limit > 0 && static_cast<int>(camp.size()) > q.limit) camp.resize(q.limit);
+            UniValue arr(UniValue::VARR);
+            for (const auto& e : camp) arr.push_back(EconomySearchCard(e));
+            result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
+            result.pushKV("results", arr);
+            result.pushKV("sort", SearchSortName(q.sort));
+            result.pushKV("automatic_spend_atoms", 0);
+            return true;
+        }
+        if (method == "getrecentlyunlockedmodels") {
+            FeedQuery fq;
+            fq.mode = FeedMode::JUST_UNLOCKED;
+            fq.limit = 50;
+            if (Arg(0).isObject()) {
+                if (Arg(0).exists("limit")) fq.limit = Arg(0)["limit"].getInt<int>();
+                if (Arg(0).exists("since")) fq.since = Arg(0)["since"].getInt<int64_t>();
+            }
+            std::string next;
+            const auto items = g_feed.Query(fq, ConnNowMs(), next);
+            UniValue arr(UniValue::VARR);
+            for (const auto& ev : items) {
+                SearchHit h;
+                h.rec = ev.rec;
+                arr.push_back(EconomySearchCard(decorate(h)));
+            }
+            result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
+            result.pushKV("results", arr);
+            result.pushKV("next_cursor", next);
+            result.pushKV("feed_sequence", static_cast<int64_t>(g_feed.Sequence()));
+            return true;
+        }
+        if (method == "cacheencryptedmodel") {
+            result.pushKV("schema_version", ECONOMY_SCHEMA_VERSION);
+            result.pushKV("action", "CACHE_ENCRYPTED");
+            result.pushKV("plaintext_unavailable", true);
+            result.pushKV("automatic_download", false);
+            result.pushKV("note", "explicit ciphertext retrieve only; use getmodel on ciphertext artifact_id");
+            if (params.isArray() && params.size() > 0 && Arg(0).isStr()) {
+                result.pushKV("release_or_model", Arg(0).get_str());
+            }
+            return true;
+        }
+        // getmodelfeed / getreleasefeed
+        FeedQuery fq;
+        fq.scope = SearchScope::NETWORK;
+        if (Arg(0).isObject()) {
+            if (Arg(0).exists("scope") && !ParseSearchScope(Arg(0)["scope"].get_str(), fq.scope)) {
+                err_code = "INVALID_PARAMETER";
+                err = "bad scope";
+                return false;
+            }
+            if (Arg(0).exists("mode") && !ParseFeedMode(Arg(0)["mode"].get_str(), fq.mode)) {
+                err_code = "INVALID_PARAMETER";
+                err = "bad feed mode";
+                return false;
+            }
+            if (Arg(0).exists("since")) fq.since = Arg(0)["since"].getInt<int64_t>();
+            if (Arg(0).exists("since_sequence")) fq.since_sequence = Arg(0)["since_sequence"].getInt<int64_t>();
+            if (Arg(0).exists("limit")) fq.limit = Arg(0)["limit"].getInt<int>();
+            if (Arg(0).exists("cursor")) fq.cursor = Arg(0)["cursor"].get_str();
+            if (Arg(0).exists("filters") && Arg(0)["filters"].isObject()) {
+                UniValue wrap(UniValue::VOBJ);
+                wrap.pushKV("filters", Arg(0)["filters"]);
+                SearchQuery sq;
+                ParseSearchQuery(wrap, sq, err);
+                fq.filters = sq.filters;
+            }
+        }
+        if (method == "getreleasefeed") {
+            if (!Arg(0).isObject() || !Arg(0).exists("mode")) fq.mode = FeedMode::NEW_RELEASE_CAMPAIGNS;
+        }
+        lock.unlock();
+        FeedCoverage cov;
+        if (fq.scope != SearchScope::LOCAL) {
+            std::vector<std::string> fanout;
+            auto add_ep = [&](const std::string& ep) {
+                if (ep.empty()) return;
+                if (std::find(fanout.begin(), fanout.end(), ep) != fanout.end()) return;
+                if (static_cast<int>(fanout.size()) >= SEARCH_FANOUT_MAX) return;
+                fanout.push_back(ep);
+            };
+            {
+                std::lock_guard<std::mutex> lk(g_search_mu);
+                for (const auto& p : g_search_idx.IndexPeers()) add_ep(p);
+                for (const auto& p : cat.Peers()) add_ep(p);
+            }
+            {
+                std::lock_guard<std::mutex> plock(g_swarm.pex_mu);
+                for (const auto& h : g_swarm.pex.Recent(ConnNowMs())) add_ep(h.endpoint);
+            }
+            Pq1Context pq;
+            std::string tls_err;
+            const fs::path pinfile = HelperDir(cat) / "tls" / "pins.json";
+            const bool pq_ok = LoadPq1Identity(pq, HelperDir(cat), tls_err);
+            UniValue body(UniValue::VOBJ);
+            body.pushKV("mode", FeedModeName(fq.mode));
+            body.pushKV("limit", fq.limit);
+            for (const auto& ep : fanout) {
+                if (!pq_ok) {
+                    cov.timed_out += 1;
+                    continue;
+                }
+                UniValue reply;
+                bool timed = false;
+                std::string perr;
+                if (QueryExtPeer(pq, pinfile, ep, "ext/feed", body, reply, timed, perr) ||
+                    QuerySearchPeer(pq, pinfile, ep, body, reply, timed, perr)) {
+                    cov.responses_received += 1;
+                    cov.peers_contributing += 1;
+                    std::lock_guard<std::mutex> lk(g_search_mu);
+                    if (reply.exists("records") && reply["records"].isArray()) {
+                        for (const auto& recj : reply["records"].getValues()) {
+                            ModelSearchRecord rec;
+                            std::string ierr;
+                            if (SearchRecordFromJson(recj, rec, ierr) && g_search_idx.Put(rec, ConnNowMs(), ierr)) {
+                                AfterIndexPut(rec, ConnNowMs());
+                            }
+                        }
+                    }
+                    if (reply.exists("items") && reply["items"].isArray()) {
+                        for (const auto& it : reply["items"].getValues()) {
+                            if (it.isObject() && it.exists("entry") && it["entry"].isObject() &&
+                                it["entry"].exists("model") && it["entry"]["model"].exists("model_id")) {
+                                SearchHit h;
+                                std::string herr;
+                                SearchHitFromCard(it["entry"], h, herr);
+                            }
+                        }
+                    }
+                } else if (timed) {
+                    cov.timed_out += 1;
+                }
+            }
+            g_feed.NoteRefresh(ConnNowMs());
+        }
+        cov.last_network_refresh = g_feed.LastRefresh();
+        lock.lock();
+        std::string next;
+        auto items = g_feed.Query(fq, ConnNowMs(), next);
+        std::vector<ModelEconomyEntry> entries;
+        if (fq.mode == FeedMode::NEARLY_FUNDED || fq.mode == FeedMode::FUNDED_AWAITING_RELEASE) {
+            items.clear();
+            std::vector<ModelEconomyEntry> camp;
+            for (const auto& c : g_campaigns.List()) {
+                SearchHit h;
+                if (const auto* rec = g_search_idx.Get(c.model_id)) h.rec = *rec;
+                else {
+                    h.rec.model_id = c.model_id;
+                    h.rec.release_id = c.release_id.Hex();
+                    h.rec.release_state = "FUNDING";
+                    h.rec.release_target_atoms = c.target_atoms;
+                    h.rec.key_hash = c.key_hash;
+                }
+                auto e = ComposeEconomyEntry(h, &c, ObservationFromHit(h, &c));
+                if (fq.mode == FeedMode::NEARLY_FUNDED && !e.fundable_now) continue;
+                if (fq.mode == FeedMode::FUNDED_AWAITING_RELEASE &&
+                    e.lifecycle != ModelLifecycle::FUNDED_AWAITING_RELEASE) {
+                    continue;
+                }
+                if (!MatchesEconomyFilters(e, fq.filters)) continue;
+                camp.push_back(std::move(e));
+            }
+            SortEconomyEntries(camp, fq.mode == FeedMode::NEARLY_FUNDED ? SearchSort::NEARLY_FUNDED : SearchSort::NEWEST);
+            if (static_cast<int>(camp.size()) > fq.limit) camp.resize(fq.limit);
+            entries = std::move(camp);
+            for (const auto& e : entries) {
+                FeedEvent ev;
+                ev.event_type = FeedEventType::RELEASE_CAMPAIGN_CREATED;
+                ev.model_id = e.hit.rec.model_id;
+                ev.release_id = e.campaign.release_id.Hex();
+                ev.rec = e.hit.rec;
+                ev.event_id = e.hit.rec.model_id.Hex();
+                items.push_back(ev);
+            }
+        } else {
+            for (auto& ev : items) {
+                SearchHit h;
+                h.rec = ev.rec;
+                if (h.rec.model_id.IsNull()) h.rec.model_id = ev.model_id;
+                auto e = decorate(h);
+                if (!MatchesEconomyFilters(e, fq.filters)) continue;
+                entries.push_back(std::move(e));
+            }
+        }
+        result = FeedPageJson(items, entries, fq, cov, g_feed.Sequence(), next);
+        PersistEconomy(cat);
+        return true;
     }
     err_code = "METHOD_NOT_FOUND";
     err = "unknown model RPC";

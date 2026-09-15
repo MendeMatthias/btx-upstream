@@ -511,13 +511,79 @@ For the full MatMul PoW specification, see
 
 ## Native Model Network (0.34.7)
 
-**A BTX node already has compute. BTX gives it models and money.**
+**BTX is a decentralized open-model network.**
 
-Share a compact `btx://` URI, retrieve the exact artifact **free-first**,
-verify SHA-384 / chunk proofs, and use it **locally**. Optional BTX
-payments settle scarce delivery or public release. They are not an
-admission charge to research, not a remote-inference tariff, and not a
-consensus privilege.
+Search for models by name or **what they do**. Discover new releases from
+the network. Download public models from independent peers. See models
+that are still being funded for release. Contribute BTX to buy an
+unreleased model into the public commons. Once released, run it locally
+and help preserve it.
+
+### Open Model Network
+
+BTX 0.34.7 lets users discover, fund, retrieve, verify, preserve and locally
+run open AI models.
+
+- **PUBLIC** — download now
+- **FUNDING** — contribute BTX to buy the model into the open commons
+- **JUST RELEASED** — retrieve the model from the swarm
+
+Search:
+
+```
+"qwen coder"
+"coding agent"
+"Japanese legal model"
+```
+
+Browse: newest models, active release campaigns, nearly funded, recently
+unlocked.
+
+Inference is **local**. Model search is **decentralized**. Peer counts are
+**observed network views**, not a global census. No central account or email
+is required. Automatic spend remains **zero**.
+
+The desktop Models page provides the same search / feed / funding
+experience without a terminal. Agents use structured RPC
+(`searchmodels` → `getmodeleconomyentry` → download or
+`preparefundmodelrelease`). They do not scrape terminals and they do not
+spend unless the wallet is explicitly authorized.
+
+#### For users
+
+Search by name, alias, description, use case, family, architecture, tags,
+or language. See observed providers, availability, public/release state, and
+funding progress. Then download, fund, keep, or seed.
+
+Network search queries may be visible to peers you query. Use
+`scope: LOCAL` to keep the query on this node.
+
+#### For model creators
+
+Import a model, publish signed metadata, and make it public immediately —
+or encrypt, create a SHA-256 `KEY_RELEASE_ONLY` campaign, let the network
+discover it, take community funding, reveal the committed secret to claim,
+and the model becomes a public `btx://` resource.
+
+Build the model. Set the release target. Let the network buy it into the
+open commons.
+
+#### For AI agents
+
+`searchmodels` → `getmodeleconomyentry` → if `downloadable_now` then
+`getmodel`; elif `fundable_now` then prepare funding (wallet must sign);
+else monitor `getmodelfeed` / `getmodelfeedsequence`. No email. No
+autonomous spend.
+
+Example:
+
+```bash
+btx-cli searchmodels '{"text":"coding agent","scope":"NETWORK"}'
+```
+
+Results may be public (providers observed, high availability, Download) or
+fundable (release campaign · 371/500 BTX confirmed · 129 remaining). The
+desktop client shows the same cards.
 
 - Isolated helper `btx-modeld` (strict PQ1 or fail closed). Monetary
   `btxd` stays up if the helper dies.
@@ -527,7 +593,9 @@ consensus privilege.
   choice.
 - Remote/paid inference is **off the roadmap**.
 
-Operator and researcher docs: [doc/modelnet/README.md](doc/modelnet/README.md).
+Operator and researcher docs: [doc/modelnet/README.md](doc/modelnet/README.md),
+[doc/modelnet/model-economy.md](doc/modelnet/model-economy.md),
+[doc/modelnet/feed.md](doc/modelnet/feed.md).
 Draft notes: [doc/release-notes/release-notes-0.34.7.md](doc/release-notes/release-notes-0.34.7.md).
 This plane does not authorize a `CLIENT_VERSION` bump by itself.
 

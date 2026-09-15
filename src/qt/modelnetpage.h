@@ -46,6 +46,7 @@ private Q_SLOTS:
     void onResultDownload();
     void onResultCopyUri();
     void onResultDetails();
+    void onResultFund();
     void onPublishSearchRecord();
 
 private:
@@ -68,6 +69,8 @@ private:
     void pollSearchStatus(const std::string& query_id, int attempt);
     void showModelPlan(const QString& full_uri);
     void showModelDetails(const QString& full_uri);
+    void showFundPlan(const QString& release_id);
+    void pollCampaign(const QString& id, int attempt);
     UniValue buildSearchQueryObject(const std::optional<std::string>& scope,
                                     const std::optional<std::string>& sort_override) const;
     int modelsScopeTabIndex() const;

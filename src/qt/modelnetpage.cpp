@@ -86,6 +86,12 @@ QString ModelDisplayName(const UniValue& model)
     if (model.exists("label") && model["label"].isStr()) {
         return QString::fromStdString(model["label"].get_str());
     }
+    if (model.exists("model") && model["model"].isObject() && model["model"]["name"].isStr()) {
+        return QString::fromStdString(model["model"]["name"].get_str());
+    }
+    if (model.exists("display_name") && model["display_name"].isStr()) {
+        return QString::fromStdString(model["display_name"].get_str());
+    }
     return QStringLiteral("—");
 }
 
@@ -300,6 +306,9 @@ ModelNetPage::ModelNetPage(QWidget *parent) :
     ui->sortCombo->addItem(tr("Relevance"), QStringLiteral("RELEVANCE"));
     ui->sortCombo->addItem(tr("Availability"), QStringLiteral("AVAILABILITY"));
     ui->sortCombo->addItem(tr("Newest"), QStringLiteral("NEWEST"));
+    ui->sortCombo->addItem(tr("Nearly funded"), QStringLiteral("NEARLY_FUNDED"));
+    ui->sortCombo->addItem(tr("Most funding needed"), QStringLiteral("MOST_FUNDING_NEEDED"));
+    ui->sortCombo->addItem(tr("Recently unlocked"), QStringLiteral("RECENTLY_UNLOCKED"));
     ui->sortCombo->addItem(tr("Size (desc)"), QStringLiteral("SIZE_DESC"));
     ui->sortCombo->addItem(tr("Providers"), QStringLiteral("PROVIDERS"));
 
@@ -621,6 +630,41 @@ void ModelNetPage::renderModelCards(const UniValue& models, const UniValue* meta
         meta_line->setWordWrap(true);
         layout->addWidget(meta_line);
 
+        QString life = QStringLiteral("PUBLIC");
+        if (m.exists("lifecycle_state") && m["lifecycle_state"].isStr()) {
+            life = QString::fromStdString(m["lifecycle_state"].get_str());
+        } else if (m.exists("lifecycle") && m["lifecycle"].isObject() && m["lifecycle"]["state"].isStr()) {
+            life = QString::fromStdString(m["lifecycle"]["state"].get_str());
+        } else if (m.exists("result_type") && m["result_type"].isStr()) {
+            life = QString::fromStdString(m["result_type"].get_str());
+        }
+        QString fund_line;
+        const UniValue* rel = nullptr;
+        if (m.exists("release") && m["release"].isObject()) rel = &m["release"];
+        else if (m.exists("economy") && m["economy"].isObject() && m["economy"]["release"].isObject()) {
+            rel = &m["economy"]["release"];
+        }
+        if (rel && (*rel).exists("target_atoms") && (*rel)["target_atoms"].getInt<int64_t>() > 0) {
+            const int64_t target = (*rel)["target_atoms"].getInt<int64_t>();
+            const int64_t confirmed = (*rel).exists("confirmed_funded_atoms") ? (*rel)["confirmed_funded_atoms"].getInt<int64_t>() : 0;
+            const int64_t remaining = (*rel).exists("remaining_atoms") ? (*rel)["remaining_atoms"].getInt<int64_t>() : 0;
+            QString pct = QStringLiteral("—");
+            if ((*rel).exists("funded_percent")) {
+                pct = QString::number((*rel)["funded_percent"].get_real(), 'f', 1) + QStringLiteral("%");
+            }
+            const bool known = !(*rel).exists("value_known") || (*rel)["value_known"].get_bool();
+            fund_line = known
+                ? tr("Release campaign · %1 confirmed / %2 target · %3 remaining · %4")
+                      .arg(confirmed).arg(target).arg(remaining).arg(pct)
+                : tr("Release campaign · pledged %1 · confirmed funding unknown")
+                      .arg((*rel).exists("pledged_atoms") ? (*rel)["pledged_atoms"].getInt<int64_t>() : 0);
+        }
+        auto* life_line = new QLabel(tr("Lifecycle: %1%2")
+                                         .arg(life.toHtmlEscaped(),
+                                              fund_line.isEmpty() ? QString() : QStringLiteral(" · ") + fund_line.toHtmlEscaped()));
+        life_line->setWordWrap(true);
+        layout->addWidget(life_line);
+
         auto* uri_line = new QLabel(tr("URI: %1").arg(uri_display.toHtmlEscaped()));
         uri_line->setWordWrap(true);
         uri_line->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -641,6 +685,26 @@ void ModelNetPage::renderModelCards(const UniValue& models, const UniValue* meta
         details_btn->setProperty("modelUri", full_uri);
         connect(details_btn, &QPushButton::clicked, this, &ModelNetPage::onResultDetails);
         btn_row->addWidget(details_btn);
+
+        bool fundable = false;
+        QString release_id;
+        if (m.exists("fundable_now") && m["fundable_now"].isTrue()) fundable = true;
+        if (m.exists("actions") && m["actions"].isArray()) {
+            for (const auto& a : m["actions"].getValues()) {
+                if (a.isStr() && a.get_str() == "FUND_RELEASE") fundable = true;
+            }
+        }
+        if (m.exists("release") && m["release"].isObject()) {
+            const UniValue& rel = m["release"];
+            if (rel.exists("release_id") && rel["release_id"].isStr()) release_id = QString::fromStdString(rel["release_id"].get_str());
+            else if (rel.exists("id") && rel["id"].isStr()) release_id = QString::fromStdString(rel["id"].get_str());
+        }
+        if (fundable) {
+            auto* fund_btn = new QPushButton(tr("Fund Release"));
+            fund_btn->setProperty("releaseId", release_id);
+            connect(fund_btn, &QPushButton::clicked, this, &ModelNetPage::onResultFund);
+            btn_row->addWidget(fund_btn);
+        }
         btn_row->addStretch();
         layout->addLayout(btn_row);
 
@@ -656,6 +720,11 @@ void ModelNetPage::renderSearchResponse(const UniValue& result)
         models = result["results"];
     } else if (result.exists("models") && result["models"].isArray()) {
         models = result["models"];
+    } else if (result.exists("items") && result["items"].isArray()) {
+        for (const auto& it : result["items"].getValues()) {
+            if (it.isObject() && it.exists("entry") && it["entry"].isObject()) models.push_back(it["entry"]);
+            else if (it.isObject()) models.push_back(it);
+        }
     }
     const auto fmt = currentFormatFilter();
     const QString needle = ui->searchLineEdit->text().trimmed().toLower();
@@ -743,25 +812,41 @@ void ModelNetPage::runModelSearch()
     std::optional<std::string> sort_override;
     switch (modelsScopeTabIndex()) {
     case 1:
-        method = "getnewmodels";
+        method = "getmodelfeed";
+        sort_override = "NEARLY_FUNDED";
         break;
     case 2:
         method = "browsemodels";
         sort_override = "AVAILABILITY";
         break;
     case 3:
-        scope = "LOCAL";
+        method = "getmodelfeed";
+        sort_override = "RARE";
         break;
     case 4:
+        method = "getrecentlyunlockedmodels";
+        break;
+    case 5:
+        scope = "LOCAL";
+        break;
+    case 6:
         method = "getrecentreleases";
         break;
     case 0:
     default:
-        scope = "NETWORK";
+        if (ui->searchLineEdit->text().trimmed().isEmpty()) {
+            method = "getmodelfeed";
+        } else {
+            scope = "NETWORK";
+        }
         break;
     }
 
-    const UniValue query = buildSearchQueryObject(scope, sort_override);
+    UniValue query = buildSearchQueryObject(scope, sort_override);
+    if (method == "getmodelfeed") {
+        query.pushKV("mode", sort_override ? *sort_override : "NEWEST");
+        query.pushKV("scope", "NETWORK");
+    }
     UniValue params(UniValue::VARR);
     params.push_back(query);
 
@@ -827,6 +912,42 @@ void ModelNetPage::onResultDetails()
     showModelDetails(btn->property("modelUri").toString());
 }
 
+void ModelNetPage::onResultFund()
+{
+    const auto* btn = qobject_cast<QPushButton*>(sender());
+    if (!btn) return;
+    showFundPlan(btn->property("releaseId").toString());
+}
+
+void ModelNetPage::showFundPlan(const QString& release_id)
+{
+    if (release_id.isEmpty()) {
+        ui->modelsOutput->setPlainText(tr("No release id on this card."));
+        return;
+    }
+    UniValue params(UniValue::VARR);
+    params.push_back(release_id.toStdString());
+    UniValue opts(UniValue::VOBJ);
+    opts.pushKV("automatic_spend_atoms", 0);
+    params.push_back(opts);
+    ui->modelsOutput->setPlainText(
+        tr("preparefundmodelrelease (unsigned plan — no spend). Confirm in the wallet after reviewing amount, fee, SHA-256 hashlock, refund height, and exact release identity.\n") +
+        callRpc("preparefundmodelrelease", params));
+}
+
+void ModelNetPage::pollCampaign(const QString& id, int attempt)
+{
+    if (attempt >= 20 || id.isEmpty()) return;
+    UniValue params(UniValue::VARR);
+    params.push_back(id.toStdString());
+    const auto status = tryRpc("getmodelreleaseeconomics", params);
+    if (status) {
+        ui->modelsOutput->setPlainText(
+            tr("getmodelreleaseeconomics (live; no restart)\n") + QString::fromStdString(status->write(2)));
+    }
+    QTimer::singleShot(1500, this, [this, id, attempt]() { pollCampaign(id, attempt + 1); });
+}
+
 void ModelNetPage::showModelDetails(const QString& full_uri)
 {
     if (full_uri.isEmpty()) {
@@ -836,7 +957,10 @@ void ModelNetPage::showModelDetails(const QString& full_uri)
     UniValue params(UniValue::VARR);
     params.push_back(full_uri.toStdString());
     ui->modelsOutput->setPlainText(
-        tr("getmodeldirectoryentry (read-only directory view)\n") + callRpc("getmodeldirectoryentry", params));
+        tr("getmodeleconomyentry + getmodeldirectoryentry (read-only)\n") +
+        callRpc("getmodeleconomyentry", params) + QLatin1Char('\n') +
+        callRpc("getmodeldirectoryentry", params));
+    pollCampaign(full_uri, 0);
 }
 
 void ModelNetPage::onPublishSearchRecord()
@@ -879,10 +1003,23 @@ void ModelNetPage::refresh()
     refreshLocalCatalogCache();
 
     const QString rpc_note = tr("\n\nRPC: %1 (same name as CLI). This page never calls getmodel/importmodel automatically.");
-    if (ui->resultsList->count() == 0) {
-        ui->modelsOutput->setPlainText(
-            tr("getmodelnetworkinfo") + QLatin1Char('\n') + callRpc("getmodelnetworkinfo") +
-            rpc_note.arg(QStringLiteral("searchmodels, getmodel")));
+    if (ui->resultsList->count() == 0 && m_client_model) {
+        UniValue q(UniValue::VOBJ);
+        q.pushKV("scope", "NETWORK");
+        q.pushKV("mode", "NEWEST");
+        q.pushKV("limit", 25);
+        UniValue params(UniValue::VARR);
+        params.push_back(q);
+        if (const auto feed = tryRpc("getmodelfeed", params)) {
+            renderSearchResponse(*feed);
+            ui->modelsOutput->setPlainText(
+                tr("getmodelfeed NEWEST (decentralized current view; not a global chronology)\n") +
+                QString::fromStdString(feed->write(2)));
+        } else {
+            ui->modelsOutput->setPlainText(
+                tr("getmodelnetworkinfo") + QLatin1Char('\n') + callRpc("getmodelnetworkinfo") +
+                rpc_note.arg(QStringLiteral("searchmodels, getmodelfeed, getmodeleconomyentry")));
+        }
     }
     ui->downloadsOutput->setPlainText(
         tr("getmodeljob") + QLatin1Char('\n') + callRpc("getmodeljob") +

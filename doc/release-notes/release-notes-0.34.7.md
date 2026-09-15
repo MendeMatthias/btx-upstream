@@ -5,8 +5,19 @@ production bar. `CLIENT_VERSION` is **0.34.7** with
 `CLIENT_VERSION_IS_RELEASE=false` until remaining GOV/search/lab gates run.
 
 A BTX node already has compute. 0.34.7 gives it **models and money** on an
-isolated plane. Inference is **local after acquisition**. Remote/paid
-inference is removed from the roadmap (v1.1 D01).
+isolated plane, including **decentralized model search**, a **model
+directory**, a **network model feed**, **release-campaign discovery**,
+**campaign funding state in search**, **description/use-case search**,
+and a **third-party explorer API**. Inference is **local after
+acquisition**. Remote/paid inference is removed from the roadmap (v1.1 D01).
+
+Search is **not** local-only. `searchmodels` default scope is `NETWORK`.
+`getmodelfeed` is the preferred newest/campaign/unlocked feed. Peer counts
+are this node's observations.
+
+`CLIENT_VERSION` is **0.34.7** with
+`CLIENT_VERSION_IS_RELEASE=false` until remaining GOV/search/lab/economy
+gates have executed evidence.
 
 CUDA runtime qualification is an **isolated worker** (`cuda_qual_worker`),
 never `cudaSetDevice` inside `btxd`. Default `-modelruntimecheck=0` is

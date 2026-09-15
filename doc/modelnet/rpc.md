@@ -361,6 +361,35 @@ Same as `listmodelsearchrecords` (optional limit object).
 
 ---
 
+## Economy, feed, and release discovery (schema 3)
+
+Preferred third-party / agent APIs. Coverage is always incomplete. Helper
+observations are not wallet authority. `automatic_spend_atoms` is 0.
+
+| RPC | Role |
+|---|---|
+| `getmodeleconomyentry` | Full `ModelEconomyEntry` (search + swarm + local + release + actions) |
+| `getmodelfeed` | Network feed (`NEWEST`, `NEARLY_FUNDED`, `JUST_UNLOCKED`, …) |
+| `getmodelfeedstatus` / `getmodelfeedsequence` | `feed_sequence`, counts, coverage disclaimer |
+| `getfundablemodels` | Still-fundable campaigns (`NEARLY_FUNDED` default) |
+| `getmodelreleaseeconomics` | pledged vs confirmed funded, hashlock, refund, ciphertext |
+| `getrecentlyunlockedmodels` | Secret recently disclosed |
+| `getreleasefeed` | Wrapper over `getmodelfeed` for campaigns |
+| `preparefundmodelrelease` | Unsigned plan; never spends |
+
+See [model-economy.md](model-economy.md), [feed.md](feed.md),
+[explorers.md](explorers.md).
+
+Example:
+
+```bash
+btx-cli searchmodels '{"text":"coding agent","scope":"NETWORK"}'
+btx-cli getmodelfeed '{"scope":"NETWORK","mode":"NEWEST","limit":50}'
+btx-cli getmodeleconomyentry '<model_id>'
+```
+
+---
+
 ## Isolation
 
 `addmodelnode` is not monetary `addnode`. Model RPCs never sit on the

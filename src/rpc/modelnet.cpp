@@ -374,8 +374,57 @@ static RPCHelpMan getnewmodels()
 }
 static RPCHelpMan getrecentreleases()
 {
-    return ProxyOrLocal("getrecentreleases", "Public release-campaign coordination data only.\n",
-                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "limit", RPCArgOptions{.skip_type_check = true}}});
+    return ProxyOrLocal("getrecentreleases", "Public release-campaign coordination data. scope=NETWORK uses the current decentralized view; scope=LOCAL is local campaigns.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "limit/scope", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getmodeleconomyentry()
+{
+    return ProxyOrLocal("getmodeleconomyentry", "Normalized ModelEconomyEntry (schema 3): search + swarm + local + release economics + actions.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "model_id, btx://, or release_id"}});
+}
+static RPCHelpMan getmodelfeed()
+{
+    return ProxyOrLocal("getmodelfeed", "Decentralized current-network model/campaign feed. Not a global chronology. Default scope NETWORK.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "scope/mode/since/limit/cursor/filters", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getmodelfeedstatus()
+{
+    return ProxyOrLocal("getmodelfeedstatus", "Feed sequence and coverage disclaimer for this node's network view.\n", {});
+}
+static RPCHelpMan getmodelfeedsequence()
+{
+    return ProxyOrLocal("getmodelfeedsequence", "Monotonic local feed_sequence for polling.\n", {});
+}
+static RPCHelpMan getfundablemodels()
+{
+    return ProxyOrLocal("getfundablemodels", "Campaigns that can still accept a meaningful contribution. Pledged is not funded.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "sort/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getmodelreleaseeconomics()
+{
+    return ProxyOrLocal("getmodelreleaseeconomics", "Lifecycle, pledged vs confirmed funded, hashlock, refund terms, ciphertext availability. Helper observation is not wallet authority.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "release_id or model_id"}});
+}
+static RPCHelpMan getrecentlyunlockedmodels()
+{
+    return ProxyOrLocal("getrecentlyunlockedmodels", "Models whose campaign secret was recently disclosed (network-capable feed).\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "since/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan getreleasefeed()
+{
+    return ProxyOrLocal("getreleasefeed", "Convenience wrapper over getmodelfeed for release campaigns.\n",
+                        {{"query", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "mode/limit", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan preparefundmodelrelease()
+{
+    return ProxyOrLocal("preparefundmodelrelease", "Unsigned funding plan for a campaign. Never spends. automatic_spend_atoms=0. Wallet must sign/submit separately.\n",
+                        {{"release_id", RPCArg::Type::STR, RPCArg::Optional::NO, "release_id"},
+                         {"amount_atoms", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "amount or options object", RPCArgOptions{.skip_type_check = true}}});
+}
+static RPCHelpMan cacheencryptedmodel()
+{
+    return ProxyOrLocal("cacheencryptedmodel", "Explicit ciphertext pre-cache. Never auto-downloads from a feed card. Does not reveal plaintext.\n",
+                        {{"id", RPCArg::Type::STR, RPCArg::Optional::NO, "release_id or model_id"}});
 }
 static RPCHelpMan getsearchstatus()
 {
@@ -1116,6 +1165,16 @@ void RegisterModelNetRPCCommands(CRPCTable& t)
         {"modelnet", &getsimilarmodels},
         {"modelnet", &getnewmodels},
         {"modelnet", &getrecentreleases},
+        {"modelnet", &getmodeleconomyentry},
+        {"modelnet", &getmodelfeed},
+        {"modelnet", &getmodelfeedstatus},
+        {"modelnet", &getmodelfeedsequence},
+        {"modelnet", &getfundablemodels},
+        {"modelnet", &getmodelreleaseeconomics},
+        {"modelnet", &getrecentlyunlockedmodels},
+        {"modelnet", &getreleasefeed},
+        {"modelnet", &preparefundmodelrelease},
+        {"modelnet", &cacheencryptedmodel},
         {"modelnet", &getsearchstatus},
         {"modelnet", &cancelmodelsearch},
         {"modelnet", &getsearchpeers},

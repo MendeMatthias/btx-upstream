@@ -359,11 +359,21 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
     }
 
     if (route.rfind("/api/v1/models/", 0) == 0) {
-        const std::string id = route.substr(std::string_view{"/api/v1/models/"}.size());
+        std::string id = route.substr(std::string_view{"/api/v1/models/"}.size());
+        const bool economy = id.size() > 8 && id.rfind("/economy") == id.size() - 8;
+        if (economy) id.resize(id.size() - 8);
         if (id.empty() || id.find('/') != std::string::npos) {
             UniValue obj = ApiV1Shell();
             obj.pushKV("error", "not found");
             return finish(std::move(obj), 404, false);
+        }
+        if (economy) {
+            UniValue obj = ApiV1Shell();
+            obj.pushKV("authoritative", false);
+            obj.pushKV("native_rpc", "getmodeleconomyentry");
+            obj.pushKV("wallet", false);
+            obj.pushKV("id", id);
+            return finish(std::move(obj), 200, true);
         }
         Resource r;
         std::string err;
@@ -402,6 +412,36 @@ bool HandleApiV1Get(const std::string& path, BrowserBridgeResponse& out)
     if (route == "/api/v1/releases") {
         UniValue obj = ApiV1Shell();
         obj.pushKV("results", UniValue(UniValue::VARR));
+        obj.pushKV("native_rpc", "getrecentreleases / getmodelfeed");
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route == "/api/v1/feed" || route == "/api/v1/feed/new" || route == "/api/v1/feed/releases" ||
+        route == "/api/v1/feed/unlocked") {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("items", UniValue(UniValue::VARR));
+        obj.pushKV("coverage", "incomplete");
+        obj.pushKV("global_complete", false);
+        obj.pushKV("authoritative", false);
+        obj.pushKV("native_rpc", "getmodelfeed");
+        obj.pushKV("funding_writes", false);
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route.size() > 16 && route.rfind("/api/v1/models/", 0) == 0 && route.find("/economy") != std::string::npos) {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("authoritative", false);
+        obj.pushKV("native_rpc", "getmodeleconomyentry");
+        obj.pushKV("wallet", false);
+        return finish(std::move(obj), 200, true);
+    }
+
+    if (route.size() > 18 && route.rfind("/api/v1/releases/", 0) == 0) {
+        UniValue obj = ApiV1Shell();
+        obj.pushKV("authoritative", false);
+        obj.pushKV("native_rpc", "getmodelreleaseeconomics");
+        obj.pushKV("wallet", false);
+        obj.pushKV("funding_writes", false);
         return finish(std::move(obj), 200, true);
     }
 

@@ -567,6 +567,10 @@ if(WITH_MODELNET)
     modelnet_swarm_tests.cpp
     modelnet_conn_tests.cpp
     modelnet_search_tests.cpp
+    modelnet_economy_tests.cpp
+    modelnet_feed_tests.cpp
+    modelnet_release_directory_tests.cpp
+    modelnet_search_economy_tests.cpp
   )
   target_compile_definitions(test_btx PRIVATE
     MODELNET_V11_VECTORS_PATH=\"${PROJECT_SOURCE_DIR}/src/test/data/modelnet_v11_vectors.json\"

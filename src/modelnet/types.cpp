@@ -55,6 +55,11 @@ bool operator<(const Digest48& a, const Digest48& b)
     return a.data < b.data;
 }
 
+bool Hash32::IsNull() const
+{
+    return std::all_of(data.begin(), data.end(), [](unsigned char c) { return c == 0; });
+}
+
 std::string Hash32::Hex() const
 {
     return HexStr(data);

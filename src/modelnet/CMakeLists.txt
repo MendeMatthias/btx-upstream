@@ -25,6 +25,8 @@ add_library(bitcoin_modelnet STATIC
   transfer.cpp
   funding.cpp
   release.cpp
+  economy.cpp
+  feed.cpp
   qualification.cpp
   identity.cpp
   acl.cpp

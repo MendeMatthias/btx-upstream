@@ -154,8 +154,8 @@ UniValue CapabilitiesObject()
              "POST /ext/free/grant", "POST /ext/receipts",
              "POST /ext/pex", "POST /ext/rendezvous", "POST /ext/relay/connect",
              "POST /ext/autonat/probe", "POST /ext/autonat/report", "POST /ext/relay/reserve",
-             "POST /ext/holepunch", "POST /ext/providers/put", "POST /ext/providers/get",
-             "POST /ext/search"}) {
+             "POST /ext/holepunch",              "POST /ext/providers/put", "POST /ext/providers/get",
+             "POST /ext/search", "POST /ext/feed"}) {
         http.push_back(p);
     }
     c.pushKV("http", http);

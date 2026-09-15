@@ -105,6 +105,15 @@ MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-search-creator.sh" || die "e2e-sear
 "$ROOT/contrib/modelnet/e2e-gui-gates.sh" || die "e2e-gui-gates"
 TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-search-exactreplay.sh" || die "e2e-search-exactreplay"
 
+step "economy search / feed / release discovery"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-economy-search.sh" || die "e2e-economy-search"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-network-feed.sh" || die "e2e-network-feed"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-release-discovery.sh" || die "e2e-release-discovery"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-release-transition.sh" || die "e2e-release-transition"
+"$ROOT/contrib/modelnet/e2e-economy-gui.sh" || die "e2e-economy-gui"
+MODELD="$MODELD" "$ROOT/contrib/modelnet/e2e-economy-three-host.sh" || die "e2e-economy-three-host"
+BIN="$BIN" "$ROOT/contrib/modelnet/e2e-economy-regtest.sh" || die "e2e-economy-regtest"
+
 step "QUIC deferred + Apple pkg recipe"
 MODELD="$MODELD" TEST_BTX="$BIN/test_btx" "$ROOT/contrib/modelnet/e2e-quic-absent.sh" || die "e2e-quic-absent"
 "$ROOT/contrib/modelnet/e2e-apple-pkg-recipe.sh" || die "e2e-apple-pkg-recipe"

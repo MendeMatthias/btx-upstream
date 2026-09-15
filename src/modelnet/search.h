@@ -10,6 +10,7 @@
 #include <modelnet/types.h>
 #include <span.h>
 #include <univalue.h>
+#include <util/fs.h>
 
 #include <cstdint>
 #include <map>
@@ -47,6 +48,13 @@ enum class SearchSort {
     RARITY,
     PUBLISHER,
     NAME,
+    NEWEST_RELEASES,
+    RECENTLY_UNLOCKED,
+    NEARLY_FUNDED,
+    MOST_FUNDED,
+    MOST_FUNDING_NEEDED,
+    RAREST_AVAILABLE,
+    TRENDING,
 };
 enum class AvailabilityClass {
     UNKNOWN = 0,
@@ -84,6 +92,12 @@ struct ModelSearchRecord {
     int64_t updated_at{0};
     std::string release_id;
     std::string release_state;
+    int64_t release_target_atoms{0};
+    Hash32 key_hash{};
+    uint32_t refund_height{0};
+    int64_t campaign_created_at{0};
+    Digest48 ciphertext_artifact_id;
+    std::string assurance{"KEY_RELEASE_ONLY"};
     uint64_t metadata_sequence{1};
     int64_t expires_at{0};
     Digest48 signer_id;
@@ -110,6 +124,21 @@ struct SearchFilters {
     bool locally_available{false};
     bool pinned{false};
     bool seeded{false};
+    std::vector<std::string> lifecycle_state;
+    bool funding_only{false};
+    bool released_only{false};
+    bool unreleased_only{false};
+    bool fundable_only{false};
+    bool refund_available{false};
+    int64_t min_funded_percent{-1};
+    int64_t max_funded_percent{-1};
+    int64_t max_remaining_atoms{-1};
+    int64_t release_created_after{-1};
+    int64_t release_created_before{-1};
+    int64_t unlocked_after{-1};
+    bool ciphertext_available{false};
+    int min_ciphertext_provider_count{0};
+    std::vector<std::string> modalities;
 };
 
 struct SearchQuery {
@@ -210,9 +239,12 @@ bool ParseSearchSort(const std::string& s, SearchSort& out);
 std::string NormalizeSearchText(const std::string& in);
 std::vector<std::string> TokenizeSearch(const std::string& in);
 bool ValidateSearchRecord(const ModelSearchRecord& r, std::string& err);
+std::vector<unsigned char> SearchRecordPreimageV1(const ModelSearchRecord& r);
+std::vector<unsigned char> SearchRecordPreimageV2(const ModelSearchRecord& r);
 std::vector<unsigned char> SearchRecordPreimage(const ModelSearchRecord& r);
 bool SignSearchRecord(ModelSearchRecord& r, Span<const unsigned char> sk, std::string& err);
 bool VerifySearchRecord(const ModelSearchRecord& r, int64_t now_ms, std::string& err);
+bool PublisherFieldCoveredByV1(const std::string& field);
 UniValue SearchRecordToJson(const ModelSearchRecord& r);
 bool SearchRecordFromJson(const UniValue& o, ModelSearchRecord& r, std::string& err);
 
@@ -256,6 +288,10 @@ public:
     uint64_t Sequence() const { return m_seq; }
     UniValue ExportSince(uint64_t since, int limit) const;
     UniValue StatusJson() const;
+    bool Save(const fs::path& path, std::string& err) const;
+    bool Load(const fs::path& path, int64_t now_ms, std::string& err);
+    std::vector<ModelSearchRecord> All() const;
+    void SetCap(size_t cap) { m_cap = cap; }
 };
 
 struct QueryDedupe {

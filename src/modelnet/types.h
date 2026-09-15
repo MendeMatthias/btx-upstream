@@ -31,6 +31,7 @@ bool operator<(const Digest48& a, const Digest48& b);
 struct Hash32 {
     std::array<unsigned char, 32> data{};
     static constexpr size_t SIZE = 32;
+    bool IsNull() const;
     std::string Hex() const;
     static bool FromHex(const std::string& hex, Hash32& out, std::string& err);
 };

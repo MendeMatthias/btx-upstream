@@ -26,16 +26,27 @@ prove usefulness, safety, alignment, or that the publisher controls a distinct r
 There is **no central telemetry**, no operator email/account system, and **no monetary coupling**
 (`SearchTouchesMonetaryConsensus()` is false; search RPCs report `automatic_spend_atoms: 0`).
 
+Network search queries (`scope=NETWORK`) may be visible to consulted peers
+and indexers. `scope=LOCAL` keeps the query on this node. Do not claim
+anonymous search.
+
 ## ModelSearchRecord
 
 Typed catalog metadata keyed by `model_id` (and optional `artifact_id`).
 
 | Property | Value |
 |---|---|
-| JSON `type` | `btx-model-search-v1` |
-| `schema_version` | **2** (always) |
-| Signature domain | `BTX/ModelSearchRecord/v1` |
+| JSON `type` | `btx-model-search-v1` (v2 signing still uses this type) |
+| `schema_version` | **2** on the record; economy/feed cards use **3** |
+| Signature domain | New records: `BTX/ModelSearchRecord/v2`. Historic `record_version=1` still verifies as `BTX/ModelSearchRecord/v1` |
 | Algorithm | **ML-DSA-44** only (no Ed25519, no ECDSA) |
+
+v2 preimage covers **all publisher-authored searchable fields** including
+`short_description`, tags, languages, modalities, publisher display name,
+parameter/file counts, timestamps, and static release terms (`release_id`,
+target, SHA-256 `key_hash`, refund height). v1 signatures are not reinterpreted
+as covering those extra fields. Description/use-case queries match
+`short_description` over the live network path after remote records are ingested.
 
 ### Fields (wire JSON)
 

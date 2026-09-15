@@ -36,6 +36,16 @@ build-gcc13/bin/btx-modeld \
 Unix RPC is one JSON line. Packaged default storage is **auto**. `-modelstorage=0`
 is the explicit no-payload setting.
 
+## Search / feed / economy
+
+```bash
+contrib/modelnet/e2e-economy-search.sh
+contrib/modelnet/e2e-network-feed.sh
+contrib/modelnet/e2e-economy-three-host.sh
+```
+
+Desktop Models page: Latest / Nearly Funded / Releases without a terminal.
+
 ## Two-helper retrieve
 
 ```bash

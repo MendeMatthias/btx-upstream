@@ -127,17 +127,27 @@
          </property>
          <widget class="QWidget" name="tabScopeNetwork">
           <attribute name="title">
-           <string>Network</string>
+           <string>Latest</string>
           </attribute>
          </widget>
          <widget class="QWidget" name="tabScopeNew">
           <attribute name="title">
-           <string>New</string>
+           <string>Nearly Funded</string>
           </attribute>
          </widget>
          <widget class="QWidget" name="tabScopeAvailable">
           <attribute name="title">
            <string>Available</string>
+          </attribute>
+         </widget>
+         <widget class="QWidget" name="tabScopeRare">
+          <attribute name="title">
+           <string>Rare</string>
+          </attribute>
+         </widget>
+         <widget class="QWidget" name="tabScopeJustReleased">
+          <attribute name="title">
+           <string>Just Released</string>
           </attribute>
          </widget>
          <widget class="QWidget" name="tabScopeLocal">
@@ -157,7 +167,7 @@
          <item>
           <widget class="QLineEdit" name="searchLineEdit">
            <property name="placeholderText">
-            <string>Search open models...</string>
+            <string>Search open models by name or what they do...</string>
            </property>
            <property name="clearButtonEnabled">
             <bool>true</bool>
