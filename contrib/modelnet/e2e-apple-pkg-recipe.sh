@@ -27,7 +27,17 @@ print("Apple packaging sources present (deploy target + macdeployqtplus)")
 PY
 
 if [[ "$(uname -s)" == Darwin ]]; then
-  echo "Darwin host: recipe is complete; run cmake --build build -t deploy for the artifact"
+  echo "Darwin host: recipe is complete"
+  if [[ "${APPLE_PKG_BUILD:-0}" == "1" ]]; then
+    BUILD_DIR="${APPLE_PKG_BUILD_DIR:-$ROOT/build-metal}"
+    [[ -f "$BUILD_DIR/CMakeCache.txt" ]] || die "missing Darwin build cache: $BUILD_DIR"
+    cmake --build "$BUILD_DIR" --target deploy
+    artifact="$(find "$BUILD_DIR" -maxdepth 1 -type f \( -name '*.zip' -o -name '*.dmg' -o -name '*.pkg' \) -print -quit)"
+    [[ -n "$artifact" ]] || die "deploy completed without a zip, dmg, or pkg artifact"
+    echo "APPLE-PKG artifact PASS $artifact"
+  else
+    echo "Set APPLE_PKG_BUILD=1 to execute the Darwin deploy target"
+  fi
 else
   echo "not Darwin; .pkg/.zip artifact not produced (recipe verified)"
 fi

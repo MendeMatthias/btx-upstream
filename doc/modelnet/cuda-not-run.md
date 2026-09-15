@@ -24,3 +24,9 @@ still `NOT_RUN_CUDA_ISOLATION`. A live `GPU-01 RUNTIME_OBSERVED` is
   not starve ExactReplay.
 
 Do not treat a `STRUCTURE_VERIFIED` shard as “it runs on this GPU.”
+
+Current evidence: the RTX workstation CUDA qualification worker compiles
+successfully with `nvcc -c`, and the production validator remains the only
+GPU process. Runtime kernel execution is intentionally still `NOT_RUN` until
+a separate GPU or explicit operator authorization permits sharing the live
+device.

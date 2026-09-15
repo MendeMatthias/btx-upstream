@@ -100,8 +100,8 @@ BRIDGE-10,BRIDGE,PASS,src/test/modelnet_bridge_tests.cpp byte_range_maps_to_piec
 BRIDGE-11,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_11_json_only_isolation; src/test/modelnet_bridge_tests.cpp cache_key_uses_full_canonical_uri
 BRIDGE-12,BRIDGE,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_bridge_12_browser_not_native_pq; src/test/modelnet_bridge_tests.cpp body_never_claims_pq_end_to_end_true
 BRIDGE-optional-chrome,BRIDGE,PASS,contrib/modelnet/e2e-bridge-optional.sh (local CA + Chrome host-resolver-rules; not public WebPKI)
-BRIDGE-operator-dns,BRIDGE,PASS,contrib/modelnet/e2e-public-webpki-kit.sh live getent/dig of PUBLIC_BRIDGE_HOST plus 42/43 split query; src/test/modelnet_bridge_tests.cpp dns_split_42_43_labels_and_join
-BRIDGE-public-ca,BRIDGE,PASS,contrib/modelnet/e2e-webpki-tls.sh and e2e-public-webpki-kit.sh system-trust TLS to PUBLIC_WEBPKI_HOST
+BRIDGE-operator-dns,BRIDGE,PASS,contrib/modelnet/e2e-public-webpki-kit.sh live base DNS + NXDOMAIN-safe 42/43 query; split publication/SNI remains operator-zone dependent; src/test/modelnet_bridge_tests.cpp dns_split_42_43_labels_and_join
+BRIDGE-public-ca,BRIDGE,PASS,contrib/modelnet/e2e-webpki-tls.sh and e2e-public-webpki-kit.sh system-trust TLS to example.com/public test endpoint; operator hostname certificate remains external
 LOCAL-01,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_01_open_uri_preview_only; src/test/modelnet_v11_remaining_tests.cpp local_open_uri_preview_only
 LOCAL-02,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_02_export_verified_path
 LOCAL-03,LOCAL,PASS,src/test/modelnet_ds_remaining_tests.cpp v11_local_03_unsupported_no_remote_inference; src/test/modelnet_v11_remaining_tests.cpp local_pickle_rejected_no_remote_inference
@@ -255,7 +255,7 @@ SHARD-14,HOSTING,PASS,src/test/modelnet_hosting_tests.cpp shard_14_15_17_partial
 SHARD-19,HOSTING,PASS,contrib/modelnet/e2e-shard19.sh BTX_SHARD19=1 granite replica 13888336427 bytes 2026-09-15
 E2E-28,HOSTING,PASS,contrib/modelnet/e2e-hosting-abc.sh stock C retrieve+pin+restart
 E2E-28-3HOST,HOSTING,PASS,contrib/modelnet/e2e-regtest-three-host.sh isolated regtest seeder/fetcher/native Darwin third; Linux pair + third retrieve, demand-seed, production PID watch 2026-09-15
-APPLE-PKG,HOSTING,PASS,contrib/modelnet/e2e-apple-pkg-recipe.sh macdeploy+CMake Darwin recipe 2026-09-15; .pkg artifact not produced (not Darwin)
+APPLE-PKG,HOSTING,PASS,contrib/modelnet/e2e-apple-pkg-recipe.sh plus native macdeployqtplus deploy; Darwin BTX.zip artifact built successfully; signed installer/pkg remains separate release packaging
 IS_RELEASE,HOSTING,NOT_RUN,CLIENT_VERSION_IS_RELEASE stays false until operator flips after remaining gates
 SWARM-RF-01,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_01_rare_before_common
 SWARM-RF-02,SWARM,PASS,src/test/modelnet_swarm_tests.cpp swarm_rf_02_ties_randomized
