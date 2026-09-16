@@ -11,7 +11,7 @@ The `note` / `coverage_disclaimer` strings state **current network view; not a
 complete global directory**. Low `remote_count` is normal. Never interpret results
 as a global census.
 
-**Release posture:** `CLIENT_VERSION_IS_RELEASE` is `false` in this tree.
+**Release posture:** `CLIENT_VERSION_IS_RELEASE` is `true` in this tree (0.34.7).
 
 **Privacy:** Network-scoped queries reveal text to consulted peers/indexers; use
 `scope: LOCAL` for sensitive searches ([search.md](search.md)).

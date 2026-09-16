@@ -1,7 +1,9 @@
 # BTX Download-and-Go Guide
 
-> **Current line:** see [release notes](release-notes.md) and
-> [0.34.5 convergence notes](release-notes/release-notes-0.34.5.md).
+> **Current line:** **v0.34.7**. See
+> [0.34.7 release notes](release-notes/release-notes-0.34.7.md) and
+> [release notes](release-notes.md). Historical 0.34.5 convergence notes:
+> [release-notes-0.34.5.md](release-notes/release-notes-0.34.5.md).
 > Epoch A is live at height 185000. EncDr stall recovery at 199299 is
 > withdrawn. Fast-start snapshot:
 > [assumeutxo-219000](https://github.com/btxchain/btx/releases/tag/assumeutxo-219000)
@@ -42,10 +44,12 @@ export GH_TOKEN="$(<github.key)"  # only needed for private GitHub releases
 
 python3 contrib/faststart/btx-agent-setup.py \
   --repo btxchain/btx \
-  --release-tag v0.33.4.2 \
+  --release-tag v0.34.7 \
   --preset miner \
   --datadir="$HOME/.btx"
 ```
+
+The GitHub tag `v0.34.7` is published with the 0.34.7 release.
 
 Add `--start-mining` when the same command should also provision the mining
 wallet/address and start the bundled live-mining supervisor after the verified
@@ -54,7 +58,7 @@ fast-start bootstrap succeeds:
 ```bash
 python3 contrib/faststart/btx-agent-setup.py \
   --repo btxchain/btx \
-  --release-tag v0.33.4.2 \
+  --release-tag v0.34.7 \
   --preset miner \
   --datadir="$HOME/.btx" \
   --start-mining
@@ -94,7 +98,7 @@ progress on stderr and prints a clean JSON summary on stdout:
 ```bash
 SETUP_JSON="$(python3 contrib/faststart/btx-agent-setup.py \
   --repo btxchain/btx \
-  --release-tag v0.33.4.2 \
+  --release-tag v0.34.7 \
   --preset miner \
   --datadir="$HOME/.btx" \
   --json)"

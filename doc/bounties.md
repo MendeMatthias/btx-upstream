@@ -5,10 +5,10 @@ a model that matches published requirements **before** a winning `model_id`
 exists. Release campaigns (supply-side: disclose an already-encrypted model)
 remain a separate product path — see [modelnet/model-economy.md](modelnet/model-economy.md).
 
-`CLIENT_VERSION_IS_RELEASE` is **false** in this tree. Schemas and RPC names
-document the frozen product contract; implementation gates and evidence rows in
+`CLIENT_VERSION_IS_RELEASE` is **true** in this tree (0.34.7). Schemas and RPC
+names document the product contract; implementation gates and evidence rows in
 [contrib/modelnet/bounty/tests/acceptance-matrix.csv](../contrib/modelnet/bounty/tests/acceptance-matrix.csv)
-decide readiness. This page is not a release announcement.
+remain the readiness record for bounty methods.
 
 ## Lifecycle
 

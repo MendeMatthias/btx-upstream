@@ -1,5 +1,13 @@
 # BTX Native Model Network (0.34.7)
 
+**Status:** **0.34.7 release.** This is the shipped Native Model Network, not a
+draft RC and not a document awaiting merge.
+
+**Readers:** people start at [HUMANS.md](../../HUMANS.md). Autonomous agents
+start at [AGENTS.md](../../AGENTS.md). The strategic essay is
+[btx-decentralized-frontier-ai-lab.md](../design/btx-decentralized-frontier-ai-lab.md).
+This README is the in-tree operator index for the model plane.
+
 **A BTX node already has compute. BTX gives it models and money.**
 
 The canonical share form is `btx://<resource-token>`. The client resolves it,
@@ -15,7 +23,9 @@ paid remote run.
 
 ## Authority
 
-**Start with the v1.1 root addendum**, then this directory. This README
+Implementers and operators: **start with the v1.1 root addendum**, then this
+directory. People should read [HUMANS.md](../../HUMANS.md) first; agents
+should read [AGENTS.md](../../AGENTS.md). This README
 is an in-tree operator index (addendum §13.2), not a replacement for the
 specification and not a rewrite of B0.
 

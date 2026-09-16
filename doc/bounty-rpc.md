@@ -9,8 +9,8 @@ Payload shapes:
 `btxd` with `-DWITH_MODELNET=ON` proxies model-plane methods to `btx-modeld`
 when `-modelrpcsocket` is set; wallet-side methods execute in the wallet.
 If the helper is down, proxied calls **fail closed**. `CLIENT_VERSION_IS_RELEASE`
-remains **false** — catalog status is `PROPOSED_CONTRACTS_NOT_IMPLEMENTATION_CLAIM`
-until evidence rows pass.
+is **true** (0.34.7). Evidence rows live in
+[contrib/modelnet/bounty/tests/acceptance-matrix.csv](../contrib/modelnet/bounty/tests/acceptance-matrix.csv).
 
 **Authentication:** write paths require caller authentication and caller-scoped
 `idempotency_key` where marked in the catalog. **Bridge:** public HTTP routes are

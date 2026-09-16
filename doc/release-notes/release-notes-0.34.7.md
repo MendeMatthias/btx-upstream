@@ -1,8 +1,8 @@
 # BTX 0.34.7 — Native Model Network
 
-**Status:** 0.34.7. `CLIENT_VERSION` is **0.34.7** with
-`CLIENT_VERSION_IS_RELEASE=true`. The remaining operator step is merge of
-PR #156 to `main`.
+**Status:** **v0.34.7**. `CLIENT_VERSION` is **0.34.7** with
+`CLIENT_VERSION_IS_RELEASE=true`. Humans: [HUMANS.md](../../HUMANS.md).
+Agents: [AGENTS.md](../../AGENTS.md).
 
 A BTX node already has compute. 0.34.7 gives it **models and money** on an
 isolated plane, including **decentralized model search**, a **model

@@ -7,9 +7,8 @@ Every node, RPC response, and explorer page must treat results as a **current ne
 locally indexed records, configured index peers, and bounded peer replies. Nothing here implies a
 **global complete directory**.
 
-**Release posture:** `CLIENT_VERSION_IS_RELEASE` remains `false` in this tree. Behavior may change;
-treat wire shapes as implemented in helper `DispatchHelperRpc`, not as a frozen public API until
-release.
+**Release posture:** `CLIENT_VERSION_IS_RELEASE` is `true` in this tree (0.34.7).
+Treat wire shapes as implemented in helper `DispatchHelperRpc`.
 
 ## Four planes (do not conflate)
 
