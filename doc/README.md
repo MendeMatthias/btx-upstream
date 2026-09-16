@@ -1,17 +1,25 @@
 BTX Node
 ========
 
+Humans start at [HUMANS.md](../HUMANS.md). Agents start at
+[AGENTS.md](../AGENTS.md).
+
 Current BTX architecture/readiness source of truth
 --------------------------------------------------
 Use these docs first when you need the live post-`61000` hardening status,
 security closeout, or future-upgrade boundary:
 
+- [Native Model Network (0.34.7)](modelnet/README.md) — isolated model plane:
+  local inference after acquire (not a remote inference marketplace);
+  `btx-modeld` helper + optional `btxd` introduction bridge; monetary
+  consensus unchanged when the helper is absent.
 - [MatMul v4.7 Consensus Transition Roadmap](btx-matmul-v4.7-transition-roadmap.md)
 - [GPU-verified full nodes: three-phase transition](btx-gpu-verified-network-transition.md)
 - [0.34 open attestor framework (local design study)](design/0.34-open-attestor-framework.md)
 - [0.34 release phases — CPU-archive continuity, decentralized ExactReplay, attestor sunset](design/0.34-release-phases.md)
 - [0.34 attestation key blocklist (manual emergency excision)](design/0.34-attestor-key-blocklist.md)
 - [0.34 gold standard: ExactReplay, not attestation](design/0.34-ai-native-bitcoin.md)
+- [The Decentralized Frontier AI Lab (essay, 15 Sep 2026)](design/btx-decentralized-frontier-ai-lab.md) — human strategic argument, not a consensus spec; start at [HUMANS.md](../HUMANS.md)
 - [0.34 operator safeguards — hijack/stall runbook](design/0.34-operator-safeguards.md)
 - [0.34 discovery relay — public seeds stop being authority](design/0.34-discovery-relay.md)
 - [MatMul v4 ExactReplay Launch Candidate](matmul-v4-exact-replay-launch-candidate.md)
@@ -50,6 +58,7 @@ service-profile, or release-publication workflow:
 - [Linux Release Build Variants](linux-release-builds.md)
 - [Assumeutxo Usage](assumeutxo.md)
 - [0.34.5 release notes — automatic convergence / self-heal](release-notes/release-notes-0.34.5.md)
+- [0.34.7 release notes — Native Model Network](release-notes/release-notes-0.34.7.md)
 - [BTX Mining Node Snapshot Runbook](btx-mining-node-snapshot-runbook.md)
 - [BTX GitHub Release Automation](btx-github-release-automation.md)
 - [Release Process](release-process.md)
@@ -58,12 +67,13 @@ service-profile, or release-publication workflow:
 - [Mining Operator Helpers](../contrib/mining/README.md)
 - [Fast-Start Validating Node Helpers](../contrib/faststart/README.md)
 
-Current `main` is **v0.33.4.2**. Epoch A is live on mainnet at height 185000
+Current `main` is **v0.34.7**. Epoch A is live on mainnet at height 185000
 (Profile 1 ExactReplay authority, optional shadow proofs). EncDr stall recovery
-is active from 199299. Epoch B requires both a durable proof and ExactReplay;
-Epoch C makes the Profile 1 proof authoritative; and only Epoch D selects
-Profile 2 with proof authority. Epochs B–D each require a separate review and
-remain disabled, as do the testnet/signet heights.
+at 199299 is withdrawn. Fast-start pin is assumeutxo height **219000**. Epoch B
+requires both a durable proof and ExactReplay; Epoch C makes the Profile 1 proof
+authoritative; and only Epoch D selects Profile 2 with proof authority. Epochs
+B–D each require a separate review and remain disabled, as do the
+testnet/signet heights.
 
 The release automation docs above cover the one-command local release cut
 (`scripts/release/cut_release.py`) and the local validation matrix used before
@@ -143,6 +153,7 @@ This repo's [root README](/README.md) contains relevant information on the devel
 * Discuss project-specific development in the repo issue tracker and adjacent maintainer channels used for BTX release and operator work.
 
 ### Miscellaneous
+- [Native Model Network (0.34.7)](modelnet/README.md)
 - [BTX Shielded Production Status](btx-shielded-production-status-2026-03-20.md)
 - [BTX SMILE v2 Genesis-Reset Readiness Tracker](btx-smile-v2-genesis-readiness-tracker-2026-03-20.md)
 - [BTX SMILE v2 Future-Proofed Settlement TDD](btx-smile-v2-future-proofed-settlement-tdd-2026-03-23.md)

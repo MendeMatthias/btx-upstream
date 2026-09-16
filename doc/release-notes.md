@@ -73,7 +73,7 @@ public DNS hosts are not chain-tip oracles, and a node with no pin
 membership, no attestor key, and no trusted-mirror pin must be able to
 reach tip and keep advancing on ExactReplay alone.
 
-`CLIENT_VERSION` in this tree is **0.34.5** once the freeze lands.
+`CLIENT_VERSION` in this tree is **0.34.7**.
 The `v0.34` tag and 0.34.0 seal remain the pool-close cut. 0.34.1 is
 withdrawn: it partitions nodes from mainnet. 0.34.2 is withdrawn for
 consensus nodes: it deadlocks one block past the last attestation.
@@ -86,6 +86,11 @@ following it past park depth 6, and — once the entire competing suffix
 is locally ExactReplay-verified — un-park that majority fork with no
 operator action. See
 [release-notes-0.34.5.md](release-notes/release-notes-0.34.5.md).
+
+**0.34.7** adds the isolated Native Model Network model plane
+(`btx-modeld`); it is **not** a monetary seal and does not change ExactReplay
+consensus when the helper is absent. See
+[release-notes-0.34.7.md](release-notes/release-notes-0.34.7.md).
 
 Please report bugs using the issue tracker at GitHub, and when you
 have a diagnosis, bring the patch:

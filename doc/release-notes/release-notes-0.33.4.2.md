@@ -2,8 +2,11 @@ BTX version 0.33.4.2 is tagged from:
 
   <https://github.com/btxchain/btx/releases/tag/v0.33.4.2>
 
-This is the current line on `main`. CLIENT_VERSION remains 0.33.4. Git describe
-is **v0.33.4.2** (seal `c892f1a7`, freeze `400953c2`, fingerprint
+> **HISTORICAL.** v0.33.4.2 was the last 0.33.4.x line on `main`. Current line
+> is **v0.34.7**. See [release-notes-0.34.7.md](release-notes-0.34.7.md).
+
+This was the current line on `main` at the 0.33.4.2 tag. CLIENT_VERSION remained
+0.33.4. Git describe is **v0.33.4.2** (seal `c892f1a7`, freeze `400953c2`, fingerprint
 `a427fb12c69841ed082e7d7604b17beaac8749932b50c646747ebf81d0309928`). EncDr
 ExactReplay digest is unchanged (`b4777985…`).
 
