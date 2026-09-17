@@ -30,6 +30,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QStringList>
+#include <QUrl>
 #include <QUrlQuery>
 
 const int BITCOIN_IPC_CONNECT_TIMEOUT = 1000; // milliseconds
@@ -190,7 +191,8 @@ void PaymentServer::handleURIOrFile(const QString& s)
     }
 
     // V11-URI-13: a model resource URI must never enter DecodeDestination / Send Coins.
-    if (s.startsWith(QLatin1String("btx:"), Qt::CaseInsensitive)) {
+    if (s.startsWith(QLatin1String("btx:"), Qt::CaseInsensitive) ||
+        s.contains(QLatin1String("btx://"), Qt::CaseInsensitive)) {
         Q_EMIT receivedModelResource(s);
         return;
     }
@@ -234,8 +236,16 @@ void PaymentServer::handleURIOrFile(const QString& s)
         }
     }
 
-    if (QFile::exists(s)) // payment request file
-    {
+    QString path = s;
+    if (s.startsWith(QLatin1String("file:"), Qt::CaseInsensitive)) {
+        path = QUrl(s).toLocalFile();
+    }
+    if (QFile::exists(path)) {
+        const QString lower = path.toLower();
+        if (lower.endsWith(QLatin1String(".btx")) || lower.endsWith(QLatin1String(".btxlink"))) {
+            Q_EMIT receivedModelResource(path);
+            return;
+        }
         Q_EMIT message(tr("Payment request file handling"),
             tr("Cannot process payment request because BIP70 is not supported.\n"
                "Due to widespread security flaws in BIP70 it's strongly recommended that any merchant instructions to switch wallets be ignored.\n"

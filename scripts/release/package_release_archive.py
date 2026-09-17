@@ -14,6 +14,7 @@ import argparse
 import gzip
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
@@ -83,12 +84,17 @@ PLATFORM_CONFIGS["linux-x86_64-cpu"] = dict(PLATFORM_CONFIGS["linux-x86_64"])
 PLATFORM_CONFIGS["linux-x86_64-cuda"] = dict(PLATFORM_CONFIGS["linux-x86_64-cuda12"])
 PLATFORM_CONFIGS["macos-arm64-metal"] = dict(PLATFORM_CONFIGS["macos-arm64"])
 SUPPORT_FILES = load_support_files()
-# Packaged next to btxd when present (0.34.7 Native Model Network + Metal probe).
+# Packaged next to btxd when present (0.34.7 Native Model Network + 0.34.8
+# first-run / hosted HCP / CRL planes + Metal probe).
 OPTIONAL_SIBLING_BINARIES = (
     "btx-modeld",
     "btx-modelcheck",
     "btx-open",
     "btx-matmul-backend-info",
+    "btx-hcpd",
+    "btx-hosted",
+    "btx-capability",
+    "btx-capabilityd",
 )
 
 
@@ -362,6 +368,21 @@ def stage_release_tree(
         destination.write_text(wrapper, encoding="utf-8")
         destination.chmod(0o755)
         included.append(str(destination.relative_to(release_root)))
+
+    if "cuda" in platform_id:
+        # libcublasLt and toolkit siblings live next to btxd.real ($ORIGIN).
+        # bundle_cuda_runtime_libs.py must have been run on --btxd first.
+        cuda_lib_re = re.compile(
+            r"^lib(cublasLt|cublas|cudart|nvJitLink|nvrtc|culibos)(\.so(\.\d+)*)$"
+        )
+        libexec_dir.mkdir(parents=True, exist_ok=True)
+        for source in sorted(btxd_path.parent.glob("lib*.so*")):
+            if not cuda_lib_re.match(source.name):
+                continue
+            destination = libexec_dir / source.name
+            shutil.copy2(source, destination)
+            destination.chmod(destination.stat().st_mode | 0o111)
+            included.append(str(destination.relative_to(release_root)))
 
     if platform_id.startswith("macos-"):
         metallib_by_name: dict[str, Path] = {}

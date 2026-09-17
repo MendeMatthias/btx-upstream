@@ -419,8 +419,15 @@ void ResourceGovernor::MaybeTransition(int64_t now_ms)
             // quiet: keep / gradually raise (already at auto_ceil)
         }
     }
-    if (!p.upload_auto && p.upload_max_bps > 0) auto_ceil = p.upload_max_bps;
-    if (p.upload_max_bps > 0) auto_ceil = std::min(auto_ceil, p.upload_max_bps);
+    // Operator/profile upload_max_bps may replace the auto ceiling, but must
+    // not restore a hard environmental stop (metered / OFF / battery floor).
+    if (!p.upload_auto && p.upload_max_bps > 0 && auto_ceil > 0) auto_ceil = p.upload_max_bps;
+    if (p.upload_max_bps > 0 && auto_ceil > 0) auto_ceil = std::min(auto_ceil, p.upload_max_bps);
+    if (m_mode == GovernorMode::OFF || m_user_pause) auto_ceil = 0;
+    if (s.metered && !p.background_on_metered) auto_ceil = 0;
+    if (!s.on_ac && !p.battery_background_allowed) {
+        auto_ceil = std::min(auto_ceil, p.background_upload_floor_bps);
+    }
     m_effective_upload_bps = auto_ceil;
 
     if (thermal_crit) m_preserve_reason = PauseReason::THERMAL_PRESSURE;

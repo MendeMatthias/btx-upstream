@@ -131,7 +131,19 @@ Use `loadtxoutset`, not `loadtxoutsetattested`. Do not mine on parent
 3. **Run** `btxd`. Daemon config: [Running a Node](#running-a-node).
    Operator walkthrough: [doc/btx-download-and-go.md](doc/btx-download-and-go.md).
 4. **Models** (optional): isolated helper `btx-modeld`. Start with
-   [doc/modelnet/README.md](doc/modelnet/README.md).
+   [doc/modelnet/README.md](doc/modelnet/README.md). Host, seed, search,
+   share, watch folder, and doctor:
+   [doc/modelnet/first-run.md](doc/modelnet/first-run.md)
+   (**0.34.8-dev**, `CLIENT_VERSION_IS_RELEASE=false`; **v0.34.7** remains
+   the last shipping tag). CLI wrapper:
+   [contrib/modelnet/btx-model](contrib/modelnet/btx-model)
+   (people: stderr hints; agents: `--json`). Optional cloud / follow / events
+   / profile **fail closed** if the helper lacks the method — not a PASS:
+   [doc/modelnet/storage-backends.md](doc/modelnet/storage-backends.md).
+   Filesystem `-modelwatch` is not a publisher watch.
+   0.34.8-dev workflow: local or planned HF/torrent import → local or
+   `setcloudstorage` (R2 AUTO = SOURCE_FILES) → VerifiedManifest →
+   `exportmodellink` / `.btxbundle`. Integrity ≠ authorship. No auto-spend.
 
 Ordinary free model retrieval does not require buying BTX.
 
@@ -228,9 +240,20 @@ desktop client shows the same cards.
 - Remote/paid inference is **off the roadmap**.
 
 Operator and researcher docs: [doc/modelnet/README.md](doc/modelnet/README.md),
+[doc/modelnet/first-run.md](doc/modelnet/first-run.md),
 [doc/modelnet/model-economy.md](doc/modelnet/model-economy.md),
 [doc/modelnet/feed.md](doc/modelnet/feed.md).
-Release notes: [doc/release-notes/release-notes-0.34.7.md](doc/release-notes/release-notes-0.34.7.md).
+People vs agents: [HUMANS.md](HUMANS.md) / [AGENTS.md](AGENTS.md).
+0.34.8-dev optional cloud/events/watches (fail closed, not shipped):
+[doc/modelnet/storage-backends.md](doc/modelnet/storage-backends.md),
+[doc/modelnet/watches.md](doc/modelnet/watches.md).
+Release notes: [doc/release-notes/release-notes-0.34.7.md](doc/release-notes/release-notes-0.34.7.md)
+(shipping tag). 0.34.8-dev first-run notes:
+[doc/release-notes/release-notes-0.34.8.md](doc/release-notes/release-notes-0.34.8.md)
+(`CLIENT_VERSION_IS_RELEASE=false`; not a shipping tag).
+Hosted Control Plane / walletless discovery (0.34.8-dev, not shipped; not a
+live CEX IdP): [doc/hosted/README.md](doc/hosted/README.md),
+[doc/modelnet/hcp/](doc/modelnet/hcp/).
 
 ### Model bounties (demand-side)
 

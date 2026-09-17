@@ -4,9 +4,11 @@
 
 #include <bitcoin-build-config.h>
 #include <modelnet/bounty.h>
+#include <modelnet/catalog.h>
 #include <primitives/transaction.h>
 #include <modelnet/canonical_codec.h>
 #include <modelnet/crypto.h>
+#include <modelnet/helper.h>
 #include <modelnet/http_bridge.h>
 #include <modelnet/identity.h>
 #include <modelnet/resource_uri.h>
@@ -112,6 +114,61 @@ std::vector<unsigned char> Pattern(size_t n, unsigned char seed)
     std::vector<unsigned char> v(n);
     for (size_t i = 0; i < n; ++i) v[i] = static_cast<unsigned char>(seed + i);
     return v;
+}
+
+UniValue HelperRpc(const std::string& method, const UniValue& params = UniValue(UniValue::VARR))
+{
+    UniValue req(UniValue::VOBJ);
+    req.pushKV("method", method);
+    req.pushKV("params", params);
+    return req;
+}
+
+void AssertSpendZeroIfPresent(const UniValue& o)
+{
+    if (!o.exists("automatic_spend_atoms")) return;
+    const UniValue& s = o["automatic_spend_atoms"];
+    if (s.isNum()) BOOST_CHECK_EQUAL(s.getInt<int64_t>(), 0);
+    else if (s.isStr()) BOOST_CHECK_EQUAL(s.get_str(), "0");
+    else BOOST_CHECK_MESSAGE(false, "automatic_spend_atoms present but not 0");
+}
+
+void AssertNotConsensusUnsigned(const UniValue& o)
+{
+    BOOST_CHECK(!o.exists("wallet_signed") || !o["wallet_signed"].get_bool());
+    BOOST_CHECK(!o.exists("consensus") || !o["consensus"].get_bool());
+    BOOST_CHECK(!o.exists("wallet") || !o["wallet"].get_bool());
+    if (o.exists("completeness") && o["completeness"].isStr()) {
+        BOOST_CHECK_EQUAL(o["completeness"].get_str(), "local_watch_only");
+    }
+}
+
+void AssertNoBountySecrets(const UniValue& v)
+{
+    if (v.isObject()) {
+        for (const std::string& k : v.getKeys()) {
+            BOOST_CHECK_MESSAGE(k != "seed" && k != "mnemonic" && k != "private_key" && k != "sk" &&
+                                    k != "sk_hex" && k != "wallet_passphrase",
+                                "secret field in JSON: " + k);
+            if (k == "wallet_seed" || k == "private_keys" || k == "secrets") {
+                if (v[k].isBool()) BOOST_CHECK(!v[k].get_bool());
+            }
+            AssertNoBountySecrets(v[k]);
+        }
+    } else if (v.isArray()) {
+        for (const auto& e : v.getValues()) AssertNoBountySecrets(e);
+    }
+}
+
+bool FactsHaveOutpoint(const UniValue& o, const std::string& outpoint)
+{
+    if (!o.exists("facts") || !o["facts"].isArray()) return false;
+    for (const auto& f : o["facts"].getValues()) {
+        if (f.isObject() && f.exists("outpoint") && f["outpoint"].isStr() && f["outpoint"].get_str() == outpoint) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -268,7 +325,8 @@ BOOST_AUTO_TEST_CASE(bounty_auth_001_to_030)
     params.push_back(terms);
     UniValue result;
     std::string code;
-    BOOST_CHECK(!store.Dispatch("createbountydraft", params, result, code, err) || !err.empty() || true);
+    BOOST_REQUIRE(store.Dispatch("createbountydraft", params, result, code, err));
+    BOOST_CHECK(result.exists("draft_id"));
     // createbountydraft does not check identity match; publish does
     UniValue ok_params(UniValue::VARR);
     UniValue good = DefaultTerms(ZeroNet());
@@ -1130,12 +1188,20 @@ BOOST_AUTO_TEST_CASE(bounty_search_health_feed_store_rpc)
     BOOST_CHECK_EQUAL(br.http_status, 403);
     BOOST_REQUIRE(HandleBridgeRequest("GET", "/createagentmandate", "", br));
     BOOST_CHECK_EQUAL(br.http_status, 403);
+    BOOST_REQUIRE(HandleBridgeRequest("GET", "/createbountydraft", "", br));
+    BOOST_CHECK_EQUAL(br.http_status, 403);
+    BOOST_REQUIRE(HandleBridgeRequest("GET", "/updatebountydraft", "", br));
+    BOOST_CHECK_EQUAL(br.http_status, 403);
+    BOOST_REQUIRE(HandleBridgeRequest("GET", "/listbountydrafts", "", br));
+    BOOST_CHECK_EQUAL(br.http_status, 403);
+    BOOST_REQUIRE(HandleBridgeRequest("GET", "/validatebountyterms", "", br));
+    BOOST_CHECK_EQUAL(br.http_status, 403);
     BOOST_REQUIRE(HandleBridgeRequest("POST", "/rpc", "{\"method\":\"createagentmandate\"}", br));
     BOOST_CHECK(br.http_status == 405 || br.http_status == 403);
 
     const std::vector<std::string> helper = {
         "searchbounties", "getmodelbounties", "getbounty", "getbountyeconomy", "getbountyterms",
-        "getbountycapabilities", "createbountydraft", "validatebountyterms", "publishbounty", "revisebounty",
+        "getbountycapabilities", "createbountydraft", "listbountydrafts", "getbountydraft", "updatebountydraft", "deletebountydraft", "validatebountyterms", "publishbounty", "revisebounty",
         "nominatebountyevaluator", "acceptbountyappointment", "listbountyevaluators", "pledgebounty",
         "withdrawbountypledge", "freezebountyfundinground", "getbountyfunding", "exportbountyrecovery",
         "commitbountysubmission", "revealbountysubmission", "getbountysubmission", "listbountysubmissions",
@@ -1151,6 +1217,158 @@ BOOST_AUTO_TEST_CASE(bounty_search_health_feed_store_rpc)
     BOOST_CHECK(!IsBountyHelperMethod("submitbountyfunding"));
     BOOST_CHECK(!IsBountyHelperMethod("preparebountyclaim"));
     BOOST_CHECK(!IsBountyHelperMethod("preparebountyrefund"));
+}
+
+BOOST_AUTO_TEST_CASE(incomplete_bounty_draft_cannot_publish)
+{
+    using namespace modelnet;
+    BountyStore store;
+    const fs::path dir = m_path_root / "bounty-publish-gate";
+    fs::create_directories(dir);
+    store.Bind(dir, ZeroNet());
+
+    // Gitcoin-comparable: an incomplete draft may be saved locally...
+    UniValue terms(UniValue::VOBJ);
+    terms.pushKV("title", "incomplete draft stays unpublished");
+    UniValue cp(UniValue::VARR);
+    cp.push_back(terms);
+    UniValue result;
+    std::string code, err;
+    BOOST_REQUIRE(store.Dispatch("createbountydraft", cp, result, code, err));
+    BOOST_CHECK(!result["recipe_complete"].get_bool());
+    BOOST_REQUIRE(result["missing_fields"].isArray());
+    const size_t missing_before = result["missing_fields"].size();
+    BOOST_REQUIRE_GE(missing_before, 1U);
+    const std::string draft_id = result["draft_id"].get_str();
+
+    // ...but publish must fail closed while the checklist is incomplete.
+    UniValue pub(UniValue::VARR);
+    UniValue pobj(UniValue::VOBJ);
+    pobj.pushKV("draft_id", draft_id);
+    pub.push_back(pobj);
+    result.clear();
+    code.clear();
+    err.clear();
+    BOOST_CHECK(!store.Dispatch("publishbounty", pub, result, code, err));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK(!err.empty());
+
+    // The draft is untouched, still incomplete, and nothing was published.
+    UniValue gp(UniValue::VARR);
+    gp.push_back(draft_id);
+    BOOST_REQUIRE(store.Dispatch("getbountydraft", gp, result, code, err));
+    BOOST_CHECK(!result["recipe_complete"].get_bool());
+    BOOST_CHECK_EQUAL(result["missing_fields"].size(), missing_before);
+    BOOST_CHECK_EQUAL(result["next_actions"][0].get_str().empty(), false);
+}
+
+BOOST_AUTO_TEST_CASE(helper_observebountychain_reorg_recovery_unsigned)
+{
+    using namespace modelnet;
+    const fs::path dir = m_path_root / "helper-observebountychain-reorg-recovery-unsigned";
+    ModelCatalog cat{dir, 1 << 20};
+
+    UniValue result;
+    std::string code, err;
+    const std::string bounty_id = "helper-observebountychain-reorg-recovery-unsigned";
+    const std::string outpoint = "c0ffeehelperobserve:0";
+
+    BOOST_REQUIRE(IsBountyHelperMethod("createbountydraft"));
+    UniValue terms(UniValue::VOBJ);
+    terms.pushKV("title", "helper observe/reorg recovery stays unsigned");
+    UniValue draftp(UniValue::VARR);
+    draftp.push_back(terms);
+    BOOST_REQUIRE_MESSAGE(DispatchHelperRpc(cat, HelperRpc("createbountydraft", draftp), result, code, err), err);
+    BOOST_CHECK(result["local_only"].get_bool());
+    BOOST_CHECK(!result["recipe_complete"].get_bool());
+    BOOST_CHECK(!result["published"].get_bool());
+    AssertSpendZeroIfPresent(result);
+    AssertNotConsensusUnsigned(result);
+
+    BOOST_REQUIRE(IsBountyHelperMethod("observebountychain"));
+    UniValue obs(UniValue::VARR);
+    UniValue of(UniValue::VOBJ);
+    of.pushKV("outpoint", outpoint);
+    of.pushKV("bounty_id", bounty_id);
+    of.pushKV("lot_id", "helper-lot");
+    of.pushKV("amount_atoms", "100");
+    of.pushKV("confirmations", 1);
+    of.pushKV("height", 10);
+    obs.push_back(of);
+    result.clear();
+    code.clear();
+    err.clear();
+    BOOST_REQUIRE_MESSAGE(DispatchHelperRpc(cat, HelperRpc("observebountychain", obs), result, code, err), err);
+    BOOST_CHECK(FactsHaveOutpoint(result, outpoint));
+    AssertSpendZeroIfPresent(result);
+    AssertNotConsensusUnsigned(result);
+
+    UniValue exported;
+    if (IsBountyHelperMethod("exportbountyrecovery")) {
+        UniValue exp(UniValue::VARR);
+        UniValue eo(UniValue::VOBJ);
+        eo.pushKV("bounty_id", bounty_id);
+        exp.push_back(eo);
+        result.clear();
+        code.clear();
+        err.clear();
+        BOOST_REQUIRE_MESSAGE(DispatchHelperRpc(cat, HelperRpc("exportbountyrecovery", exp), result, code, err), err);
+        AssertNoBountySecrets(result);
+        if (result.exists("wallet_seed")) BOOST_CHECK(!result["wallet_seed"].get_bool());
+        if (result.exists("private_keys")) BOOST_CHECK(!result["private_keys"].get_bool());
+        if (result.exists("secrets")) BOOST_CHECK(!result["secrets"].get_bool());
+        AssertSpendZeroIfPresent(result);
+        AssertNotConsensusUnsigned(result);
+        exported = result;
+    }
+
+    BOOST_REQUIRE(IsBountyHelperMethod("reorgbountychain"));
+    UniValue rp(UniValue::VARR);
+    UniValue ro(UniValue::VOBJ);
+    ro.pushKV("bounty_id", bounty_id);
+    rp.push_back(ro);
+    result.clear();
+    code.clear();
+    err.clear();
+    BOOST_REQUIRE_MESSAGE(DispatchHelperRpc(cat, HelperRpc("reorgbountychain", rp), result, code, err), err);
+    if (result.exists("reorg")) BOOST_CHECK(result["reorg"].get_bool());
+    if (result.exists("silent_delete")) BOOST_CHECK(!result["silent_delete"].get_bool());
+    if (result.exists("event") && result["event"].isObject() && result["event"].exists("payload") &&
+        result["event"]["payload"].isObject() && result["event"]["payload"].exists("silent_delete")) {
+        BOOST_CHECK(!result["event"]["payload"]["silent_delete"].get_bool());
+    }
+    BOOST_CHECK(!FactsHaveOutpoint(result, outpoint));
+    AssertSpendZeroIfPresent(result);
+    AssertNotConsensusUnsigned(result);
+
+    if (IsBountyHelperMethod("importbountyrecovery")) {
+        UniValue man = exported;
+        if (!man.isObject() || !man.exists("lots")) {
+            man.setObject();
+            UniValue lots(UniValue::VARR);
+            UniValue l1(UniValue::VOBJ);
+            l1.pushKV("outpoint", outpoint);
+            l1.pushKV("lot_id", "helper-lot");
+            l1.pushKV("amount_atoms", "100");
+            lots.push_back(l1);
+            man.pushKV("lots", lots);
+            man.pushKV("bounty_id", bounty_id);
+        }
+        UniValue imp(UniValue::VARR);
+        UniValue imo(UniValue::VOBJ);
+        imo.pushKV("manifest", man);
+        imp.push_back(imo);
+        result.clear();
+        code.clear();
+        err.clear();
+        BOOST_REQUIRE_MESSAGE(DispatchHelperRpc(cat, HelperRpc("importbountyrecovery", imp), result, code, err), err);
+        AssertNoBountySecrets(result);
+        if (result.exists("wallet_seed")) BOOST_CHECK(!result["wallet_seed"].get_bool());
+        if (result.exists("private_keys")) BOOST_CHECK(!result["private_keys"].get_bool());
+        if (result.exists("broadcast")) BOOST_CHECK(!result["broadcast"].get_bool());
+        AssertSpendZeroIfPresent(result);
+        AssertNotConsensusUnsigned(result);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

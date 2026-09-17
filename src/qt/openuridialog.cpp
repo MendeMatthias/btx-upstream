@@ -37,12 +37,18 @@ QString OpenURIDialog::getURI()
 void OpenURIDialog::accept()
 {
     SendCoinsRecipient rcp;
-    if (GUIUtil::parseBitcoinURI(getURI(), &rcp)) {
-        /* Only accept value URIs */
+    const QString uri = getURI().trimmed();
+    if (GUIUtil::parseBitcoinURI(uri, &rcp)) {
         QDialog::accept();
-    } else {
-        ui->uriEdit->setValid(false);
+        return;
     }
+    if (uri.contains(QStringLiteral("btx://"), Qt::CaseInsensitive) ||
+        uri.endsWith(QStringLiteral(".btx"), Qt::CaseInsensitive) ||
+        uri.endsWith(QStringLiteral(".btxlink"), Qt::CaseInsensitive)) {
+        QDialog::accept();
+        return;
+    }
+    ui->uriEdit->setValid(false);
 }
 
 void OpenURIDialog::changeEvent(QEvent* e)

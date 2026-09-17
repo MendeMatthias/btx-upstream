@@ -554,6 +554,34 @@ BOOST_AUTO_TEST_CASE(getmininginfo_reports_matmul_algorithm)
     BOOST_CHECK_EQUAL(time_policy.find_value("height").getInt<int>(), ActiveHeight() + 1);
     BOOST_CHECK(time_policy.find_value("future_mtp_limit_active").isBool());
     BOOST_CHECK(time_policy.find_value("recommended_action").isStr());
+
+    const auto first_run = info.find_value("first_run").get_obj();
+    BOOST_CHECK(first_run.find_value("version").isStr());
+    BOOST_CHECK(!first_run.find_value("version").get_str().empty());
+    BOOST_CHECK_GE(first_run.find_value("uptime_s").getInt<int64_t>(), 0);
+    BOOST_CHECK(first_run.find_value("network_active").isBool());
+    BOOST_CHECK(first_run.find_value("mining_guard_enabled").isBool());
+    BOOST_CHECK(first_run.find_value("min_peers").isNum());
+    BOOST_CHECK(first_run.find_value("has_warnings").isBool());
+    BOOST_CHECK(first_run.find_value("warnings_count").isNum());
+    BOOST_CHECK_EQUAL(first_run.find_value("automatic_spend_atoms").getInt<int>(), 0);
+    BOOST_CHECK_EQUAL(first_run.find_value("difficulty").get_real(), info.find_value("difficulty").get_real());
+    BOOST_CHECK_GE(first_run.find_value("tip_age_s").getInt<int64_t>(), 0);
+    BOOST_CHECK(first_run.find_value("connections_total").isNum() || first_run.find_value("connections_total").isNull());
+    BOOST_CHECK(first_run.find_value("connections_out").isNum() || first_run.find_value("connections_out").isNull());
+    BOOST_CHECK(first_run.find_value("ibd_kind").isStr());
+    BOOST_CHECK(first_run.find_value("template_issuable").isBool());
+    BOOST_CHECK(first_run.find_value("challenge_issuable").isBool());
+    BOOST_CHECK_EQUAL(first_run.find_value("challenge_rpc").get_str(), "getmatmulchallenge");
+    BOOST_CHECK_EQUAL(first_run.find_value("peer_count_kind").get_str(), "chain_guard_outbound_sample");
+    BOOST_CHECK(first_run.find_value("is_stale").isBool());
+    if (first_run.exists("connections")) {
+        BOOST_CHECK(first_run.find_value("connections").get_obj().find_value("total").isNum());
+    }
+    if (info.exists("matmul_digests_per_second")) {
+        BOOST_CHECK_EQUAL(first_run.find_value("matmul_digests_per_second").get_real(),
+                          info.find_value("matmul_digests_per_second").get_real());
+    }
 }
 
 BOOST_AUTO_TEST_CASE(getmininginfo_reports_nonzero_matmul_rate_after_generate)
