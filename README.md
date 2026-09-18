@@ -35,8 +35,8 @@ shielded state. Do not read this tree as shipping a live shielded pool.
 This repository contains the full node implementation, wallet, mining
 infrastructure, Native Model Network helper, and test suites.
 
-This working tree is **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`).
-The last released client remains **v0.34.7**.
+This working tree is **0.34.8rc1** (`CLIENT_VERSION_RC=1`, `CLIENT_VERSION_IS_RELEASE=false`).
+The last released client remains **v0.34.7**. Merge to main still requires operator go-ahead.
 
 ## Start here
 
@@ -84,8 +84,8 @@ manual and not the long essay.
 
 ## Current release — v0.34.7
 
-**This tree is 0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`). It is not a
-shipping tag. The last released client remains **v0.34.7**
+**This tree is 0.34.8rc1** (`CLIENT_VERSION_RC=1`, `CLIENT_VERSION_IS_RELEASE=false`).
+It is the merge-ready RC for 0.34.8. The last released client remains **v0.34.7**
 (`CLIENT_VERSION_IS_RELEASE=true` on that tag). Seal and freeze hashes are
 written when a tag is sealed (see
 [doc/release-process.md](doc/release-process.md)). The previous monetary

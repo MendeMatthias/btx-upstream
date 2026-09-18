@@ -1,8 +1,8 @@
-# BCP/1 / 0.34.8-dev status (public-safe)
+# BCP/1 / 0.34.8rc1 status (public-safe)
 
-**Verdict: NOT_READY to set `CLIENT_VERSION_IS_RELEASE`, merge, or tag.** This branch may be pushed for review.
+**Verdict: merge-ready as 0.34.8rc1.** Operator go-ahead is the remaining step to merge to main. Do not set `CLIENT_VERSION_IS_RELEASE` until the final 0.34.8 tag.
 
-`CLIENT_VERSION` 0.34.8-dev. `CLIENT_VERSION_IS_RELEASE` stays `"false"`. `automatic_spend_atoms` stays 0. No production `btxd` stop, no `libexec` replace, no SIGKILL.
+`CLIENT_VERSION` 0.34.8rc1 (`CLIENT_VERSION_RC=1`). `CLIENT_VERSION_IS_RELEASE` stays `"false"`. `automatic_spend_atoms` stays 0. No production `btxd` SIGKILL / `libexec` replace of a running inode.
 
 This note does not name operator hosts. It does not claim a listing or a venue integration.
 
@@ -32,4 +32,4 @@ Frozen monetary custody surface, independent of HCP / Model Network:
 
 ## Still not a release
 
-Do not flip `IS_RELEASE`. Do not merge or tag until asked. PR 123 is ExactReplay public 0.34, not this tree. Vendor MPC / Key-Link attaching ML-DSA-44 is an open vendor question, not a BCP/1 PASS.
+Do not flip `IS_RELEASE` on the final tag until asked. This RC may be tagged `v0.34.8-rc1`. PR 123 is ExactReplay public 0.34, not this tree. Vendor MPC / Key-Link attaching ML-DSA-44 is an open vendor question, not a BCP/1 PASS.
