@@ -618,7 +618,9 @@ bool EnsureCapability(ModelCatalog& cat, const UniValue& request, UniValue& resu
     if (resident) {
         std::string bhex = FieldStr(request, "base_id");
         std::string bindhex = FieldStr(request, "adapter_base_binding");
-        if (bhex.empty()) bhex = std::string(96, 'a');
+        if (bhex.empty()) {
+            return FailResult(result, err_code, err, "INVALID_PARAMETER", "resident_base requires base_id", "compose");
+        }
         if (bindhex.empty()) bindhex = bhex;
         Digest48 base{}, bind{};
         std::string herr;
@@ -786,18 +788,45 @@ bool EnsureCapability(ModelCatalog& cat, const UniValue& request, UniValue& resu
     ev.pushKV("plan_id", plan_id);
     (void)AppendCapabilityEvent(ev);
 
+    // #168: this lane is IMPLEMENTED_LAB. `(void)cat` above is honest — the path
+    // materializes the local CPU fixture, it never dereferences the plan's recipe
+    // digest. So the result must not claim a canonical acquire. `acquired_bytes`
+    // is the fixture actually written, never the plan's requested byte contract.
+    const uint64_t requested_bytes = static_cast<uint64_t>(plan.missing_bytes);
+    const uint64_t acquired_bytes = static_cast<uint64_t>(fixture.size());
+    int percent_ready = 100;
+    if (requested_bytes > 0 && acquired_bytes < requested_bytes) {
+        percent_ready = static_cast<int>((acquired_bytes * 100) / requested_bytes);
+    }
+    // The fixture path never dereferences a recipe digest, so it must not report a
+    // completed acquire even when the plan requests zero missing bytes.
+    if (percent_ready >= 100) percent_ready = 99;
+
     UniValue progress(UniValue::VOBJ);
-    progress.pushKV("canonical_bytes_verified", true);
-    progress.pushKV("files_complete", true);
+    progress.pushKV("implementation_status", "IMPLEMENTED_LAB");
+    progress.pushKV("scope", "LOCAL_FIXTURE");
+    progress.pushKV("canonical_bytes_verified", false);
+    progress.pushKV("files_complete", false);
+    progress.pushKV("fixture_bytes_materialized", true);
     progress.pushKV("dest_bytes_matched", true);
     progress.pushKV("verified_representation", "native-cpu-fixture");
     progress.pushKV("runtime_loaded", true);
     progress.pushKV("runtime_ready", receipt.smoke_passed);
     progress.pushKV("first_useful_result", receipt.smoke_passed && !block_warmup);
-    const int percent = (block_warmup || !receipt.smoke_passed) ? 70 : 100;
-    progress.pushKV("percent_ready", percent);
+    progress.pushKV("requested_bytes", requested_bytes);
+    progress.pushKV("acquired_bytes", acquired_bytes);
+    progress.pushKV("percent_ready", percent_ready);
 
     result = receipt.json.isObject() ? receipt.json : UniValue(UniValue::VOBJ);
+    result.pushKV("implementation_status", "IMPLEMENTED_LAB");
+    result.pushKV("scope", "LOCAL_FIXTURE");
+    result.pushKV("fixture_path", true);
+    // The fixture runtime loaded, but the requested recipe digest was not acquired.
+    // `ready:false` keeps an agent from treating this as a completed acquire.
+    result.pushKV("ready", false);
+    result.pushKV("fixture_runtime_ready", receipt.smoke_passed);
+    result.pushKV("requested_bytes", requested_bytes);
+    result.pushKV("acquired_bytes", acquired_bytes);
     result.pushKV("job_id", job.job_id);
     result.pushKV("lease_id", job.receipt.lease_id);
     result.pushKV("generation", GenerationHex(job.generation));

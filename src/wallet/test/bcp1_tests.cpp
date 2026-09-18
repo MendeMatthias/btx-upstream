@@ -469,6 +469,25 @@ BOOST_AUTO_TEST_CASE(corrupt_mldsa_signature_rejected)
     }
 }
 
+BOOST_AUTO_TEST_CASE(leaf_pubkey_mismatch_rejected)
+{
+    const auto seed = MasterSeedFromDerivation();
+    const Bcp1Spend spend = MakeSpend(seed);
+    bcp1::Package pkg = PackageFromSpend(spend);
+
+    std::array<unsigned char, 32> other_seed{};
+    other_seed.fill(0x22);
+    auto other = pq::DerivePQKeyFromBIP39(other_seed, PQAlgorithm::ML_DSA_44, CoinTypeForParams(),
+                                          /*account=*/0, /*branch=*/0, /*index=*/1);
+    BOOST_REQUIRE(other && other->IsValid());
+    std::vector<unsigned char> sig;
+    BOOST_REQUIRE(other->Sign(*pkg.inputs[0].digest, sig));
+    std::string err;
+    BOOST_CHECK_MESSAGE(!bcp1::InsertSignature(pkg, 0, other->GetPubKey(), sig, err),
+                        "InsertSignature must not accept a key that is not in the P2MR leaf");
+    BOOST_CHECK(err.find("CORRUPT") != std::string::npos || err == bcp1::ERR_CORRUPT_SIGNATURE);
+}
+
 BOOST_AUTO_TEST_CASE(wrong_prevout_rejected)
 {
     const UniValue wrong_v = ReadBcp1Json("negative-wrong-prevout.json");
@@ -1062,6 +1081,43 @@ BOOST_AUTO_TEST_CASE(two_leaf_address_mismatch_pool_refused)
     BOOST_REQUIRE_MESSAGE(ImportDepositPool(*wallet, good, err, details), err.original);
     BOOST_CHECK(details["solvable"].get_bool());
     BOOST_CHECK_EQUAL(details["imported"].getInt<int>(), 1);
+}
+
+BOOST_AUTO_TEST_CASE(finalizeexternalsign_accepts_valid_software_signature)
+{
+    const auto seed = MasterSeedFromDerivation();
+    const Bcp1Spend spend = MakeSpend(seed);
+    bcp1::Package pkg = PackageFromSpend(spend);
+    std::vector<unsigned char> sig;
+    BOOST_REQUIRE(spend.deposit_key.Sign(spend.digest, sig));
+    BOOST_REQUIRE_EQUAL(sig.size(), MLDSA44_SIGNATURE_SIZE);
+
+    auto wallet = MakeWatchOnlyDescriptorWallet(*this, "bcp1-finalize-good");
+    WalletContext context;
+    context.args = &m_args;
+    context.chain = m_node.chain.get();
+    AddWallet(context, wallet);
+
+    UniValue params(UniValue::VARR);
+    params.push_back(bcp1::Encode(pkg));
+    UniValue sigs(UniValue::VARR);
+    UniValue sig_obj(UniValue::VOBJ);
+    sig_obj.pushKV("algo", "ML-DSA-44");
+    sig_obj.pushKV("pubkey", HexStr(spend.deposit_key.GetPubKey()));
+    sig_obj.pushKV("signature", HexStr(sig));
+    sigs.push_back(sig_obj);
+    params.push_back(sigs);
+    JSONRPCRequest req = WalletRpc(context, params);
+    const UniValue result = finalizeexternalsign().HandleRequest(req);
+    BOOST_REQUIRE(result.isObject());
+    BOOST_CHECK(result.exists("complete") && result["complete"].get_bool());
+    BOOST_CHECK(result.exists("broadcast") && result["broadcast"].isFalse());
+    BOOST_REQUIRE(result.exists("hex") && result["hex"].isStr() && !result["hex"].get_str().empty());
+    CMutableTransaction mtx;
+    BOOST_REQUIRE(DecodeHexTx(mtx, result["hex"].get_str()));
+    BOOST_CHECK(VerifyP2MRWitness(mtx, spend.prev_txout, mtx.vin[0].scriptWitness));
+
+    RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

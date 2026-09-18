@@ -863,7 +863,8 @@ class ModelNetHcpJourneys(BitcoinTestFramework):
             headers={"Authorization": "Bearer " + token},
         )
         assert st == 200
-        assert xg.get("ready") is True
+        assert xg.get("ready") is False
+        assert xg.get("retrieved") is True
         assert xg.get("self_custody_claimed") is False
         _, st = self._http(
             "GET",

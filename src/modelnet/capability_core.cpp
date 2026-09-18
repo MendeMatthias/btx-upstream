@@ -407,7 +407,12 @@ bool ValidateCapabilityPackageCore(const UniValue& core, std::string& err_code, 
         return Fail(err_code, err, "NONCANONICAL_PAYLOAD", "resource required");
     }
     for (const auto& r : core["resources"].getValues()) {
-        if (!r.isObject() || !r.exists("kind") || !r.exists("id") || !r["id"].isStr() || r["id"].get_str().size() != 96) {
+        if (!r.isObject() || !r.exists("kind") || !r.exists("id") || !r["id"].isStr()) {
+            return Fail(err_code, err, "NONCANONICAL_PAYLOAD", "resource");
+        }
+        Digest48 rid;
+        std::string hexerr;
+        if (!Digest48::FromHex(r["id"].get_str(), rid, hexerr)) {
             return Fail(err_code, err, "NONCANONICAL_PAYLOAD", "resource");
         }
     }

@@ -2,11 +2,15 @@
 
 Contract name: **`BTX_EXCHANGE_PROFILE_V1`**.
 
-BCP/1 is the frozen monetary custody surface for exchanges and external signers. It is independent of HCP. Wallet monetary RPCs may spend; they must not invent `automatic_spend_atoms`.
+**Release state.** This contract describes the tree at **0.34.8rc2** (`CLIENT_VERSION_RC=2`, `CLIENT_VERSION_IS_RELEASE=false`). It has not been frozen by a shipping tag; the last shipping tag is **0.34.7**. Treat the surface below as a release-candidate contract under review, not a published standard.
+
+**Scope.** BCP/1 is a **major monetary-wallet addition**: it adds the wallet RPCs and the external-digest signing lifecycle described here, and it also changes existing signing RPCs and wallet lifecycle behavior. It is larger than an integration wrapper and should be reviewed at wallet level.
+
+BCP/1 is the monetary custody surface for exchanges and external signers. It is independent of HCP. Wallet monetary RPCs may spend; they must not invent `automatic_spend_atoms`.
 
 This document is the profile contract. Index: [README.md](README.md). First-page FAQ: [exchange-custody.md](exchange-custody.md). Signer lifecycle: [external-sign.md](external-sign.md). Key-Link / raw-signing: [key-link.md](key-link.md). Incident/recovery: [incident-recovery.md](incident-recovery.md). Network constants: [../../contrib/bcp1/network-manifest.json](../../contrib/bcp1/network-manifest.json).
 
-Venue names are examples of adapters (Key-Link, PKCS#11, HTTPS). They are not consensus.
+Venue names are examples of adapters (Key-Link, PKCS#11, HTTPS). They are not consensus and not evidence of vendor support: the PKCS#11, KMIP, and HTTPS adapters are **fail-closed stubs** with no client library linked ([external-sign.md](external-sign.md)).
 
 ---
 
@@ -230,16 +234,13 @@ Fee rates in RPC are BTX/kvB or sat/vB (`FeeEstimateMode`). BCP/1 packages shoul
 
 ## Readiness
 
-`getexchangereadiness` should report, at minimum:
+`getexchangereadiness` reports profile, chain/network/tip/IBD, wallet flags, ZMQ/`txindex`, signer fields, and deposit-pool facts. Read the aggregate `ready` flag as the conjunction of those prerequisites:
 
-- `profile`: `BTX_EXCHANGE_PROFILE_V1`
-- chain / network / tip height / IBD
-- wallet: descriptors, `disable_private_keys`, `-exchange-watchonly`
-- signer provider health (or `importdepositpool` present)
-- ZMQ / notify configured
-- txindex / block index as required for `getrawtransaction` after restart
+- `ready` is true only when the wallet is a descriptor wallet with `disable_private_keys`, the node is not in IBD, **and** a deposit pool or a healthy `-signer` exists (`ready_capabilities` lists each bit).
+- An empty descriptor watch-only wallet reports `ready=false`. Signer health and deposit material are also returned separately so callers can see *why*.
+- `walletprocesspsbt(sign=true)` on `WALLET_FLAG_EXTERNAL_SIGNER` delegates to FillPSBT / `-signer`. `signrawtransactionwithwallet` and `dumpprivkey` still refuse in-process private keys.
 
-A node that is IBD, has private keys enabled under `-exchange-watchonly`, or has no deposit material is not ready.
+Do not describe `ready` as a venue certification.
 
 ---
 

@@ -107,6 +107,14 @@ static const UniValue& GetSubtractFeeFromOutputsOption(const UniValue& options)
 
 static UniValue FinishTransaction(const std::shared_ptr<CWallet> pwallet, const UniValue& options, CMutableTransaction& rawTx)
 {
+    // send / sendall always attempt in-process signing below (FillPSBT with
+    // sign=true). A BCP/1 exchange watch-only wallet must use the external
+    // signing package flow instead.
+    bilingual_str refuse_err;
+    if (RefusePrivateSign(*pwallet, refuse_err)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+    }
+
     if (!options.exists("locktime")) {
         LOCK(pwallet->cs_wallet);
         MaybeDiscourageFeeSniping2(*pwallet, rawTx);
@@ -1227,6 +1235,15 @@ static RPCHelpMan bumpfee_helper(std::string method_name)
         throw JSONRPCError(RPC_WALLET_ERROR, "bumpfee is not available with wallets that have private keys disabled. Use psbtbumpfee instead.");
     }
 
+    // bumpfee signs in-process (feebumper::SignTransaction below); psbtbumpfee
+    // only builds an unsigned PSBT and must stay available to BCP/1 wallets.
+    if (!want_psbt) {
+        bilingual_str refuse_err;
+        if (RefusePrivateSign(*pwallet, refuse_err)) {
+            throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+        }
+    }
+
     uint256 hash(ParseHashV(request.params[0], "txid"));
 
     CCoinControl coin_control;
@@ -1853,7 +1870,7 @@ RPCHelpMan walletprocesspsbt()
         }
     }
 
-    if (sign) {
+    if (sign && !CanDelegateExternalPsbtSign(wallet)) {
         bilingual_str refuse_err;
         if (RefusePrivateSign(wallet, refuse_err)) {
             throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);

@@ -673,6 +673,7 @@ if(WITH_MODELNET)
     modelnet_cr12_sdk_tests.cpp
     modelnet_cr12_desktop_tests.cpp
     modelnet_cr12_gapfill_tests.cpp
+    modelnet_cr12_pr157_review_tests.cpp
     modelnet_vstar_regression_tests.cpp
     modelnet_sentinel_secret_tests.cpp
     modelnet_r1_swarm_tests.cpp
@@ -700,6 +701,8 @@ if(WITH_MODELNET)
     MODELNET_BTX_PACKAGE_VECTORS_PATH=\"${PROJECT_SOURCE_DIR}/src/test/data/btx-package-vectors\"
     MODELNET_HCP_PORTAL_PATH=\"${PROJECT_SOURCE_DIR}/contrib/modelnet/hcp-portal/index.html\"
     MODELNET_CRL12_PORTAL_PATH=\"${PROJECT_SOURCE_DIR}/contrib/modelnet/crl12-portal/index.html\"
+    MODELNET_CRL12_SCHEMA_PATH=\"${PROJECT_SOURCE_DIR}/contrib/modelnet/crl12/schemas/CognitiveReserveLayer.schema.json\"
+    MODELNET_CRL12_OPERATIONS_PATH=\"${PROJECT_SOURCE_DIR}/contrib/modelnet/crl12/schemas/operations-v1.2.json\"
   )
   set_property(SOURCE modelnet_ahp_comp_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     "MODELNET_OFF_CHECK_SCRIPT=\"${PROJECT_SOURCE_DIR}/contrib/modelnet/check-with-modelnet-off.sh\"")

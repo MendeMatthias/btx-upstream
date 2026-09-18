@@ -6,6 +6,7 @@
 #define BITCOIN_MODELNET_PACKAGE_CORE_H
 
 #include <modelnet/package_bundle.h>
+#include <modelnet/capability_types.h>
 #include <modelnet/types.h>
 #include <span.h>
 #include <univalue.h>

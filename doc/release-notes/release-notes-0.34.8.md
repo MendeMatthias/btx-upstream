@@ -35,7 +35,7 @@ that never share a process with consensus:
 |---|---|---|
 | Monetary | `btxd` | ExactReplay, wallet, issuance, fork choice, BanMan, AddrMan. Additive JSON only (`getsetupstatus`, `getmininginfo.first_run`, HCP/model RPC **proxy**). |
 | Model | `btx-modeld` | first-run identity, import/host/share, swarm pieces, search cards, bounty drafts, NETWORK-02 packages, cloud/watch/mirror RPCs |
-| Capability (JIT) | `btx-capabilityd` / `btx-capability` | resolve → acquire missing verified assets → local residency lease. Not remote inference. |
+| Capability (JIT) | `btx-capabilityd` / `btx-capability` | resolve → acquire missing verified assets → local residency lease. Not remote inference. `ensurebtxcapability` is **IMPLEMENTED_LAB**: it runs the local fixture path for a granted plan and does not yet dereference recipe digests (`canonical_bytes_verified:false`, `acquired_bytes` is the fixture length, not the plan's requested bytes). |
 | Hosted (HCP/1) | `btx-hcpd` / `btx-hosted` | typed catalogue, envelope (`object_type`, `body`, `body_id`, `signer_key_id`, `signature`), walletless discovery. CR11 and CRL/1.2 are **negotiated extensions of this plane**, not a fifth daemon. |
 
 Hard product invariants (unchanged from 0.34.7, restated because this PR is
@@ -109,6 +109,16 @@ capability; BTX resolves an exact implementation, acquires **only the
 missing verified assets**, places them in a local memory tier, and returns
 a generation-bound readiness lease. This is **local intelligence
 preparation**, not a download-and-forget helper and not a prompt router.
+
+**Honesty note (#168).** The acquire step is **IMPLEMENTED_LAB**, not a
+live digest fetch: `ensurebtxcapability` currently runs the local CPU
+fixture path for a granted plan. It does not yet dereference the plan's
+recipe digests, so its result reports
+`implementation_status: "IMPLEMENTED_LAB"`, `canonical_bytes_verified:false`,
+and `acquired_bytes` = bytes of the fixture actually written — never the
+plan's requested byte contract. `percent_ready` therefore cannot reach 100
+on the fixture path, and `ready` stays false. Do not read a granted plan +
+fixture lease as a completed acquire.
 
 Breaking **model-plane** schemas is allowed with versioning. Breaking
 **monetary consensus** is not. Hardware backends without the device are

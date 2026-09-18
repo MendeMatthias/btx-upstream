@@ -182,10 +182,86 @@ BOOST_AUTO_TEST_CASE(url_origin_matching_is_strict)
 
 BOOST_AUTO_TEST_CASE(version_comparison_uses_client_version)
 {
+    const std::string local = node::LocalClientVersion();
+    const std::string local_triple = strprintf("%d.%d.%d", CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_BUILD);
+
     BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion("99.0.0"), 1);
-    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion(strprintf("%d.%d.%d", CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_BUILD)), 0);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion(local), 0);
     BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion("v0.32.8"), -1);
     BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion("not-a-version"), 0);
+
+    if (local == local_triple) {
+        // Final build: a candidate of the same triple, and a prerelease of a higher triple, are
+        // both never auto-installed.
+        BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion(local_triple + "-rc1"), -1);
+        BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion("99.0.0-rc1"), -1);
+    } else {
+        // Release-candidate build: the matching final release is strictly newer.
+        BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion(local_triple), 1);
+        BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersion("99.0.0-rc1"), 1);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(local_client_version_reports_release_candidate)
+{
+    const std::string local = node::LocalClientVersion();
+    const std::string triple = strprintf("%d.%d.%d", CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_BUILD);
+    const std::string build_string{CLIENT_VERSION_STRING};
+    const size_t rc_marker = build_string.rfind("rc");
+
+    if (rc_marker == std::string::npos) {
+        // Final build: no rc suffix at all.
+        BOOST_CHECK_EQUAL(local, triple);
+    } else {
+        // Release candidate: the version carries the rcN marker baked into CLIENT_VERSION_STRING.
+        BOOST_CHECK_EQUAL(local, triple + build_string.substr(rc_marker));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(version_comparison_orders_release_candidates)
+{
+    // A final release outranks any release candidate of the same triple; rcN is accepted with or
+    // without the separating dash and case-insensitively.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8-rc1", "0.34.8"), 1);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8rc1", "0.34.8"), 1);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.8-rc1"), -1);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.8"), 0);
+
+    // The same candidate is not newer.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8-rc1", "0.34.8-rc1"), 0);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8rc1", "0.34.8-RC1"), 0);
+
+    // Later candidates outrank earlier ones.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8-rc1", "0.34.8-rc2"), 1);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8-rc2", "0.34.8-rc1"), -1);
+
+    // A higher triple still wins across candidates.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8-rc1", "0.34.9-rc1"), 1);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.9"), 1);
+
+    // A final node never adopts a prerelease, even with a higher triple.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.9-rc1"), -1);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "99.0.0-rc1"), -1);
+    // Unrecognized prerelease tags rank as prereleases too.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.9-beta1"), -1);
+    // Build metadata does not turn a release into a prerelease.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.8+build5"), 0);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.9+build5"), 1);
+
+    // The v prefix is accepted; malformed versions and bare "rc" fail closed as not-newer.
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("v0.34.8", "0.34.9"), 1);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "0.34.8rc"), 0);
+    BOOST_CHECK_EQUAL(node::CompareAutoUpdateVersionStrings("0.34.8", "not-a-version"), 0);
+}
+
+BOOST_AUTO_TEST_CASE(current_build_version_is_not_newer)
+{
+    Harness h;
+    h.AddManifest(node::LocalClientVersion());
+    h.AddSignature();
+    const auto result = h.Run();
+    BOOST_CHECK(result.status == node::AutoUpdateStatus::NOT_NEWER);
+    BOOST_CHECK_EQUAL(h.runner.calls, 0);
 }
 
 BOOST_AUTO_TEST_CASE(disabled_skips_network_and_runner)

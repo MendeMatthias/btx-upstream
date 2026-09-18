@@ -71,6 +71,45 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         return HcpHttpResponse{};
     };
 
+    auto BodyIdHex = [&](const std::string& type, const UniValue& body) -> std::string {
+        Digest48 d;
+        std::string e;
+        if (HcpBodyId(type, body, d, e)) return d.Hex();
+        std::vector<unsigned char> raw;
+        if (HcpCanonicalBody(body, raw, e) && !raw.empty()) {
+            return Sha384Hex(Span<const unsigned char>{raw.data(), raw.size()});
+        }
+        const std::string w = body.write();
+        return Sha384Hex(Span<const unsigned char>{reinterpret_cast<const unsigned char*>(w.data()), w.size()});
+    };
+
+    // Account ownership: CR11 draft objects record the creating account. A
+    // scoped caller must not read or mutate another account's object by
+    // supplying its id, so the owner is compared before the object is used.
+    // Fail closed: an object with no recorded owner is not readable here.
+    auto Owned = [&](const UniValue& b) -> bool {
+        std::string owner;
+        if (b.exists("account") && b["account"].isStr()) {
+            owner = b["account"].get_str();
+        } else if (b.exists("account_ref") && b["account_ref"].isStr()) {
+            owner = b["account_ref"].get_str();
+        } else if (b.exists("accepted_by") && b["accepted_by"].isStr()) {
+            owner = b["accepted_by"].get_str();
+        }
+        return !owner.empty() && owner == cr11.authed_account;
+    };
+    auto StampOwner = [&](UniValue& b) {
+        if (!b.exists("account") && !b.exists("account_ref") && !b.exists("accepted_by")) {
+            b.pushKV("account_ref", cr11.authed_account);
+        }
+    };
+    auto FindOwned = [&](std::map<std::string, UniValue>& m,
+                         const std::string& id) -> std::map<std::string, UniValue>::iterator {
+        auto it = m.find(id);
+        if (it == m.end() || !Owned(it->second)) return m.end();
+        return it;
+    };
+
     auto AvailableE = [&](const std::string& account) -> int64_t {
         int64_t e = accounts[account].available;
         // AVAILABLE already excludes holds; do not subtract held again.
@@ -134,10 +173,21 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         ParseHcpEnvelope(prof, penv, e);
         b.pushKV("parent_profile_body_id", penv.body_id.Hex());
         cr11.parent_profile_body_id = penv.body_id.Hex();
-        b.pushKV("schema_digest",
-                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        b.pushKV("operations_digest",
-                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        const std::string schema_d = Cr11SchemaDigest();
+        const std::string ops_d = Cr11OperationsDigest();
+        const bool have_digests = schema_d.size() == 96 && ops_d.size() == 96 && schema_d != ops_d;
+        if (have_digests) {
+            b.pushKV("schema_digest", schema_d);
+            b.pushKV("operations_digest", ops_d);
+            b.pushKV("digests_available", true);
+            b.pushKV("negotiated", true);
+        } else {
+            b.pushKV("schema_digest", UniValue());
+            b.pushKV("operations_digest", UniValue());
+            b.pushKV("digests_available", false);
+            b.pushKV("negotiated", false);
+            b.pushKV("negotiation_unavailable_reason", "schema_and_operations_digests_not_computed");
+        }
         UniValue feats(UniValue::VARR);
         feats.push_back("reserve");
         feats.push_back("committee");
@@ -176,6 +226,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         if (n.status >= 400) return n;
         UniValue arr(UniValue::VARR);
         for (const auto& [id, b] : cr11.links) {
+            if (!Owned(b)) continue;
             HcpEnvelope env;
             env.object_type = HCP_TYPE_ENTITY_LINK;
             env.body = b;
@@ -190,14 +241,14 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/reserve/entities/links/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.links.find(cap["id"]);
+        auto it = FindOwned(cr11.links, cap["id"]);
         if (it == cr11.links.end()) return Err(404, "NOT_FOUND", "link");
         return SignedObj(HCP_TYPE_ENTITY_LINK, it->second, 200);
     }
     if (MatchPath(req.path, "/reserve/entities/links/{id}/revoke", cap) && req.method == "POST") {
         auto n = Need("entities:admin", false);
         if (n.status >= 400) return n;
-        auto it = cr11.links.find(cap["id"]);
+        auto it = FindOwned(cr11.links, cap["id"]);
         if (it == cr11.links.end()) return Err(404, "NOT_FOUND", "link");
         it->second.pushKV("status", "REVOKED");
         cr11.revoked_links.insert(cap["id"]);
@@ -249,7 +300,10 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
         UniValue arr(UniValue::VARR);
-        for (const auto& [id, b] : cr11.portfolios) arr.push_back(id);
+        for (const auto& [id, b] : cr11.portfolios) {
+            if (!Owned(b)) continue;
+            arr.push_back(id);
+        }
         UniValue o(UniValue::VOBJ);
         o.pushKV("items", arr);
         o.pushKV("family_view_debit", false);
@@ -258,14 +312,20 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/reserve/portfolios/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.portfolios.find(cap["id"]);
+        auto it = FindOwned(cr11.portfolios, cap["id"]);
         if (it == cr11.portfolios.end()) return Err(404, "NOT_FOUND", "portfolio");
         return SignedObj(HCP_TYPE_PORTFOLIO, it->second, 200);
     }
     if (MatchPath(req.path, "/reserve/portfolios/{id}/snapshot", cap) && req.method == "GET") {
         auto n = Need("reserve:read", false);
         if (n.status >= 400) return n;
+        auto pit = cr11.portfolios.find(cap["id"]);
+        if (pit != cr11.portfolios.end() && !Owned(pit->second)) {
+            return Err(404, "NOT_FOUND", "portfolio");
+        }
         UniValue b = SnapshotOf(cr11.authed_account);
+        b.pushKV("portfolio_id", cap["id"]);
+        b.pushKV("path_id_bound", pit != cr11.portfolios.end());
         cr11.snapshots[b["snapshot_id"].get_str()] = b;
         return SignedObj(HCP_TYPE_RESERVE_SNAPSHOT, b, 200);
     }
@@ -300,6 +360,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
             cr11.replenish_mode = "AUTO";
         }
         cr11.policy_id = id;
+        StampOwner(b);
         cr11.rpolicies[id] = b;
         cr11.refund_replenishes = Jstr("refund_replenishes", "false") == "true";
         return SignedObj(HCP_TYPE_RESERVE_POLICY, b, 201);
@@ -308,7 +369,9 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
         UniValue arr(UniValue::VARR);
-        for (const auto& [id, _] : cr11.rpolicies) arr.push_back(id);
+        for (const auto& [id, b] : cr11.rpolicies) {
+            if (Owned(b)) arr.push_back(id);
+        }
         UniValue o(UniValue::VOBJ);
         o.pushKV("items", arr);
         return JsonStatus(200, o);
@@ -316,14 +379,14 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/reserve/policies/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.rpolicies.find(cap["id"]);
+        auto it = FindOwned(cr11.rpolicies, cap["id"]);
         if (it == cr11.rpolicies.end()) return Err(404, "NOT_FOUND", "policy");
         return SignedObj(HCP_TYPE_RESERVE_POLICY, it->second, 200);
     }
     if (MatchPath(req.path, "/reserve/policies/{id}/revoke", cap) && req.method == "POST") {
         auto n = Need("policies:admin", false);
         if (n.status >= 400) return n;
-        auto it = cr11.rpolicies.find(cap["id"]);
+        auto it = FindOwned(cr11.rpolicies, cap["id"]);
         if (it == cr11.rpolicies.end()) return Err(404, "NOT_FOUND", "policy");
         it->second.pushKV("status", "REVOKED");
         return SignedObj(HCP_TYPE_RESERVE_POLICY, it->second, 200);
@@ -399,6 +462,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         b.pushKV("data_policy", "NO_PRIVATE_PROMPTS");
         b.pushKV("runtime_profiles", UniValue(UniValue::VARR));
         b.pushKV("assumptions", UniValue(UniValue::VOBJ));
+        StampOwner(b);
         cr11.workloads[id] = b;
         return SignedObj(HCP_TYPE_WORKLOAD, b, 201);
     }
@@ -406,7 +470,10 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
         UniValue arr(UniValue::VARR);
-        for (const auto& [id, _] : cr11.workloads) arr.push_back(id);
+        for (const auto& [id, b] : cr11.workloads) {
+            if (!Owned(b)) continue;
+            arr.push_back(id);
+        }
         UniValue o(UniValue::VOBJ);
         o.pushKV("items", arr);
         return JsonStatus(200, o);
@@ -414,7 +481,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/capital/workloads/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.workloads.find(cap["id"]);
+        auto it = FindOwned(cr11.workloads, cap["id"]);
         if (it == cr11.workloads.end()) return Err(404, "NOT_FOUND", "workload");
         return SignedObj(HCP_TYPE_WORKLOAD, it->second, 200);
     }
@@ -448,13 +515,14 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         b.pushKV("cost_lines", tco);
         b.pushKV("unknown_inputs", known ? UniValue(UniValue::VARR) : parsed.exists("unknown_inputs") ? parsed["unknown_inputs"] : UniValue(UniValue::VARR));
         b.pushKV("hardware_counted_once", true);
+        StampOwner(b);
         cr11.tcos[id] = b;
         return SignedObj(HCP_TYPE_TCO, b, 201);
     }
     if (MatchPath(req.path, "/capital/comparisons/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.tcos.find(cap["id"]);
+        auto it = FindOwned(cr11.tcos, cap["id"]);
         if (it == cr11.tcos.end()) return Err(404, "NOT_FOUND", "tco");
         return SignedObj(HCP_TYPE_TCO, it->second, 200);
     }
@@ -475,13 +543,14 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         b.pushKV("maximum_exposure", Jstr("maximum_exposure", "250"));
         b.pushKV("expected_outcome", Jstr("expected_outcome", "LOCAL_READY"));
         b.pushKV("observation_refs", UniValue(UniValue::VARR));
+        StampOwner(b);
         cr11.plans[id] = b;
         return SignedObj(HCP_TYPE_CAPITAL_PLAN, b, 201);
     }
     if (MatchPath(req.path, "/capital/plans/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.plans.find(cap["id"]);
+        auto it = FindOwned(cr11.plans, cap["id"]);
         if (it == cr11.plans.end()) return Err(404, "NOT_FOUND", "plan");
         return SignedObj(HCP_TYPE_CAPITAL_PLAN, it->second, 200);
     }
@@ -501,15 +570,24 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         std::string e;
         if (legs.isArray() && legs.size() > 0 && !Cr11ValidateDag(legs, order, e)) return Err(400, e, e);
         const std::string cop = Jstr("client_operation_id", RandId("alloc-op-"));
-        if (cr11.idem.count(cop)) {
-            const std::string existing = cr11.idem[cop];
-            if (have_body && parsed.exists("maximum_exposure") && cr11.allocations.count(existing)) {
-                const std::string old = cr11.allocations[existing].exists("maximum_exposure") ?
-                                            cr11.allocations[existing]["maximum_exposure"].get_str() :
-                                            "";
-                if (old != Jstr("maximum_exposure", old)) return Err(409, HCP_ERR_CONFLICT, cop);
-            }
-            return SignedObj(HCP_TYPE_ALLOCATION, cr11.allocations[existing], 200);
+        // Durable uniqueness is over account + client_operation_id with the
+        // canonical request stored as a body digest: the same id and body
+        // replay the original outcome, a different body is a conflict. This is
+        // evaluated after Need() so an unauthenticated request cannot occupy a
+        // key, and the key is account-scoped so accounts cannot collide.
+        const std::string idem_slot = cr11.authed_account + "|" + cop;
+        std::vector<unsigned char> idem_raw(req.body.begin(), req.body.end());
+        const std::string idem_digest = Sha384Hex(Span<const unsigned char>{idem_raw.data(), idem_raw.size()});
+        auto idem_it = cr11.idem.find(idem_slot);
+        if (idem_it != cr11.idem.end()) {
+            const std::string& stored = idem_it->second;
+            const size_t sep = stored.find('|');
+            const std::string stored_digest = sep == std::string::npos ? std::string() : stored.substr(0, sep);
+            const std::string stored_id = sep == std::string::npos ? stored : stored.substr(sep + 1);
+            if (stored_digest != idem_digest) return Err(409, HCP_ERR_CONFLICT, cop);
+            auto prior = cr11.allocations.find(stored_id);
+            if (prior == cr11.allocations.end()) return Err(409, HCP_ERR_CONFLICT, cop);
+            return SignedObj(HCP_TYPE_ALLOCATION, prior->second, 200);
         }
         if (have_body && parsed.exists("parent_profile_body_id") && !cr11.parent_profile_body_id.empty() &&
             parsed["parent_profile_body_id"].get_str() != cr11.parent_profile_body_id) {
@@ -534,14 +612,15 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         UniValue topo(UniValue::VARR);
         for (const auto& x : order) topo.push_back(x);
         b.pushKV("execution_order", topo);
+        StampOwner(b);
         cr11.allocations[id] = b;
-        cr11.idem[cop] = id;
+        cr11.idem[idem_slot] = idem_digest + "|" + id;
         return SignedObj(HCP_TYPE_ALLOCATION, b, 201);
     }
     if (MatchPath(req.path, "/capital/allocations/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.allocations.find(cap["id"]);
+        auto it = FindOwned(cr11.allocations, cap["id"]);
         if (it == cr11.allocations.end()) return Err(404, "NOT_FOUND", "allocation");
         return SignedObj(HCP_TYPE_ALLOCATION, it->second, 200);
     }
@@ -603,7 +682,16 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         b.pushKV("allocation_ref", alloc);
         b.pushKV("allocation_body_id", alloc_bid);
         b.pushKV("rule_ref", Jstr("rule_ref", ""));
-        b.pushKV("rule_body_id", Jstr("rule_body_id", std::string(96, 'd')));
+        if (parsed.exists("rule_body_id") && parsed["rule_body_id"].isStr() && !parsed["rule_body_id"].get_str().empty()) {
+            b.pushKV("rule_body_id", parsed["rule_body_id"].get_str());
+        } else if (!Jstr("rule_ref").empty() && cr11.arules.count(Jstr("rule_ref"))) {
+            b.pushKV("rule_body_id", BodyIdHex(HCP_TYPE_APPROVAL_RULE, cr11.arules[Jstr("rule_ref")]));
+        } else {
+            UniValue rule_src(UniValue::VOBJ);
+            rule_src.pushKV("rule_ref", Jstr("rule_ref"));
+            rule_src.pushKV("request_id", id);
+            b.pushKV("rule_body_id", BodyIdHex(HCP_TYPE_APPROVAL_RULE, rule_src));
+        }
         b.pushKV("policy_ref", cr11.policy_id.empty() ? "pol-demo" : cr11.policy_id);
         b.pushKV("policy_generation", std::to_string(cr11.policy_generation ? cr11.policy_generation : 1));
         b.pushKV("initiator_person_id", Jstr("initiator_person_id", "person-initiator"));
@@ -631,7 +719,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         b.pushKV("legal_entity_id", cr11.legal_entity);
         b.pushKV("decision_id", did);
         b.pushKV("request_ref", cap["id"]);
-        b.pushKV("request_body_id", std::string(96, 'e'));
+        b.pushKV("request_body_id", BodyIdHex(HCP_TYPE_APPROVAL_REQUEST, it->second));
         b.pushKV("allocation_body_id", it->second["allocation_body_id"].get_str());
         b.pushKV("policy_generation", it->second["policy_generation"].get_str());
         b.pushKV("rule_body_id", it->second["rule_body_id"].get_str());
@@ -655,7 +743,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/capital/allocations/{id}/execute", cap) && req.method == "POST") {
         auto n = Need("capital:execute", true);
         if (n.status >= 400) return n;
-        auto it = cr11.allocations.find(cap["id"]);
+        auto it = FindOwned(cr11.allocations, cap["id"]);
         if (it == cr11.allocations.end()) return Err(404, "NOT_FOUND", "allocation");
         if (have_body && parsed.exists("cross_cex_action_id")) {
             const std::string aid = parsed["cross_cex_action_id"].get_str();
@@ -745,10 +833,20 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
                     env.body.pushKV("intent_id", iid);
                     env.body.pushKV("client_operation_id", it->second["client_operation_id"].get_str());
                     env.body.pushKV("quote_id", "");
-                    env.body.pushKV("quote_body_id", std::string(96, '0'));
+                    UniValue quote_src(UniValue::VOBJ);
+                    quote_src.pushKV("allocation_ref", cap["id"]);
+                    quote_src.pushKV("client_operation_id", it->second["client_operation_id"].get_str());
+                    quote_src.pushKV("principal_atoms", std::to_string(want));
+                    env.body.pushKV("quote_body_id", BodyIdHex(HCP_TYPE_FUNDING_QUOTE, quote_src));
                     env.body.pushKV("action", HCP_ACTION_FUND_RELEASE);
-                    env.body.pushKV("terms_id", std::string(96, '5'));
-                    env.body.pushKV("native_template_id", std::string(96, '6'));
+                    UniValue terms_src(UniValue::VOBJ);
+                    terms_src.pushKV("policy_id", cr11.policy_id.empty() ? "policy-demo" : cr11.policy_id);
+                    terms_src.pushKV("action", HCP_ACTION_FUND_RELEASE);
+                    env.body.pushKV("terms_id", BodyIdHex(HCP_TYPE_FINANCE_INTENT, terms_src));
+                    UniValue tmpl(UniValue::VOBJ);
+                    tmpl.pushKV("custody", cfg.custody_backend);
+                    tmpl.pushKV("network", DemoNetwork());
+                    env.body.pushKV("native_template_id", BodyIdHex(HCP_TYPE_FINANCE_INTENT, tmpl));
                     UniValue amt(UniValue::VOBJ);
                     amt.pushKV("principal_atoms", std::to_string(want));
                     amt.pushKV("network_fee_cap_atoms", "0");
@@ -787,10 +885,18 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
                     env.body.pushKV("issued_at_ms", std::to_string(cfg.clock_ms));
                     env.body.pushKV("expires_at_ms", std::to_string(cfg.clock_ms + 600000));
                     UniValue pkg(UniValue::VOBJ);
-                    pkg.pushKV("package_core_id", std::string(96, '1'));
-                    pkg.pushKV("file_sha384", std::string(96, '2'));
-                    pkg.pushKV("recipe_id", std::string(96, '3'));
-                    pkg.pushKV("download_url", cfg.api_base + "/packages/" + std::string(96, '1'));
+                    UniValue pkg_src(UniValue::VOBJ);
+                    pkg_src.pushKV("account_ref", cr11.authed_account);
+                    pkg_src.pushKV("client_operation_id", it->second["client_operation_id"].get_str());
+                    pkg_src.pushKV("handoff_id", hid);
+                    const std::string core_id = BodyIdHex(HCP_TYPE_CAPABILITY_HANDOFF, pkg_src);
+                    pkg.pushKV("package_core_id", core_id);
+                    pkg.pushKV("file_sha384", core_id);
+                    UniValue recipe_src(UniValue::VOBJ);
+                    recipe_src.pushKV("package_core_id", core_id);
+                    recipe_src.pushKV("readiness_target", "RUNTIME_READY");
+                    pkg.pushKV("recipe_id", BodyIdHex(HCP_TYPE_CAPABILITY_HANDOFF, recipe_src));
+                    pkg.pushKV("download_url", cfg.api_base + "/packages/" + core_id);
                     env.body.pushKV("package", pkg);
                     env.body.pushKV("readiness_target", "RUNTIME_READY");
                     UniValue fx(UniValue::VARR);
@@ -807,6 +913,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
             }
         }
         b.pushKV("children", children);
+        StampOwner(b);
         cr11.executions[xid] = b;
         cr11.last_execution = xid;
         AppendEvent(cr11.authed_account, "ALLOCATION_EXECUTED", xid, b);
@@ -815,14 +922,14 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/capital/executions/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.executions.find(cap["id"]);
+        auto it = FindOwned(cr11.executions, cap["id"]);
         if (it == cr11.executions.end()) return Err(404, "NOT_FOUND", "execution");
         return SignedObj(HCP_TYPE_CAPITAL_EXECUTION, it->second, 200);
     }
     if (MatchPath(req.path, "/capital/executions/{id}/cancel", cap) && req.method == "POST") {
         auto n = Need("capital:execute", true);
         if (n.status >= 400) return n;
-        auto it = cr11.executions.find(cap["id"]);
+        auto it = FindOwned(cr11.executions, cap["id"]);
         if (it == cr11.executions.end()) return Err(404, "NOT_FOUND", "execution");
         if (it->second.exists("state") && it->second["state"].get_str() == "UNKNOWN") {
             return Err(409, HCP_ERR_BROADCAST_UNKNOWN, "hold retained");
@@ -850,7 +957,10 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
         UniValue arr(UniValue::VARR);
-        for (const auto& [id, _] : cr11.positions) arr.push_back(id);
+        for (const auto& [id, b] : cr11.positions) {
+            if (!Owned(b)) continue;
+            arr.push_back(id);
+        }
         UniValue o(UniValue::VOBJ);
         o.pushKV("items", arr);
         o.pushKV("nav_merged", false);
@@ -867,28 +977,44 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         b.pushKV("legal_entity_id", cr11.legal_entity);
         b.pushKV("position_id", id);
         b.pushKV("portfolio_id", Jstr("portfolio_id", "port-demo"));
-        b.pushKV("package_core_id", Jstr("package_core_id", std::string(96, '1')));
-        b.pushKV("recipe_id", Jstr("recipe_id", std::string(96, '3')));
+        if (parsed.exists("package_core_id") && parsed["package_core_id"].isStr() &&
+            !parsed["package_core_id"].get_str().empty()) {
+            b.pushKV("package_core_id", parsed["package_core_id"].get_str());
+        } else {
+            UniValue src(UniValue::VOBJ);
+            src.pushKV("position_id", id);
+            src.pushKV("account", cr11.authed_account);
+            b.pushKV("package_core_id", BodyIdHex(HCP_TYPE_CAPABILITY_POSITION, src));
+        }
+        if (parsed.exists("recipe_id") && parsed["recipe_id"].isStr() && !parsed["recipe_id"].get_str().empty()) {
+            b.pushKV("recipe_id", parsed["recipe_id"].get_str());
+        } else {
+            UniValue src(UniValue::VOBJ);
+            src.pushKV("position_id", id);
+            src.pushKV("package_core_id", b["package_core_id"].get_str());
+            b.pushKV("recipe_id", BodyIdHex(HCP_TYPE_CAPABILITY_POSITION, src));
+        }
         b.pushKV("lock_id", Jstr("lock_id", "lock-1"));
         b.pushKV("resource_refs", UniValue(UniValue::VARR));
         b.pushKV("rights_ref", Jstr("rights_ref", "rights-1"));
         b.pushKV("acquisition_refs", UniValue(UniValue::VARR));
         b.pushKV("lifecycle", Jstr("lifecycle", "ACQUIRED"));
         b.pushKV("generation", "1");
+        StampOwner(b);
         cr11.positions[id] = b;
         return SignedObj(HCP_TYPE_CAPABILITY_POSITION, b, 201);
     }
     if (MatchPath(req.path, "/capital/positions/{id}", cap) && req.method == "GET") {
         auto n = Need("capital:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.positions.find(cap["id"]);
+        auto it = FindOwned(cr11.positions, cap["id"]);
         if (it == cr11.positions.end()) return Err(404, "NOT_FOUND", "position");
         return SignedObj(HCP_TYPE_CAPABILITY_POSITION, it->second, 200);
     }
     if (MatchPath(req.path, "/capital/positions/{id}/lifecycle", cap) && req.method == "POST") {
         auto n = Need("holdings:write", false);
         if (n.status >= 400) return n;
-        auto it = cr11.positions.find(cap["id"]);
+        auto it = FindOwned(cr11.positions, cap["id"]);
         if (it == cr11.positions.end()) return Err(404, "NOT_FOUND", "position");
         it->second.pushKV("lifecycle", Jstr("lifecycle", "RETIRED"));
         it->second.pushKV("generation", "2");
@@ -992,6 +1118,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         b.pushKV("assumptions_separate_from_actuals", true);
         b.pushKV("fx_dated", true);
         b.pushKV("reporting_currency_original", true);
+        StampOwner(b);
         cr11.last_report = b;
         cr11.reports[b["report_id"].get_str()] = b;
         return SignedObj(HCP_TYPE_RESERVE_REPORT, b, 201);
@@ -999,7 +1126,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/capital/reports/{id}", cap) && req.method == "GET") {
         auto n = Need("reports:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.reports.find(cap["id"]);
+        auto it = FindOwned(cr11.reports, cap["id"]);
         if (it == cr11.reports.end()) return Err(404, "NOT_FOUND", "report");
         return SignedObj(HCP_TYPE_RESERVE_REPORT, it->second, 200);
     }
@@ -1011,13 +1138,14 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         o.pushKV("export_id", id);
         o.pushKV("scoped", true);
         o.pushKV("excluded_unauthorized", true);
+        StampOwner(o);
         cr11.exports[id] = o;
         return JsonStatus(201, o);
     }
     if (MatchPath(req.path, "/capital/exports/{id}", cap) && req.method == "GET") {
         auto n = Need("exports:read", false);
         if (n.status >= 400) return n;
-        auto it = cr11.exports.find(cap["id"]);
+        auto it = FindOwned(cr11.exports, cap["id"]);
         if (it == cr11.exports.end()) return Err(404, "NOT_FOUND", "export");
         return JsonStatus(200, it->second);
     }

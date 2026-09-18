@@ -355,7 +355,8 @@ class ModelNetHcpTest(BitcoinTestFramework):
             eid = ex["export_id"]
             xg, st = self._auth(B, "GET", f"/exports/{eid}", token)
             assert st == 200
-            assert xg.get("ready") is True
+            assert xg.get("ready") is False
+            assert xg.get("retrieved") is True
             _, st = self._auth(
                 B, "GET", "/exports/export-missing-smoke-g", token, expect_error=True
             )

@@ -40,7 +40,6 @@ BOOST_AUTO_TEST_CASE(cr12_asset_02)
     b.pushKV("namespace", "isin");
     b.pushKV("value", "US0000000001");
     b.pushKV("network", "regtest");
-    b.pushKV("force_collision", true);
     BOOST_CHECK_EQUAL(cr12_test::ErrCode(e->Handle(hcp_test::AuthReq(*e, "POST", "/institutional/assets", tok, &b))),
                       modelnet::HCP_ERR_IDENTIFIER_COLLISION);
     auto br = e->Handle(hcp_test::AuthReq(*e, "GET", "/institutional/breaks", tok));

@@ -6,8 +6,9 @@
 //   JIT-BASE-02     TransferSession + GlobalTransferCredits, no second downloader
 //   JIT-API-01      EnsureCapability opaque lease, not a bare path
 //   JIT-API-03      MEMORY_RESERVATION_FAILED / UNVERIFIED_RANGE / STALE_GENERATION / HELPER_DOWN
-//   JIT-API-05      download complete, warmup blocked => not 100% ready
+//   JIT-API-05      warmup blocked => fixture path not 100% ready
 //   JIT-API-06      event compact with explicit gaps, no duplicate side effects
+//   JIT-API-08      ensure honesty: IMPLEMENTED_LAB fixture, no canonical acquire claim
 //   JIT-UPDATE-01   prepare alongside active (switch_ready false until smoke)
 //   JIT-UPDATE-02   failed smoke does not activate
 //   JIT-UPDATE-04   SoftwareTrustFloor rejects security rollback
@@ -144,7 +145,8 @@ BOOST_AUTO_TEST_CASE(JIT_API_01)
     BOOST_CHECK_EQUAL(got["achieved"].get_str(),
                       std::string(modelnet::ReadinessTargetName(modelnet::ReadinessTarget::FIRST_USEFUL_RESULT)));
     BOOST_CHECK(got["smoke_passed"].get_bool());
-    BOOST_CHECK_EQUAL(got["progress"]["percent_ready"].getInt<int>(), 100);
+    BOOST_CHECK_LT(got["progress"]["percent_ready"].getInt<int>(), 100);
+    BOOST_CHECK(!got["progress"]["canonical_bytes_verified"].get_bool());
     BOOST_CHECK_EQUAL(got["automatic_spend_atoms"].getInt<int>(), 0);
     BOOST_CHECK(NoSecrets(got));
 
@@ -222,8 +224,9 @@ BOOST_AUTO_TEST_CASE(JIT_API_05)
     UniValue got;
     std::string code, err;
     BOOST_REQUIRE_MESSAGE(modelnet::EnsureCapability(cat, req, got, code, err), err);
-    BOOST_CHECK(got["progress"]["files_complete"].get_bool());
-    BOOST_CHECK(got["progress"]["canonical_bytes_verified"].get_bool());
+    BOOST_CHECK(!got["progress"]["files_complete"].get_bool());
+    BOOST_CHECK(!got["progress"]["canonical_bytes_verified"].get_bool());
+    BOOST_CHECK_EQUAL(got["progress"]["implementation_status"].get_str(), std::string("IMPLEMENTED_LAB"));
     BOOST_CHECK(got["progress"]["runtime_ready"].isFalse());
     BOOST_CHECK(got["progress"]["first_useful_result"].isFalse());
     BOOST_CHECK_LT(got["progress"]["percent_ready"].getInt<int>(), 100);
@@ -232,6 +235,45 @@ BOOST_AUTO_TEST_CASE(JIT_API_05)
     BOOST_CHECK(got["smoke_passed"].isFalse());
     BOOST_CHECK(got["achieved"].get_str() !=
                 std::string(modelnet::ReadinessTargetName(modelnet::ReadinessTarget::FIRST_USEFUL_RESULT)));
+}
+
+BOOST_AUTO_TEST_CASE(JIT_API_08)
+{
+    BOOST_TEST_MESSAGE("JIT-API-08 Ensure honesty: IMPLEMENTED_LAB fixture path, no canonical acquire claim");
+    modelnet::ModelCatalog cat{m_path_root / "ensure-cat", 1 << 20};
+    const auto plan = StorePlan();
+    UniValue req = EnsureReq(plan);
+    UniValue got;
+    std::string code, err;
+    BOOST_REQUIRE_MESSAGE(modelnet::EnsureCapability(cat, req, got, code, err), err);
+
+    // #168: EnsureCapability runs the local CPU fixture. It must not present that
+    // as the plan's recipe digest having been acquired.
+    BOOST_CHECK_EQUAL(got["implementation_status"].get_str(), std::string("IMPLEMENTED_LAB"));
+    BOOST_CHECK(got["fixture_path"].isTrue());
+    BOOST_CHECK(got["ready"].isFalse());
+    BOOST_CHECK(got["fixture_runtime_ready"].get_bool());
+    BOOST_CHECK(!got["progress"]["canonical_bytes_verified"].get_bool());
+    BOOST_CHECK(!got["progress"]["files_complete"].get_bool());
+    BOOST_CHECK(got["progress"]["fixture_bytes_materialized"].get_bool());
+    BOOST_CHECK_EQUAL(got["progress"]["verified_representation"].get_str(), std::string("native-cpu-fixture"));
+    BOOST_CHECK_LT(got["progress"]["percent_ready"].getInt<int>(), 100);
+
+    // runtime_id label survives the honesty fields.
+    BOOST_REQUIRE(got.exists("runtime_id"));
+    BOOST_CHECK_EQUAL(got["runtime_id"].get_str(), std::string("synthetic-cpu-fixture"));
+
+    // acquired_bytes is the fixture actually written, never the 4 MiB plan contract.
+    BOOST_REQUIRE(got.exists("acquired_bytes"));
+    const int64_t acquired = got["acquired_bytes"].getInt<int64_t>();
+    const int64_t requested = got["requested_bytes"].getInt<int64_t>();
+    BOOST_CHECK_GT(acquired, 0);
+    BOOST_CHECK_EQUAL(requested, static_cast<int64_t>(plan.missing_bytes));
+    BOOST_CHECK_GT(requested, acquired);
+    BOOST_CHECK_EQUAL(got["progress"]["acquired_bytes"].getInt<int64_t>(), acquired);
+    BOOST_CHECK_EQUAL(got["progress"]["requested_bytes"].getInt<int64_t>(), requested);
+    BOOST_CHECK_EQUAL(got["automatic_spend_atoms"].getInt<int>(), 0);
+    BOOST_CHECK(NoSecrets(got));
 }
 
 BOOST_AUTO_TEST_CASE(JIT_API_06)

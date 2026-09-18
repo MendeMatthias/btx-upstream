@@ -151,6 +151,18 @@ bool VerifyInputSig(const Input& in, const uint256& digest, std::string& error)
         error = ERR_CORRUPT_SIGNATURE;
         return false;
     }
+    if (in.p2mr && !in.p2mr->leaf_script.empty()) {
+        PQAlgorithm leaf_algo;
+        std::vector<unsigned char> leaf_pk;
+        if (!ExtractP2MRChecksigPubkey(in.p2mr->leaf_script, leaf_algo, leaf_pk)) {
+            error = ERR_CORRUPT_SIGNATURE;
+            return false;
+        }
+        if (leaf_algo != *in.algo || leaf_pk != in.pubkey) {
+            error = ERR_CORRUPT_SIGNATURE;
+            return false;
+        }
+    }
     return true;
 }
 

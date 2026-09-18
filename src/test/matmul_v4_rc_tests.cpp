@@ -3174,6 +3174,12 @@ BOOST_AUTO_TEST_CASE(handoff_peer_budget_miss_restores_ticket_and_refunds_debit)
 BOOST_AUTO_TEST_CASE(rc_global_budget_retry_delay_tracks_current_window)
 {
     using namespace std::chrono_literals;
+    // Compare raw tick counts: Boost.Test must not stream the duration itself,
+    // since the chrono `operator<<` for durations (and the mixed-duration
+    // comparison helpers) only exist in libstdc++ 13+. GCC 11 is supported.
+    // NOTE: do not add an `operator<<` for std::chrono::duration in namespace
+    // std — that would be undefined behaviour.
+    using D = std::chrono::steady_clock::duration;
 
     const auto charged_at{std::chrono::steady_clock::now()};
     BOOST_REQUIRE(ConsumeGlobalMatMulRCBudget(
@@ -3183,12 +3189,14 @@ BOOST_AUTO_TEST_CASE(rc_global_budget_retry_delay_tracks_current_window)
     BOOST_CHECK(!ConsumeGlobalMatMulRCBudget(
         /*max_global_per_minute=*/1, /*count=*/1, still_limited_at));
     const auto retry_delay{GlobalMatMulRCBudgetRetryDelay(still_limited_at)};
-    BOOST_CHECK_GE(retry_delay, 49s);
-    BOOST_CHECK_LE(retry_delay, 50s);
+    BOOST_CHECK_GE(retry_delay.count(),
+                   std::chrono::duration_cast<D>(49s).count());
+    BOOST_CHECK_LE(retry_delay.count(),
+                   std::chrono::duration_cast<D>(50s).count());
 
     BOOST_CHECK_EQUAL(
-        GlobalMatMulRCBudgetRetryDelay(charged_at + 60s),
-        std::chrono::steady_clock::duration::zero());
+        GlobalMatMulRCBudgetRetryDelay(charged_at + 60s).count(),
+        D::zero().count());
 
     // Do not leak this process-global test debit into later suites.
     RefundGlobalMatMulRCBudget(/*count=*/1, charged_at);

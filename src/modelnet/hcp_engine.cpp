@@ -25,6 +25,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -72,6 +73,11 @@ std::string Sha384Hex(Span<const unsigned char> b)
     h.Write(b.data(), b.size());
     h.Finalize(d);
     return HexStr(Span<const unsigned char>{d, sizeof(d)});
+}
+
+std::string LabelDigest(const std::string& label)
+{
+    return Sha384Hex(Span<const unsigned char>{reinterpret_cast<const unsigned char*>(label.data()), label.size()});
 }
 
 std::string RandId(const std::string& prefix)
@@ -253,6 +259,7 @@ struct HcpEngine::Impl {
     struct Policy {
         UniValue json;
         std::string policy_id;
+        std::string account;
         int64_t revision{1};
         int64_t lifetime_spent{0};
         int64_t outstanding{0};
@@ -273,6 +280,7 @@ struct HcpEngine::Impl {
         std::string handoff_id;
         std::string client_operation_id;
         std::string device_id;
+        std::string account;
         std::string nonce;
         std::string package_core_id;
         std::string recipe_id;
@@ -437,7 +445,8 @@ struct HcpEngine::Impl {
         std::map<std::string, std::string> pos_source_seq;
         std::map<std::string, std::string> instr_hash;
         std::map<std::string, std::string> idem_hash;
-        std::map<std::string, int> binding_gen;
+        std::map<std::string, std::string> idem_replay;
+        std::map<std::string, int64_t> binding_gen;
         std::set<std::string> accepted_issuers{"issuer-lab"};
         std::string last_job;
         bool source_unavailable{false};
@@ -953,6 +962,7 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         HandoffJob job;
         job.handoff_id = hid;
         job.device_id = device;
+        job.account = account;
         job.nonce = dit->second.nonce;
         job.package_core_id = core_id;
         job.recipe_id = recipe;
@@ -965,7 +975,7 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/handoffs/{handoff_id}", cap) && req.method == "GET") {
         if (!Auth(req, "account:read", account, acode, false)) return Err(401, acode, acode);
         auto it = jobs.find(cap["handoff_id"]);
-        if (it == jobs.end()) return Err(404, "NOT_FOUND", "handoff");
+        if (it == jobs.end() || it->second.account != account) return Err(404, "NOT_FOUND", "handoff");
         if (it->second.env.object_type == HCP_TYPE_CAPABILITY_HANDOFF) {
             return JsonStatus(200, EncodeHcpEnvelope(it->second.env));
         }
@@ -1102,14 +1112,12 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         env.body.pushKV("quote_id", qid);
         env.body.pushKV("quote_kind", "FIRM");
         env.body.pushKV("action", have_body && parsed.exists("action") ? parsed["action"].get_str() : HCP_ACTION_FUND_RELEASE);
-        env.body.pushKV("target_object_id",
-                         "444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444");
+        env.body.pushKV("target_object_id", LabelDigest(std::string("HCP/target|") + qid + "|" + account));
         env.body.pushKV("terms_id",
-                         have_body && parsed.exists("terms_id") ?
-                             parsed["terms_id"].get_str() :
-                             "555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555");
+                         have_body && parsed.exists("terms_id") ? parsed["terms_id"].get_str() :
+                                                                 LabelDigest(std::string("HCP/terms|") + account));
         env.body.pushKV("native_template_id",
-                         "666666444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444");
+                         LabelDigest(std::string("HCP/template|") + cfg.custody_backend + "|" + cfg.environment));
         env.body.pushKV("round_id", UniValue());
         env.body.pushKV("lot_id", UniValue());
         UniValue amt(UniValue::VOBJ);
@@ -1210,13 +1218,14 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         env.body.pushKV("intent_id", iid);
         env.body.pushKV("client_operation_id", cop);
         env.body.pushKV("quote_id", qid);
-        env.body.pushKV("quote_body_id", qid.empty() ? std::string(96, '0') : quotes[qid].body_id.Hex());
+        env.body.pushKV("quote_body_id",
+                         qid.empty() ? LabelDigest(std::string("HCP/quote/none|") + account) : quotes[qid].body_id.Hex());
         env.body.pushKV("action", have_body && parsed.exists("action") ? parsed["action"].get_str() : HCP_ACTION_FUND_RELEASE);
         env.body.pushKV("terms_id", have_body && parsed.exists("terms_id") ?
                                           parsed["terms_id"].get_str() :
-                                          "555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555");
+                                          LabelDigest(std::string("HCP/terms|") + account));
         env.body.pushKV("native_template_id",
-                         "666666444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444");
+                         LabelDigest(std::string("HCP/template|") + cfg.custody_backend + "|" + cfg.environment));
         env.body.pushKV("amounts", amt);
         env.body.pushKV("policy_id", pid.empty() ? "policy-demo" : pid);
         env.body.pushKV("policy_revision", pid.empty() ? "1" : std::to_string(policies[pid].revision));
@@ -1425,6 +1434,7 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         Policy p;
         p.json = have_body ? parsed : UniValue(UniValue::VOBJ);
         p.policy_id = p.json.exists("policy_id") ? p.json["policy_id"].get_str() : RandId("policy-");
+        p.account = account;
         p.revision = 1;
         if (p.json.exists("lifetime_principal_atoms")) {
             std::string e;
@@ -1436,18 +1446,19 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         if (p.json.exists("refund_replenishes_lifetime")) p.refund_replenishes = p.json["refund_replenishes_lifetime"].isTrue();
         policies[p.policy_id] = p;
         p.json.pushKV("policy_id", p.policy_id);
+        p.json.pushKV("account", p.account);
         return JsonStatus(201, p.json);
     }
     if (MatchPath(req.path, "/policies/{policy_id}", cap) && req.method == "GET") {
         if (!Auth(req, "account:read", account, acode, false)) return Err(401, acode, acode);
         auto it = policies.find(cap["policy_id"]);
-        if (it == policies.end()) return Err(404, "NOT_FOUND", "policy");
+        if (it == policies.end() || it->second.account != account) return Err(404, "NOT_FOUND", "policy");
         return JsonStatus(200, it->second.json);
     }
     if (MatchPath(req.path, "/policies/{policy_id}/revoke", cap) && req.method == "POST") {
         if (!Auth(req, "policies:admin", account, acode, true)) return Err(401, acode, acode);
         auto it = policies.find(cap["policy_id"]);
-        if (it == policies.end()) return Err(404, "NOT_FOUND", "policy");
+        if (it == policies.end() || it->second.account != account) return Err(404, "NOT_FOUND", "policy");
         it->second.revoked = true;
         it->second.json.pushKV("revoked", true);
         return JsonStatus(200, it->second.json);
@@ -1537,8 +1548,13 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         if (!Auth(req, "exports:create", account, acode, false)) return Err(401, acode, acode);
         auto it = export_jobs.find(cap["export_id"]);
         if (it == export_jobs.end()) return Err(404, "NOT_FOUND", "export");
+        const std::string owner = it->second.exists("account_ref") && it->second["account_ref"].isStr()
+                                      ? it->second["account_ref"].get_str()
+                                      : std::string{};
+        if (owner != account) return Err(404, "NOT_FOUND", "export");
         UniValue man = it->second;
-        man.pushKV("ready", true);
+        // Persist the stored ready bit. GET does not perform export work.
+        man.pushKV("retrieved", true);
         return JsonStatus(200, man);
     }
     if (req.method == "POST" && req.path == "/research/drafts") {
@@ -1546,6 +1562,7 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         const std::string did = RandId("draft-");
         UniValue o(UniValue::VOBJ);
         o.pushKV("draft_id", did);
+        o.pushKV("account", account);
         o.pushKV("state", "DRAFT");
         if (have_body) o.pushKV("body", parsed);
         research_drafts[did] = o;
@@ -1555,6 +1572,10 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         if (!Auth(req, "research:publish", account, acode, false)) return Err(401, acode, acode);
         auto it = research_drafts.find(cap["draft_id"]);
         if (it == research_drafts.end()) return Err(404, "NOT_FOUND", "draft");
+        if (it->second.exists("account") && it->second["account"].isStr() &&
+            it->second["account"].get_str() != account) {
+            return Err(404, "NOT_FOUND", "draft");
+        }
         std::string ferr;
         bool ok = true;
         if (it->second.exists("body") && !HcpRejectForbiddenFields(it->second["body"], ferr)) ok = false;
@@ -1572,6 +1593,10 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         if (!Auth(req, "research:publish", account, acode, true)) return Err(401, acode, acode);
         auto it = research_drafts.find(cap["draft_id"]);
         if (it == research_drafts.end()) return Err(404, "NOT_FOUND", "draft");
+        if (it->second.exists("account") && it->second["account"].isStr() &&
+            it->second["account"].get_str() != account) {
+            return Err(404, "NOT_FOUND", "draft");
+        }
         if (!it->second.exists("valid") || !it->second["valid"].isTrue()) {
             return Err(400, "RESEARCH_INVALID", "validate first");
         }
@@ -1592,7 +1617,8 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         UniValue o(UniValue::VOBJ);
         o.pushKV("operation_id", cap["operation_id"]);
         auto it = intents.find(cap["operation_id"]);
-        o.pushKV("state", it == intents.end() ? "UNKNOWN" : it->second.state);
+        const bool owned = it != intents.end() && it->second.account == account;
+        o.pushKV("state", owned ? it->second.state : "UNKNOWN");
         return JsonStatus(200, o);
     }
     if (unknown_critical) {
@@ -2056,9 +2082,9 @@ UniValue HcpEngine::Impl::PersistObj() const
         for (const auto& [k, v] : m) x.pushKV(k, v);
         return x;
     };
-    auto dump_int = [](const std::map<std::string, int>& m) {
+    auto dump_int = [](const std::map<std::string, int64_t>& m) {
         UniValue x(UniValue::VOBJ);
-        for (const auto& [k, v] : m) x.pushKV(k, static_cast<int64_t>(v));
+        for (const auto& [k, v] : m) x.pushKV(k, v);
         return x;
     };
     o.pushKV("crl12_roles", dump_obj(crl12.roles));
@@ -2084,6 +2110,7 @@ UniValue HcpEngine::Impl::PersistObj() const
     o.pushKV("crl12_pos_source_seq", dump_str(crl12.pos_source_seq));
     o.pushKV("crl12_instr_hash", dump_str(crl12.instr_hash));
     o.pushKV("crl12_idem_hash", dump_str(crl12.idem_hash));
+    o.pushKV("crl12_idem_replay", dump_str(crl12.idem_replay));
     o.pushKV("crl12_binding_gen", dump_int(crl12.binding_gen));
     o.pushKV("crl12_last_job", crl12.last_job);
     o.pushKV("crl12_source_unavailable", crl12.source_unavailable);
@@ -2134,11 +2161,11 @@ bool HcpEngine::Restore()
             dest[k] = o[key][k].isStr() ? o[key][k].get_str() : o[key][k].write();
         }
     };
-    auto load_int = [&](const char* key, std::map<std::string, int>& dest) {
+    auto load_int = [&](const char* key, std::map<std::string, int64_t>& dest) {
         if (!o.exists(key) || !o[key].isObject()) return;
         dest.clear();
         for (const auto& k : o[key].getKeys()) {
-            if (o[key][k].isNum()) dest[k] = static_cast<int>(o[key][k].getInt<int64_t>());
+            if (o[key][k].isNum()) dest[k] = o[key][k].getInt<int64_t>();
         }
     };
     load_obj("crl12_roles", m->crl12.roles);
@@ -2164,6 +2191,7 @@ bool HcpEngine::Restore()
     load_str("crl12_pos_source_seq", m->crl12.pos_source_seq);
     load_str("crl12_instr_hash", m->crl12.instr_hash);
     load_str("crl12_idem_hash", m->crl12.idem_hash);
+    load_str("crl12_idem_replay", m->crl12.idem_replay);
     load_int("crl12_binding_gen", m->crl12.binding_gen);
     if (o.exists("crl12_last_job") && o["crl12_last_job"].isStr()) m->crl12.last_job = o["crl12_last_job"].get_str();
     if (o.exists("crl12_source_unavailable")) m->crl12.source_unavailable = o["crl12_source_unavailable"].isTrue();
@@ -3167,6 +3195,19 @@ bool DispatchHcpRpc(ModelCatalog& cat, const std::string& method, const UniValue
     return false;
 }
 
+// btx-hcpd is loopback-only. Canonicalize the requested bind host before it
+// reaches inet_pton(): that call does not resolve host names, so "localhost"
+// would leave sin_addr at INADDR_ANY (0.0.0.0) and expose the HCP gateway on
+// every interface. Returns false for any host that is not loopback so the
+// caller refuses the bind instead of widening it.
+bool CanonicalizeHcpBindHost(std::string& host)
+{
+    if (host == "localhost") host = "127.0.0.1";
+    if (host != "127.0.0.1") return false;
+    in_addr parsed{};
+    return inet_pton(AF_INET, host.c_str(), &parsed) == 1;
+}
+
 int RunHcpDaemon(HcpConfig cfg, const std::string& bind, const fs::path& socket, std::atomic<bool>* stop)
 {
     cfg.automatic_spend_atoms = 0;
@@ -3184,8 +3225,8 @@ int RunHcpDaemon(HcpConfig cfg, const std::string& bind, const fs::path& socket,
         host = bind.substr(0, c);
         port = static_cast<uint16_t>(std::stoi(bind.substr(c + 1)));
     }
-    if (host != "127.0.0.1" && host != "localhost") {
-        std::fprintf(stderr, "btx-hcpd: bind must be loopback\n");
+    if (!CanonicalizeHcpBindHost(host)) {
+        std::fprintf(stderr, "btx-hcpd: bind must be 127.0.0.1\n");
         return 2;
     }
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -3195,7 +3236,10 @@ int RunHcpDaemon(HcpConfig cfg, const std::string& bind, const fs::path& socket,
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        close(fd);
+        return 2;
+    }
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         close(fd);
         return 2;

@@ -1,5 +1,9 @@
 # BCP/1 external signing
 
+**Release state.** This document describes the **0.34.8rc2** tree (`CLIENT_VERSION_RC=2`, `CLIENT_VERSION_IS_RELEASE=false`); the last shipping tag is **0.34.7**. It is a development contract under review, not a published vendor standard.
+
+**Proven scope.** Isolated-regtest `feature_bcp1.py` proves a **software** ML-DSA-44 round trip: watch-only deposit pool → unsigned package → canonical digests → valid signature → `finalizeexternalsign complete=true` → `testmempoolaccept` → explicit `sendrawtransaction`. It does **not** prove a live vendor HSM, PKCS#11, KMIP, or HTTPS adapter (those classes fail closed with no client linked). `--stub-signature` remains a negative test only. See [../../contrib/bcp1/README.md](../../contrib/bcp1/README.md).
+
 This extends [../external-signer.md](../external-signer.md). It does not replace the existing `-signer` command protocol (`enumerate`, `signtransaction` / `signtx`, `getdescriptors`, `displayaddress`, `getp2mrpubkeys`).
 
 BCP/1 adds an explicit **digest** lifecycle so `btxd` can construct a P2MR withdrawal **without the private key**. Consensus contains no venue-specific code. Adapter names (PKCS#11, HTTPS, Key-Link, command) are transport. ML-DSA-44 support inside a particular vendor product is an **open vendor question**, not a BCP/1 PASS. Stage 1 vs Stage 2 (native-chain asset): [key-link.md](key-link.md).

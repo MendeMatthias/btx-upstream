@@ -177,6 +177,18 @@ private:
 
 std::optional<AutoUpdateUrl> ParseAutoUpdateUrl(std::string_view url);
 bool AutoUpdateUrlMatchesTrustedOrigin(std::string_view url, std::string_view trusted_origin, bool dev_origin);
+
+// This node's build version as "major.minor.build", plus an "rcN" suffix when the build is a
+// release candidate (CLIENT_VERSION_RC > 0). A final release has no suffix.
+std::string LocalClientVersion();
+
+// Order two version strings. Returns 1 when `remote_version` is strictly newer than
+// `local_version`, -1 when older, 0 when equal (or when either string is unparseable). A final
+// release (no rc suffix) outranks any rcN of the same major.minor.build, and a node on a final
+// build never adopts a prerelease even when the remote major.minor.build is higher.
+int CompareAutoUpdateVersionStrings(std::string_view local_version, std::string_view remote_version);
+
+// Compare a manifest version against this node's LocalClientVersion().
 int CompareAutoUpdateVersion(std::string_view remote_version);
 std::string AutoUpdateStatusString(AutoUpdateStatus status);
 std::string AutoUpdateTelemetryQuery(const AutoUpdateConfig& config);

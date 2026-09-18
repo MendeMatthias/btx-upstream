@@ -373,11 +373,23 @@ bool ValidateHandoff(const UniValue& ah, const std::map<std::string, UniValue>& 
 
 bool ValidateLegacyCoreV1(const UniValue& core, std::string& err_code, std::string& err)
 {
-    if (!core.exists("network") || !core.exists("package_type") || !core.exists("resources") || !core.exists("label")) {
+    if (!core.exists("network") || !InSet(core["network"], kNetworks, "network", err_code, err)) return false;
+    if (!core.exists("package_type") || !InSet(core["package_type"], kPackageTypes, "package type", err_code, err)) {
+        return false;
+    }
+    if (!core.exists("label") || !SafeText(core["label"], "label", err_code, err)) return false;
+    if (core["label"].get_str().empty() || core["label"].get_str().size() > 256) {
+        return Fail(err_code, err, "NONCANONICAL_PAYLOAD", "label size");
+    }
+    if (!core.exists("resources")) {
         return Fail(err_code, err, "NONCANONICAL_PAYLOAD", "legacy core missing fields");
     }
-    if (core.exists("documents") || core.exists("agent_handoff")) {
-        return Fail(err_code, err, "NONCANONICAL_PAYLOAD", "v1 cannot contain handoff-v2 fields");
+    std::map<std::string, UniValue> ids;
+    if (!ValidateResources(core["resources"], ids, err_code, err)) return false;
+    if (core.exists("documents") || core.exists("agent_handoff") || core.exists("capability_handoff") ||
+        core.exists("capability_recipes") || core.exists("runtime_requirements") ||
+        core.exists("verification_profiles")) {
+        return Fail(err_code, err, "NONCANONICAL_PAYLOAD", "v1 cannot contain handoff-v2/v3 fields");
     }
     return true;
 }
@@ -401,6 +413,9 @@ bool CoreVersionNumber(const UniValue& core, int& ver, std::string& err)
         ver = 3;
         return true;
     }
+    // Frame/codec versions are distinct from these package-core schema
+    // versions. Core schema v1, v2, and v3 each have their own validator
+    // (legacy / agent-handoff / capability-handoff); v4+ is rejected.
     err = "UNSUPPORTED_CORE_VERSION";
     return false;
 }

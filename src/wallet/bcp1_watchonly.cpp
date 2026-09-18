@@ -25,6 +25,7 @@
 #include <wallet/wallet.h>
 #include <wallet/walletutil.h>
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -281,7 +282,19 @@ bool ItemToDescriptorAndLabel(const UniValue& item, size_t index, std::string& d
     if (item.exists("label") && item["label"].isStr()) {
         label = item["label"].get_str();
     } else if (item.exists("index") && !item["index"].isNull()) {
-        label = "deposit/" + item["index"].getValStr();
+        uint32_t branch = 0;
+        uint32_t account = 0;
+        if (item.exists("branch") && item["branch"].isNum()) {
+            const int64_t b = item["branch"].getInt<int64_t>();
+            if (b == 0 || b == 1) branch = static_cast<uint32_t>(b);
+        }
+        if (item.exists("account") && item["account"].isNum()) {
+            const int64_t a = item["account"].getInt<int64_t>();
+            if (a >= 0 && a <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+                account = static_cast<uint32_t>(a);
+            }
+        }
+        label = strprintf("%u/%s/%s", account, branch == 1 ? "change" : "deposit", item["index"].getValStr());
     }
 
     if (item.exists("desc") && item["desc"].isStr()) {
@@ -391,7 +404,10 @@ bool EnsureExchangeWatchOnly(const CWallet& wallet, bilingual_str& err)
 
 bool ExchangeWatchOnlyActive(const CWallet& wallet)
 {
-    if (gArgs.GetBoolArg(EXCHANGE_WATCHONLY_ARG, false)) return true;
+    // Opt-in: -exchange-watchonly is a node-level switch. Without it, a
+    // descriptor disable_private_keys wallet is a hardware / external-signer
+    // wallet, not a BCP/1 custody wallet, and must keep signing.
+    if (!gArgs.GetBoolArg(EXCHANGE_WATCHONLY_ARG, false)) return false;
     if (!wallet.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) return false;
     if (!wallet.IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS)) return false;
     // Full profile is DISABLE_PRIVATE_KEYS + EXTERNAL_SIGNER. Deposit-pool
@@ -401,11 +417,19 @@ bool ExchangeWatchOnlyActive(const CWallet& wallet)
 
 bool RefusePrivateSign(const CWallet& wallet, bilingual_str& err)
 {
-    if (ExchangeWatchOnlyActive(wallet) || wallet.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
-        err = PrivateSignRefusedMessage();
-        return true;
-    }
+    if (!ExchangeWatchOnlyActive(wallet)) return false;
+    err = PrivateSignRefusedMessage();
+    return true;
+}
+
+bool CanDelegateExternalPsbtSign(const CWallet& wallet)
+{
+#ifdef ENABLE_EXTERNAL_SIGNER
+    return wallet.IsWalletFlagSet(WALLET_FLAG_EXTERNAL_SIGNER);
+#else
+    (void)wallet;
     return false;
+#endif
 }
 
 bool ImportDepositPool(CWallet& wallet, const UniValue& addresses_or_pubkeys, bilingual_str& err)

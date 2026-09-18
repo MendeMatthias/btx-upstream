@@ -852,8 +852,21 @@ public:
         for (const auto& [pubkey, pq_key] : flat->pq_keys) {
             if (pubkey.size() == MLDSA44_PUBKEY_SIZE || pubkey.size() == SLHDSA128S_PUBKEY_SIZE) {
                 obj.pushKV("pubkey", HexStr(pubkey));
-                break;
+                return obj;
             }
+        }
+        P2MRSpendData spenddata;
+        if (flat->GetP2MRSpendData(id, spenddata)) {
+            std::vector<unsigned char> ml, slh;
+            for (const auto& [script, controls] : spenddata.scripts) {
+                PQAlgorithm algo;
+                std::vector<unsigned char> pk;
+                if (!ExtractP2MRChecksigPubkey(script, algo, pk)) continue;
+                if (algo == PQAlgorithm::ML_DSA_44 && ml.empty()) ml = std::move(pk);
+                else if (algo == PQAlgorithm::SLH_DSA_128S && slh.empty()) slh = std::move(pk);
+            }
+            if (!ml.empty()) obj.pushKV("pubkey", HexStr(ml));
+            else if (!slh.empty()) obj.pushKV("pubkey", HexStr(slh));
         }
         return obj;
     }
@@ -1014,6 +1027,25 @@ RPCHelpMan getaddressinfo()
             if (!dman) continue;
             if (auto p = dman->GetP2MRSizingProvider(scriptPubKey)) {
                 if (try_flat(p.get())) break;
+                P2MRSpendData spenddata;
+                if (p->GetP2MRSpendData(std::get<WitnessV2P2MR>(dest), spenddata)) {
+                    std::vector<unsigned char> ml, slh;
+                    for (const auto& [script, controls] : spenddata.scripts) {
+                        PQAlgorithm algo;
+                        std::vector<unsigned char> pk;
+                        if (!ExtractP2MRChecksigPubkey(script, algo, pk)) continue;
+                        if (algo == PQAlgorithm::ML_DSA_44 && ml.empty()) ml = std::move(pk);
+                        else if (algo == PQAlgorithm::SLH_DSA_128S && slh.empty()) slh = std::move(pk);
+                    }
+                    if (!ml.empty()) {
+                        ret.pushKV("pubkey", HexStr(ml));
+                        break;
+                    }
+                    if (!slh.empty()) {
+                        ret.pushKV("pubkey", HexStr(slh));
+                        break;
+                    }
+                }
             }
             if (auto p = dman->GetSigningProvider(scriptPubKey, /*include_private=*/false)) {
                 if (try_flat(p.get())) break;

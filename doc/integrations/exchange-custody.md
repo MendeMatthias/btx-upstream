@@ -1,10 +1,14 @@
 # BTX Custody Profile 1 — Exchange / Custody FAQ
 
-This is the first page for listing and custody teams.
+This page is an integration guide for custody and exchange engineering teams. It is **not** a listing announcement, and it does not claim that any exchange, custodian, or venue has listed, integrated, or approved BTX. "Listing" below means a reader's operational use case, not a commitment by BTX or by any venue.
+
+**Release state.** This tree is **0.34.8rc2** (`CLIENT_VERSION_RC=2`, `CLIENT_VERSION_IS_RELEASE=false`). That is a release-candidate stamp, not a shipping tag. The last shipping tag is **0.34.7**. Do not treat any interface on this page as frozen, published, or independently certified.
+
+**Scope.** BCP/1 is a **major monetary-wallet addition**, not a cosmetic helper. It adds a custody RPC surface and an external-digest signing lifecycle, and it also changes existing signing RPCs and wallet lifecycle behavior. Review it as a wallet change, not only as an integration document.
 
 Public name: **BTX Custody Profile 1 (BCP/1)**, also called **BTX Exchange Profile v1** (`BTX_EXCHANGE_PROFILE_V1`). It is a small, deterministic **monetary** custody surface. It is independent of HCP and of the Model Network.
 
-Vendor-neutral. Venue, HSM, and Key-Link product names appear only as examples of how an adapter might attach. They are not consensus, not a listing requirement, and not a BCP/1 PASS.
+Vendor-neutral. Venue, HSM, and Key-Link product names appear only as examples of how an adapter might attach. They are not consensus, not a listing requirement, and not a BCP/1 PASS. There is no vendor-support claim: PKCS#11, KMIP, and loopback HTTPS adapters exist only as **fail-closed stubs** with no client library linked ([external-sign.md](external-sign.md)).
 
 Related:
 

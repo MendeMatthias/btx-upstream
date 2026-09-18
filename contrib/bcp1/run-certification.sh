@@ -16,6 +16,7 @@ PASS_ROWS=(
   "unsigned withdrawal"
   "external PQ signature"
   "signature import"
+  "corrupt signature rejection"
   "broadcast"
   "batch withdrawal"
   "UTXO consolidation"

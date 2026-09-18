@@ -2570,7 +2570,7 @@ BOOST_AUTO_TEST_CASE(ChainParams_MAIN_hardening_anchor_consistency)
     BOOST_CHECK_CLOSE(params->TxData().dTxRate, 0.015165177474, 0.000001);
 
     const auto& checkpoints = params->Checkpoints().mapCheckpoints;
-    BOOST_REQUIRE_EQUAL(checkpoints.size(), 4U);
+    BOOST_REQUIRE_EQUAL(checkpoints.size(), 7U);
     const auto it_0 = checkpoints.find(0);
     BOOST_REQUIRE(it_0 != checkpoints.end());
     BOOST_CHECK_EQUAL(
@@ -2591,7 +2591,22 @@ BOOST_AUTO_TEST_CASE(ChainParams_MAIN_hardening_anchor_consistency)
     BOOST_CHECK_EQUAL(
         it_186000->second.GetHex(),
         "0a51fccfd75d2051e94be1a8cc5abff8b86ac53d0cc134680f286fe769aa2129");
-    BOOST_CHECK_EQUAL(std::prev(checkpoints.end())->first, 186000);
+    const auto it_201500 = checkpoints.find(201500);
+    BOOST_REQUIRE(it_201500 != checkpoints.end());
+    BOOST_CHECK_EQUAL(
+        it_201500->second.GetHex(),
+        "3dd0fa677029f0b6869b64f09d8673edf3902460767bd6a1ecf6c633b0c6398c");
+    const auto it_203000 = checkpoints.find(203000);
+    BOOST_REQUIRE(it_203000 != checkpoints.end());
+    BOOST_CHECK_EQUAL(
+        it_203000->second.GetHex(),
+        "89cfe9904a27be73467c25044e3c13d97bae512e02e4172def1a6c29f87999ef");
+    const auto it_219000 = checkpoints.find(219000);
+    BOOST_REQUIRE(it_219000 != checkpoints.end());
+    BOOST_CHECK_EQUAL(
+        it_219000->second.GetHex(),
+        "dc51220bc7e5db96e29df9d817ae6179245d33eb8adcaaff765cfec83fdb87c3");
+    BOOST_CHECK_EQUAL(std::prev(checkpoints.end())->first, 219000);
 
     const auto assumeutxo_55000 = params->AssumeutxoForHeight(55000);
     BOOST_REQUIRE(assumeutxo_55000.has_value());
@@ -2868,14 +2883,43 @@ BOOST_AUTO_TEST_CASE(ChainParams_MAIN_hardening_anchor_consistency)
     BOOST_CHECK(!params->AssumeutxoForHeight(199299));
     BOOST_CHECK(!params->AssumeutxoForHeight(199300));
 
+    const auto assumeutxo_201500 = params->AssumeutxoForHeight(201500);
+    BOOST_REQUIRE(assumeutxo_201500.has_value());
+    BOOST_CHECK_EQUAL(assumeutxo_201500->height, 201500);
+    BOOST_CHECK_EQUAL(
+        assumeutxo_201500->hash_serialized.ToString(),
+        "4743962b836a3ed1e541bb6da747fc28a7d98926b5d6bc8e23928ed3b1981d93");
+    BOOST_CHECK_EQUAL(
+        assumeutxo_201500->blockhash.GetHex(),
+        "3dd0fa677029f0b6869b64f09d8673edf3902460767bd6a1ecf6c633b0c6398c");
+
+    const auto assumeutxo_203000 = params->AssumeutxoForHeight(203000);
+    BOOST_REQUIRE(assumeutxo_203000.has_value());
+    BOOST_CHECK_EQUAL(assumeutxo_203000->height, 203000);
+    BOOST_CHECK_EQUAL(
+        assumeutxo_203000->hash_serialized.ToString(),
+        "6754314323ab5575c0069b7973ac11d36fa6dce43c5f451df3808402a7962040");
+    BOOST_CHECK_EQUAL(
+        assumeutxo_203000->blockhash.GetHex(),
+        "89cfe9904a27be73467c25044e3c13d97bae512e02e4172def1a6c29f87999ef");
+
+    const auto assumeutxo_219000 = params->AssumeutxoForHeight(219000);
+    BOOST_REQUIRE(assumeutxo_219000.has_value());
+    BOOST_CHECK_EQUAL(assumeutxo_219000->height, 219000);
+    BOOST_CHECK_EQUAL(
+        assumeutxo_219000->hash_serialized.ToString(),
+        "3c065aabb529eaab5646825927d9f20a91426dc7e83b4890b575324f5bfccc99");
+    BOOST_CHECK_EQUAL(
+        assumeutxo_219000->blockhash.GetHex(),
+        "dc51220bc7e5db96e29df9d817ae6179245d33eb8adcaaff765cfec83fdb87c3");
+
     const auto snapshot_heights = params->GetAvailableSnapshotHeights();
-    BOOST_REQUIRE_EQUAL(snapshot_heights.size(), 25U);
+    BOOST_REQUIRE_EQUAL(snapshot_heights.size(), 28U);
     BOOST_CHECK(std::is_sorted(snapshot_heights.begin(), snapshot_heights.end()));
     BOOST_CHECK_EQUAL(snapshot_heights.front(), 55000);
-    BOOST_CHECK_EQUAL(snapshot_heights.back(), 191266);
-    // Checkpoints may trail assumeutxo (186000 checkpoint vs 191266 snapshot).
-    // An assumeutxo at/after the 199299 split is forbidden without a matching
-    // checkpoint (issue 127).
+    BOOST_CHECK_EQUAL(snapshot_heights.back(), 219000);
+    // Checkpoints and assumeutxo both tail at 219000. 199299/199300 snapshots
+    // stay withdrawn (issue 127).
 }
 
 BOOST_AUTO_TEST_CASE(HasValidProofOfWork_matmul_phase1_checks)

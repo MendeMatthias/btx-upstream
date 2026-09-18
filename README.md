@@ -35,7 +35,7 @@ shielded state. Do not read this tree as shipping a live shielded pool.
 This repository contains the full node implementation, wallet, mining
 infrastructure, Native Model Network helper, and test suites.
 
-This working tree is **0.34.8rc1** (`CLIENT_VERSION_RC=1`, `CLIENT_VERSION_IS_RELEASE=false`).
+This working tree is **0.34.8rc2** (`CLIENT_VERSION_RC=2`, `CLIENT_VERSION_IS_RELEASE=false`).
 The last released client remains **v0.34.7**. Merge to main still requires operator go-ahead.
 
 ## Start here
@@ -84,7 +84,7 @@ manual and not the long essay.
 
 ## Current release — v0.34.7
 
-**This tree is 0.34.8rc1** (`CLIENT_VERSION_RC=1`, `CLIENT_VERSION_IS_RELEASE=false`).
+**This tree is 0.34.8rc2** (`CLIENT_VERSION_RC=2`, `CLIENT_VERSION_IS_RELEASE=false`).
 It is the merge-ready RC for 0.34.8. The last released client remains **v0.34.7**
 (`CLIENT_VERSION_IS_RELEASE=true` on that tag). Seal and freeze hashes are
 written when a tag is sealed (see
@@ -1042,7 +1042,20 @@ delegation closes. `SIGHASH_ANYPREVOUT` (APO) is not implemented.
 Optional: SQLite 3.7.17+ (descriptor wallets), Qt 5.11+/6.2+ (GUI),
 ZeroMQ 4.0+ (notifications).
 
+The source-build baseline is Ubuntu 22.04 LTS (glibc 2.35) with GCC 11.1+.
+The prebuilt Linux archives do **not** share that floor: the
+`*-x86_64-linux-gnu*.tar.gz` assets published for v0.34.8-rc1 are linked
+against `GLIBC_2.38` and `GLIBCXX_3.4.32`, so they load on Ubuntu 24.04 and
+Debian 13 but not on Ubuntu 22.04 or Debian 12. The `GLIBCXX_*` / `CXXABI_*`
+libstdc++ nodes are a separate requirement from the libc node, and `ldd`
+showing no missing `.so` names covers neither. Build from source on the older
+LTS, or see [doc/linux-release-builds.md](doc/linux-release-builds.md) and
+[doc/btx-download-and-go.md](doc/btx-download-and-go.md).
+
 ### Linux (Ubuntu/Debian)
+
+The commands below are the supported source-build path on Ubuntu 22.04/Debian
+12; they do not make the prebuilt archives load there.
 
 ```bash
 sudo apt-get update

@@ -97,6 +97,103 @@ OPTIONAL_SIBLING_BINARIES = (
     "btx-capabilityd",
 )
 
+LINUX_WRAPPER = r"""#!/bin/sh
+set -eu
+SELF_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+REAL="$SELF_DIR/../libexec/@BINARY@.real"
+if [ ! -x "$REAL" ]; then
+  echo "BTX packaged binary is missing: $REAL" >&2
+  exit 127
+fi
+
+# Unprivileged newer-userspace prefix (dpkg-deb -x libc6 libstdc++6 libgcc-s1).
+# When set, skip the host glibc check: the prefix loader is what will run.
+if [ -n "${BTX_GLIBC_PREFIX:-}" ]; then
+  BTX_GLIBC_LOADER="${BTX_GLIBC_PREFIX}/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+  BTX_GLIBC_LIBDIR="${BTX_GLIBC_PREFIX}/usr/lib/x86_64-linux-gnu"
+  if [ ! -x "$BTX_GLIBC_LOADER" ]; then
+    echo "BTX_GLIBC_PREFIX is set but the loader is missing: $BTX_GLIBC_LOADER" >&2
+    echo "Expected a dpkg-deb -x of libc6 (and libstdc++6, libgcc-s1) into $BTX_GLIBC_PREFIX" >&2
+    exit 127
+  fi
+  exec "$BTX_GLIBC_LOADER" --library-path "$BTX_GLIBC_LIBDIR" "$REAL" "$@"
+fi
+
+btx_max_ver_sym() {
+  _file=$1
+  _pfx=$2
+  _pat="${_pfx}_[0-9]+(\.[0-9]+)+"
+  _out=""
+  if command -v objdump >/dev/null 2>&1; then
+    _out=$(objdump -T "$_file" 2>/dev/null | grep -oE "$_pat" || true)
+  fi
+  if [ -z "$_out" ] && command -v readelf >/dev/null 2>&1; then
+    _out=$(readelf -V "$_file" 2>/dev/null | grep -oE "$_pat" || true)
+  fi
+  if [ -z "$_out" ]; then
+    _out=$(grep -aoE "$_pat" "$_file" 2>/dev/null || true)
+  fi
+  printf '%s\n' "$_out" | sort -Vu | tail -1
+}
+
+btx_ver_lt() {
+  [ "$1" = "$2" ] && return 1
+  printf '%s\n%s\n' "$1" "$2" | sort -C -V
+}
+
+if command -v ldd >/dev/null 2>&1; then
+  missing="$(ldd "$REAL" 2>/dev/null | awk '/=> not found/ {print $1}' | tr '\n' ' ')"
+  if [ -n "$missing" ]; then
+    echo "BTX @BINARY@ is missing runtime libraries: $missing" >&2
+    echo "Ubuntu/Debian hint: sudo apt-get install libevent-2.1-7t64 libevent-core-2.1-7t64 libevent-extra-2.1-7t64 libevent-pthreads-2.1-7t64@EXTRA_HINT@" >&2
+    echo "  Ubuntu 24.04 / Debian 13 use the t64 spellings above; Ubuntu 22.04 / Debian 12 use libevent-2.1-7 libevent-core-2.1-7 libevent-extra-2.1-7 libevent-pthreads-2.1-7." >&2
+    echo "General hint: install the equivalent libevent, sqlite3, and zeromq runtime packages for your distribution." >&2
+    echo "A missing soname is not the GLIBC_2.38 / GLIBCXX_3.4.32 case: there the .so is present and only the version node is absent." >&2
+    echo "The packaged binary is located at: $REAL" >&2
+    exit 127
+  fi
+
+  need_glibc=$(btx_max_ver_sym "$REAL" GLIBC)
+  host_glibc=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
+  if [ -z "$host_glibc" ]; then
+    host_glibc=$(ldd --version 2>/dev/null | awk 'NR==1 {
+      for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+/) { print $i; exit }
+    }')
+  fi
+  if [ -n "$need_glibc" ] && [ -n "$host_glibc" ]; then
+    need_glibc_v=${need_glibc#GLIBC_}
+    if btx_ver_lt "$host_glibc" "$need_glibc_v"; then
+      echo "BTX @BINARY@ requires $need_glibc (this host provides GLIBC_${host_glibc})." >&2
+      echo "Debian 12 (glibc 2.36) and Ubuntu 22.04 (2.35) cannot load this archive; Ubuntu 24.04 / Debian 13 can." >&2
+      echo "ldd reported no missing .so files because libc is present; the version nodes are not." >&2
+      echo "Build from source on this host, or unpack Debian 13 libc6/libstdc++6/libgcc-s1 into a private prefix and set BTX_GLIBC_PREFIX. See doc/btx-download-and-go.md." >&2
+      echo "The packaged binary is located at: $REAL" >&2
+      exit 127
+    fi
+  fi
+
+  need_cxx=$(btx_max_ver_sym "$REAL" GLIBCXX)
+  stdcpp=$(ldd "$REAL" 2>/dev/null | awk '/libstdc\+\+\.so/ {print $3; exit}')
+  have_cxx=""
+  if [ -n "$stdcpp" ] && [ -e "$stdcpp" ]; then
+    have_cxx=$(btx_max_ver_sym "$stdcpp" GLIBCXX)
+  fi
+  if [ -n "$need_cxx" ] && [ -n "$have_cxx" ]; then
+    need_cxx_v=${need_cxx#GLIBCXX_}
+    have_cxx_v=${have_cxx#GLIBCXX_}
+    if btx_ver_lt "$have_cxx_v" "$need_cxx_v"; then
+      echo "BTX @BINARY@ requires $need_cxx (this host libstdc++ provides $have_cxx)." >&2
+      echo "GLIBCXX_3.4.32 is libstdc++ from GCC 13; Debian 12 / Ubuntu 22.04 default libstdc++ cannot load this archive." >&2
+      echo "ldd reported no missing .so files because libstdc++.so.6 is present; the version nodes are not." >&2
+      echo "Build from source on this host, or unpack Debian 13 libc6/libstdc++6/libgcc-s1 into a private prefix and set BTX_GLIBC_PREFIX. See doc/btx-download-and-go.md." >&2
+      echo "The packaged binary is located at: $REAL" >&2
+      exit 127
+    fi
+  fi
+fi
+exec "$REAL" "$@"
+"""
+
 
 def source_date_epoch() -> int:
     raw = os.environ.get("SOURCE_DATE_EPOCH")
@@ -110,26 +207,17 @@ def wrapper_payload(binary_name: str, platform_id: str) -> str | None:
         extra_hint = ""
         if binary_name == "btxd":
             extra_hint = " libsqlite3-0 libzmq5"
-        return f"""#!/bin/sh
-set -eu
-SELF_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-REAL="$SELF_DIR/../libexec/{binary_name}.real"
-if [ ! -x "$REAL" ]; then
-  echo "BTX packaged binary is missing: $REAL" >&2
-  exit 127
-fi
-if command -v ldd >/dev/null 2>&1; then
-  missing="$(ldd "$REAL" 2>/dev/null | awk '/=> not found/ {{print $1}}' | tr '\\n' ' ')"
-  if [ -n "$missing" ]; then
-    echo "BTX {binary_name} is missing runtime libraries: $missing" >&2
-    echo "Ubuntu/Debian hint: sudo apt-get install libevent-2.1-7t64 libevent-core-2.1-7t64 libevent-extra-2.1-7t64 libevent-pthreads-2.1-7t64{extra_hint}" >&2
-    echo "General hint: install the equivalent libevent, sqlite3, and zeromq runtime packages for your distribution." >&2
-    echo "The packaged binary is located at: $REAL" >&2
-    exit 127
-  fi
-fi
-exec "$REAL" "$@"
-"""
+        # ldd's "=> not found" only catches missing sonames. Debian 12 / Ubuntu
+        # 22.04 have libc.so.6 and libstdc++.so.6, so that check passes, then
+        # the loader dies on GLIBC_2.38 / GLIBCXX_3.4.32. Prefer objdump -T
+        # (then readelf -V, then a grep of the ELF) against getconf /
+        # libstdc++ version nodes. BTX_GLIBC_PREFIX skips the host check and
+        # execs through a private loader (unprivileged dpkg-deb -x prefix).
+        return (
+            LINUX_WRAPPER.replace("@BINARY@", binary_name).replace(
+                "@EXTRA_HINT@", extra_hint
+            )
+        )
     if platform_id.startswith("macos-"):
         return f"""#!/bin/sh
 set -eu

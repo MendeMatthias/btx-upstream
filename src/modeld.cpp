@@ -12,6 +12,10 @@
 
 #include <openssl/crypto.h>
 
+#ifndef WIN32
+#include <sys/stat.h>
+#endif
+
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
@@ -73,6 +77,12 @@ static void Usage()
 
 int main(int argc, char* argv[])
 {
+    // Model payloads, catalog state, and helper RPC sockets are private to the
+    // operator. Restrict file modes at process start (browser umask defaults
+    // like 0022 would expose written files to other local users).
+#ifndef WIN32
+    umask(0077);
+#endif
     modelnet::HelperConfig cfg;
     std::string decode;
     std::string transport = "pq1";

@@ -8,6 +8,7 @@
 #include <modelnet/package_pjson.h>
 #include <crypto/common.h>
 #include <crypto/sha384.h>
+#include <util/strencodings.h>
 #include <util/time.h>
 
 #include <cstring>
@@ -500,9 +501,20 @@ bool PlanBtxRuntime(const UniValue& core, const UniValue& receipt, const UniValu
     const int max_s = trusted.exists("maximum_seconds") && trusted["maximum_seconds"].isNum() ?
                           trusted["maximum_seconds"].getInt<int>() :
                           60;
-    std::string receipt_id = std::string(96, '0');
+    std::string receipt_id;
     if (receipt.exists("receipt_id") && receipt["receipt_id"].isStr() && receipt["receipt_id"].get_str().size() == 96) {
         receipt_id = receipt["receipt_id"].get_str();
+    } else {
+        std::string material = out.package_core_id.Hex();
+        material += '|';
+        material += out.profile_id;
+        material += '|';
+        material += out.adapter_id;
+        unsigned char d[CSHA384::OUTPUT_SIZE];
+        CSHA384 hasher;
+        hasher.Write(reinterpret_cast<const unsigned char*>(material.data()), material.size());
+        hasher.Finalize(d);
+        receipt_id = HexStr(Span<const unsigned char>{d, sizeof(d)});
     }
 
     UniValue resource_ids(UniValue::VARR);

@@ -132,6 +132,11 @@ BOOST_AUTO_TEST_CASE(cr12_value_07)
     std::string err;
     BOOST_CHECK(modelnet::Crl12FiniteDecimal("1.2500", err));
     BOOST_CHECK(modelnet::Crl12FiniteDecimal("100", err));
+    std::string sum;
+    BOOST_CHECK(modelnet::Crl12AddDecimal("1.2500", "2.75", sum, err));
+    BOOST_CHECK_EQUAL(sum, "4");
+    BOOST_CHECK(modelnet::Crl12AddDecimal("1234.56", "0", sum, err));
+    BOOST_CHECK_EQUAL(sum, "1234.56");
     UniValue val(UniValue::VOBJ);
     val.pushKV("value", "1.2500");
     auto r = e->Handle(hcp_test::AuthReq(*e, "POST", "/institutional/valuations", tok, &val));

@@ -57,14 +57,29 @@ bool ApplyExchangeWatchOnlyArgs(const ArgsManager& args, bilingual_str& err);
 bool EnsureExchangeWatchOnly(const CWallet& wallet, bilingual_str& err);
 bool EnsureExchangeWatchOnly(const CWallet& wallet, const ArgsManager& args, bilingual_str& err);
 
-/** True if this wallet is in the BCP/1 exchange watch-only profile, or the node arg is set. */
+/**
+ * True only when the node opted into BCP/1 with -exchange-watchonly AND this
+ * wallet is in the exchange watch-only profile (descriptor +
+ * disable_private_keys). The node arg on its own is not enough: a hardware /
+ * external-signer wallet on a node that never enabled BCP/1 must keep signing
+ * (signrawtransactionwithwallet, walletprocesspsbt, bumpfee).
+ */
 bool ExchangeWatchOnlyActive(const CWallet& wallet);
 
 /**
  * True if signing (or dumping) with wallet-resident keys must fail.
  * Callers throw RPC_WALLET_ERROR with err.original.
+ *
+ * This is in-process private material only, and only on a node that opted
+ * into BCP/1 with -exchange-watchonly. External-signer wallets also set
+ * WALLET_FLAG_DISABLE_PRIVATE_KEYS; walletprocesspsbt(sign=true) must still
+ * reach FillPSBT so the -signer adapter can sign. Use
+ * CanDelegateExternalPsbtSign to skip this guard on that RPC.
  */
 bool RefusePrivateSign(const CWallet& wallet, bilingual_str& err);
+
+/** True when FillPSBT(sign=true) should delegate to WALLET_FLAG_EXTERNAL_SIGNER. */
+bool CanDelegateExternalPsbtSign(const CWallet& wallet);
 
 /**
  * Import a pre-generated P2MR address / pubkey pool into a watch-only

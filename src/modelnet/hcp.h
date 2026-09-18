@@ -112,8 +112,14 @@ bool Cr11Approved(const UniValue& decisions, const std::string& entity, const st
 
 bool Crl12BrandDispatch(const std::string& s);
 bool Crl12FiniteDecimal(const std::string& s, std::string& err);
+bool Crl12AddDecimal(const std::string& a, const std::string& b, std::string& out, std::string& err);
+bool Crl12ScaleDecimal(const std::string& a, int64_t numerator, int64_t denominator, std::string& out, std::string& err);
 bool Crl12MetricEligible(const std::string& metric_kind, const std::string& mandate, const std::string& asset_kind);
 bool Crl12CsvSafe(const std::string& cell, std::string& out);
+std::string Crl12SchemaDigest();
+std::string Crl12OperationsDigest();
+std::string Cr11SchemaDigest();
+std::string Cr11OperationsDigest();
 
 HcpConfig HcpWalletlessPreset();
 HcpConfig HcpFundingLabPreset();

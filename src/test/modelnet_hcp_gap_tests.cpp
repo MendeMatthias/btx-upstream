@@ -9,6 +9,14 @@
 
 #include <boost/test/unit_test.hpp>
 
+#include <string>
+
+namespace modelnet {
+// Defined in hcp_engine.cpp next to RunHcpDaemon. Declared here because
+// modelnet/hcp.h is outside this change's write scope.
+bool CanonicalizeHcpBindHost(std::string& host);
+} // namespace modelnet
+
 BOOST_FIXTURE_TEST_SUITE(modelnet_hcp_gap_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(hcp_gap_gethandoff_returns_signed_envelope)
@@ -92,7 +100,8 @@ BOOST_AUTO_TEST_CASE(hcp_gap_export_persists_and_unknown_404)
     BOOST_REQUIRE_EQUAL(got.status, 200);
     UniValue ready;
     BOOST_REQUIRE(ready.read(got.body));
-    BOOST_CHECK(ready["ready"].isTrue());
+    BOOST_CHECK(ready["ready"].isFalse());
+    BOOST_CHECK(ready["retrieved"].isTrue());
     BOOST_CHECK_EQUAL(ready["export_id"].get_str(), eid);
     auto missing = e->Handle(hcp_test::AuthReq(*e, "GET", "/exports/export-missing", tok));
     BOOST_CHECK_EQUAL(missing.status, 404);
@@ -135,6 +144,66 @@ BOOST_AUTO_TEST_CASE(hcp_gap_helper_rpc_import_report_readiness)
     on.pushKV("on", true);
     BOOST_REQUIRE(modelnet::DispatchHcpRpc(cat, "sethcpreporting", on, result, code, err));
     BOOST_CHECK(result["reporting"].isTrue());
+}
+
+BOOST_AUTO_TEST_CASE(hcp_gap_policy_and_export_are_account_scoped)
+{
+    auto e = hcp_test::Lab(true);
+    const std::string tok_a = hcp_test::Token(*e, hcp_test::AllScopes());
+    e->PutAccount("account-b", 777);
+    const std::string ver = "pkce-verifier-account-b-gap";
+    const std::string ch = e->LabCreatePkceChallenge(ver);
+    const std::string code =
+        e->LabAuthorize("account-b", "client-demo", "https://app.example/cb", "state-b", ch, hcp_test::AllScopes());
+    UniValue tok;
+    std::string err;
+    BOOST_REQUIRE(e->LabToken(code, ver, "https://app.example/cb", e->LabJkt(), "", tok, err));
+    const std::string tok_b = tok["access_token"].get_str();
+
+    UniValue pol(UniValue::VOBJ);
+    pol.pushKV("policy_id", "policy-pr157-a");
+    pol.pushKV("lifetime_principal_atoms", "100000");
+    UniValue acts(UniValue::VARR);
+    acts.push_back("FUND_RELEASE");
+    pol.pushKV("allowed_actions", acts);
+    auto created = e->Handle(hcp_test::AuthReq(*e, "POST", "/policies", tok_a, &pol));
+    BOOST_REQUIRE_EQUAL(created.status, 201);
+
+    auto foreign_get = e->Handle(hcp_test::AuthReq(*e, "GET", "/policies/policy-pr157-a", tok_b));
+    BOOST_CHECK_EQUAL(foreign_get.status, 404);
+    auto foreign_rev = e->Handle(hcp_test::AuthReq(*e, "POST", "/policies/policy-pr157-a/revoke", tok_b));
+    BOOST_CHECK_EQUAL(foreign_rev.status, 404);
+
+    auto owner = e->Handle(hcp_test::AuthReq(*e, "GET", "/policies/policy-pr157-a", tok_a));
+    BOOST_REQUIRE_EQUAL(owner.status, 200);
+
+    auto ex = e->Handle(hcp_test::AuthReq(*e, "POST", "/exports", tok_a));
+    BOOST_REQUIRE_EQUAL(ex.status, 202);
+    UniValue man;
+    BOOST_REQUIRE(man.read(ex.body));
+    const std::string eid = man["export_id"].get_str();
+    auto foreign_ex = e->Handle(hcp_test::AuthReq(*e, "GET", "/exports/" + eid, tok_b));
+    BOOST_CHECK_EQUAL(foreign_ex.status, 404);
+}
+
+BOOST_AUTO_TEST_CASE(hcp_gap_bind_host_is_loopback_only)
+{
+    // btx-hcpd must never widen the bind. inet_pton() does not resolve names,
+    // so an unnormalized "localhost" leaves sin_addr at INADDR_ANY (0.0.0.0).
+    std::string localhost = "localhost";
+    BOOST_REQUIRE(modelnet::CanonicalizeHcpBindHost(localhost));
+    BOOST_CHECK_EQUAL(localhost, "127.0.0.1");
+
+    std::string loopback = "127.0.0.1";
+    BOOST_CHECK(modelnet::CanonicalizeHcpBindHost(loopback));
+    BOOST_CHECK_EQUAL(loopback, "127.0.0.1");
+
+    const char* const refused[] = {"0.0.0.0", "::1", "[::1]", "", "127.0.0.2", "localhost.example", "127.0.0.1 "};
+    for (const char* bad : refused) {
+        std::string host = bad;
+        BOOST_CHECK_MESSAGE(!modelnet::CanonicalizeHcpBindHost(host), std::string("host must be refused: '") + bad + "'");
+        BOOST_CHECK_EQUAL(host, std::string(bad));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -136,4 +136,17 @@ BOOST_AUTO_TEST_CASE(cr12_bind_12_revoked_status_stays)
     BOOST_CHECK_EQUAL(cr12_test::Body(r)["status"].get_str(), "REVOKED");
 }
 
+BOOST_AUTO_TEST_CASE(cr12_bind_13_consent_activates)
+{
+    auto e = cr12_test::Lab();
+    auto tok = cr12_test::Tok(*e);
+    UniValue a(UniValue::VOBJ);
+    a.pushKV("role", "DISCOVERY");
+    a.pushKV("owner_consent", true);
+    auto r = e->Handle(hcp_test::AuthReq(*e, "POST", "/layer/bindings", tok, &a));
+    BOOST_REQUIRE_EQUAL(r.status, 201);
+    BOOST_CHECK_EQUAL(cr12_test::Body(r)["status"].get_str(), "ACTIVE");
+    BOOST_CHECK_EQUAL(cr12_test::Body(r)["lifecycle"].get_str(), "CONSENTED");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -1518,7 +1518,7 @@ BOUNTY_PROXY(planbtxclientinstall, "InstallPlan from independently trusted catal
 BOUNTY_PROXY(planbtxruntime, "RuntimePlan only. Does not execute. No arbitrary argv or remote inference.\n")
 BOUNTY_PROXY(resolvebtxcapability, "Owner-local capability resolver. Typed plan required. Never public HTTP. automatic_spend_atoms stays 0.\n")
 BOUNTY_PROXY(planbtxcapability, "Finite CapabilityPlan. No spend. No remote inference.\n")
-BOUNTY_PROXY(ensurebtxcapability, "Execute a granted plan via existing VerifiedManifest/TransferSession credits. No second downloader.\n")
+BOUNTY_PROXY(ensurebtxcapability, "IMPLEMENTED_LAB. Runs the local fixture path for a granted plan; does not yet dereference recipe digests.\n")
 BOUNTY_PROXY(getbtxcapability, "Owner-local job/lease readiness. No public pointers.\n")
 BOUNTY_PROXY(cancelbtxcapability, "Logical cancel. Physical disposition may remain STILL_IN_FLIGHT.\n")
 BOUNTY_PROXY(releasebtxcapability, "Release a quiescent lease only.\n")

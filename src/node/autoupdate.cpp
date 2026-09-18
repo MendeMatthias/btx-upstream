@@ -115,7 +115,17 @@ bool PortValid(std::string_view port)
     return ec == std::errc{} && ptr == port.data() + port.size() && parsed != 0;
 }
 
-std::optional<std::tuple<int, int, int>> ParseVersionTriple(std::string_view raw)
+// A parsed manifest/build version: the numeric triple plus an optional release-candidate
+// number. rc == 0 marks a final release; rc > 0 means a prerelease (-rcN / rcN), which ranks
+// BELOW the matching final release.
+struct AutoUpdateVersion {
+    int major{0};
+    int minor{0};
+    int build{0};
+    int rc{0};
+};
+
+std::optional<AutoUpdateVersion> ParseAutoUpdateVersion(std::string_view raw)
 {
     std::string value = TrimAscii(raw);
     if (!value.empty() && (value.front() == 'v' || value.front() == 'V')) value.erase(value.begin());
@@ -137,11 +147,68 @@ std::optional<std::tuple<int, int, int>> ParseVersionTriple(std::string_view raw
         }
     }
 
-    if (pos < value.size()) {
-        const char suffix = value[pos];
-        if (suffix != '-' && suffix != '+' && !std::isalpha(static_cast<unsigned char>(suffix))) return std::nullopt;
+    AutoUpdateVersion version;
+    version.major = parts[0];
+    version.minor = parts[1];
+    version.build = parts[2];
+
+    if (pos >= value.size()) return version;
+
+    const char marker = value[pos];
+    if (marker != '-' && marker != '+' && !std::isalpha(static_cast<unsigned char>(marker))) return std::nullopt;
+
+    // Build metadata ("+...") never changes ordering: still a final release.
+    if (marker == '+') return version;
+
+    std::string_view suffix{value.data() + pos, value.size() - pos};
+    if (suffix.front() == '-') suffix.remove_prefix(1);
+
+    const auto lower = [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); };
+
+    // Recognized release candidate: "rcN", case-insensitive, with or without the leading '-'.
+    if (suffix.size() >= 2 && lower(suffix[0]) == 'r' && lower(suffix[1]) == 'c') {
+        suffix.remove_prefix(2);
+        // "rc" with no candidate number is malformed; fail closed (compare as not-newer).
+        if (suffix.empty()) return std::nullopt;
+        int rc{0};
+        const auto [ptr, ec] = std::from_chars(suffix.data(), suffix.data() + suffix.size(), rc);
+        if (ec != std::errc{} || ptr != suffix.data() + suffix.size() || rc <= 0) return std::nullopt;
+        version.rc = rc;
+        return version;
     }
-    return std::make_tuple(parts[0], parts[1], parts[2]);
+
+    // Any other prerelease tag (e.g. "-beta1") is not a final release. We cannot order
+    // arbitrary tags, so rank them equivalent to rc1: they never outrank a final release of
+    // the same triple and are never adopted by a node that is already on a final build.
+    version.rc = 1;
+    return version;
+}
+
+// Order two parsed versions. Returns 1 when `remote` is strictly newer than `local`, -1 when
+// older, 0 when equal. A final release (rc == 0) outranks any rcN of the same triple, and a
+// node on a final build never adopts a prerelease even when the remote triple is higher.
+int CompareAutoUpdateVersions(const AutoUpdateVersion& local, const AutoUpdateVersion& remote)
+{
+    const bool remote_newer_triple =
+        std::tie(remote.major, remote.minor, remote.build) >
+        std::tie(local.major, local.minor, local.build);
+    const bool remote_older_triple =
+        std::tie(remote.major, remote.minor, remote.build) <
+        std::tie(local.major, local.minor, local.build);
+
+    if (remote_newer_triple) {
+        // Do not replace a final release with a prerelease, even a later triple.
+        if (local.rc == 0 && remote.rc > 0) return -1;
+        return 1;
+    }
+    if (remote_older_triple) return -1;
+
+    // Same major.minor.build: final (0) > rcN, and a higher rcN is newer.
+    if (local.rc == 0 && remote.rc == 0) return 0;
+    if (local.rc == 0) return -1;
+    if (remote.rc == 0) return 1;
+    if (remote.rc != local.rc) return remote.rc > local.rc ? 1 : -1;
+    return 0;
 }
 
 std::optional<std::string> FindStringValue(const UniValue& object, std::string_view key)
@@ -280,9 +347,26 @@ std::string UrlEncodeQueryValue(std::string_view value)
     return out;
 }
 
-std::string LocalClientVersion()
+// This tree's build config exports the version triple and the full CLIENT_VERSION_STRING but
+// not the numeric CLIENT_VERSION_RC. CMake appends "rcN" to CLIENT_VERSION_STRING when
+// CLIENT_VERSION_RC > 0 (see the top-level CMakeLists.txt), so recover N from that string; a
+// final build has no suffix. Use the macro directly when a build exports it.
+int LocalClientVersionRc()
 {
-    return strprintf("%d.%d.%d", CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_BUILD);
+#ifdef CLIENT_VERSION_RC
+    return CLIENT_VERSION_RC;
+#else
+    const std::string_view version{CLIENT_VERSION_STRING};
+    const size_t marker = version.rfind("rc");
+    if (marker == std::string_view::npos || marker == 0) return 0;
+    if (!std::isdigit(static_cast<unsigned char>(version[marker - 1]))) return 0;
+    const std::string_view digits = version.substr(marker + 2);
+    if (digits.empty()) return 0;
+    int rc{0};
+    const auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), rc);
+    if (ec != std::errc{} || ptr != digits.data() + digits.size() || rc <= 0) return 0;
+    return rc;
+#endif
 }
 
 std::string HostPlatform()
@@ -762,6 +846,15 @@ AutoUpdateStatus SilentStatusForVerifierFailure(bool missing_signature)
 
 } // namespace
 
+std::string LocalClientVersion()
+{
+    std::string version = strprintf("%d.%d.%d", CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_BUILD);
+    if (const int rc = LocalClientVersionRc(); rc > 0) {
+        version += strprintf("rc%d", rc);
+    }
+    return version;
+}
+
 std::optional<AutoUpdateUrl> ParseAutoUpdateUrl(std::string_view raw_url)
 {
     const std::string url = TrimAscii(raw_url);
@@ -817,14 +910,21 @@ bool AutoUpdateUrlMatchesTrustedOrigin(std::string_view url, std::string_view tr
            parsed_url->port == parsed_origin->port;
 }
 
+int CompareAutoUpdateVersionStrings(std::string_view local_version, std::string_view remote_version)
+{
+    const auto local = ParseAutoUpdateVersion(local_version);
+    const auto remote = ParseAutoUpdateVersion(remote_version);
+    // Unparseable input is not an update: fail closed as not-newer.
+    if (!local || !remote) return 0;
+    return CompareAutoUpdateVersions(*local, *remote);
+}
+
 int CompareAutoUpdateVersion(std::string_view remote_version)
 {
-    const auto remote = ParseVersionTriple(remote_version);
+    const auto remote = ParseAutoUpdateVersion(remote_version);
     if (!remote) return 0;
-    const auto local = std::make_tuple(CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_BUILD);
-    if (*remote > local) return 1;
-    if (*remote < local) return -1;
-    return 0;
+    const AutoUpdateVersion local{CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR, CLIENT_VERSION_BUILD, LocalClientVersionRc()};
+    return CompareAutoUpdateVersions(local, *remote);
 }
 
 int AutoUpdateRolloutCohort(const AutoUpdateConfig& config)

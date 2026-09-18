@@ -37,6 +37,7 @@
 #include <wallet/wallet.h>
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -240,9 +241,48 @@ UniValue SignerHealthOrNull()
     return health;
 }
 
-std::string PoolLabel(uint32_t branch, uint32_t index)
+std::string PoolLabel(uint32_t account, uint32_t branch, uint32_t index)
 {
-    return strprintf("%s/%u", branch == bcp1::BRANCH_CHANGE ? "change" : "deposit", index);
+    const char* br = branch == bcp1::BRANCH_CHANGE ? "change" : "deposit";
+    return strprintf("%u/%s/%u", account, br, index);
+}
+
+bool LabelMatchesPool(const std::string& label, uint32_t account, uint32_t branch, uint32_t index)
+{
+    if (label == PoolLabel(account, branch, index)) return true;
+    // Legacy imports used deposit/<i> or change/<i> and omitted account.
+    if (account == 0) {
+        const std::string legacy = strprintf("%s/%u", branch == bcp1::BRANCH_CHANGE ? "change" : "deposit", index);
+        if (label == legacy) return true;
+    }
+    if (account == 0 && branch == bcp1::BRANCH_DEPOSIT && index == 0 && label == "bcp1-deposit") return true;
+    return false;
+}
+
+bool WalletHasDepositMaterial(const CWallet& wallet)
+{
+    LOCK(wallet.cs_wallet);
+    for (const auto& [dest, entry] : wallet.m_address_book) {
+        (void)dest;
+        const std::string label = entry.GetLabel();
+        if (label == "bcp1-deposit") return true;
+        if (label.find("deposit/") != std::string::npos || label.find("change/") != std::string::npos) return true;
+    }
+    return false;
+}
+
+bool ParseUint32Index(int64_t v, uint32_t& out, const char* name, std::string& err)
+{
+    if (v < 0) {
+        err = strprintf("%s cannot be negative", name);
+        return false;
+    }
+    if (v > static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+        err = strprintf("%s exceeds uint32 range", name);
+        return false;
+    }
+    out = static_cast<uint32_t>(v);
+    return true;
 }
 
 std::string P2MRAddressFromWalletTree(Span<const unsigned char> ml, Span<const unsigned char> slh)
@@ -277,25 +317,38 @@ void AttachWalletP2MR(const CWallet& wallet, bcp1::Package& pkg)
                 continue;
             }
             std::vector<unsigned char> ml_pub;
-            for (const auto& [pk, pq_key] : provider->pq_keys) {
-                if (pk.size() == MLDSA44_PUBKEY_SIZE) {
-                    ml_pub = pk;
-                    break;
-                }
-            }
-            const std::vector<unsigned char>* leaf = nullptr;
-            const std::vector<unsigned char>* control = nullptr;
+            PQAlgorithm ml_algo = PQAlgorithm::ML_DSA_44;
+            std::vector<unsigned char> slh_pub;
+            PQAlgorithm slh_algo = PQAlgorithm::SLH_DSA_128S;
+            const std::vector<unsigned char>* ml_leaf = nullptr;
+            const std::vector<unsigned char>* ml_control = nullptr;
+            const std::vector<unsigned char>* slh_leaf = nullptr;
+            const std::vector<unsigned char>* slh_control = nullptr;
             for (const auto& [script, controls] : spenddata.scripts) {
                 if (script.empty() || controls.empty()) continue;
-                if (!ml_pub.empty() &&
-                    std::search(script.begin(), script.end(), ml_pub.begin(), ml_pub.end()) != script.end()) {
+                PQAlgorithm leaf_algo;
+                std::vector<unsigned char> leaf_pk;
+                if (!ExtractP2MRChecksigPubkey(script, leaf_algo, leaf_pk)) continue;
+                if (leaf_algo == PQAlgorithm::ML_DSA_44 && !ml_leaf) {
+                    ml_pub = std::move(leaf_pk);
+                    ml_algo = leaf_algo;
+                    ml_leaf = &script;
+                    ml_control = &*controls.begin();
+                } else if (leaf_algo == PQAlgorithm::SLH_DSA_128S && !slh_leaf) {
+                    slh_pub = std::move(leaf_pk);
+                    slh_algo = leaf_algo;
+                    slh_leaf = &script;
+                    slh_control = &*controls.begin();
+                }
+            }
+            const std::vector<unsigned char>* leaf = ml_leaf ? ml_leaf : slh_leaf;
+            const std::vector<unsigned char>* control = ml_leaf ? ml_control : slh_control;
+            if (!leaf || !control) {
+                for (const auto& [script, controls] : spenddata.scripts) {
+                    if (script.empty() || controls.empty()) continue;
                     leaf = &script;
                     control = &*controls.begin();
                     break;
-                }
-                if (!leaf) {
-                    leaf = &script;
-                    control = &*controls.begin();
                 }
             }
             if (!leaf || !control) continue;
@@ -306,7 +359,10 @@ void AttachWalletP2MR(const CWallet& wallet, bcp1::Package& pkg)
             in.p2mr = std::move(spend);
             if (!ml_pub.empty()) {
                 in.pubkey = ml_pub;
-                in.algo = PQAlgorithm::ML_DSA_44;
+                in.algo = ml_algo;
+            } else if (!slh_pub.empty()) {
+                in.pubkey = slh_pub;
+                in.algo = slh_algo;
             }
             break;
         }
@@ -611,7 +667,7 @@ RPCHelpMan getexchangereadiness()
             {RPCResult::Type::STR, "network", "Chain type string"},
             {RPCResult::Type::BOOL, "watch_only", "disable_private_keys and/or -exchange-watchonly"},
             {RPCResult::Type::BOOL, "public_child_derivation", "Always false for ML-DSA-44"},
-            {RPCResult::Type::BOOL, "ready", "Coordinator can construct and observe without keys"},
+            {RPCResult::Type::BOOL, "ready", "True only when descriptors, disable_private_keys, not IBD, and a deposit pool or healthy signer exist"},
             {RPCResult::Type::ELISION, "", "additional BCP/1 readiness fields"},
         }},
         RPCExamples{HelpExampleCli("getexchangereadiness", "") + HelpExampleRpc("getexchangereadiness", "")},
@@ -652,12 +708,26 @@ RPCHelpMan getexchangereadiness()
             o.pushKV("gpu_required", false);
             o.pushKV("automatic_spend_atoms", 0);
             o.pushKV("can_sign_in_process", !IsBcp1WatchOnly(*pwallet));
-            const bool keys_ok = !NodeExchangeWatchOnly() || pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS);
-            const bool ready = pwallet->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS) && keys_ok &&
-                               !pwallet->chain().isInitialBlockDownload();
+            const UniValue signer = SignerHealthOrNull();
+            const bool signer_available = signer.isObject() && signer.exists("available") && signer["available"].isTrue();
+            const bool has_pool = WalletHasDepositMaterial(*pwallet);
+            const bool descriptors = pwallet->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS);
+            const bool disable_private_keys = pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS);
+            const bool synced = !pwallet->chain().isInitialBlockDownload();
+            UniValue caps(UniValue::VOBJ);
+            caps.pushKV("descriptors", descriptors);
+            caps.pushKV("disable_private_keys", disable_private_keys);
+            caps.pushKV("synced", synced);
+            caps.pushKV("deposit_pool", has_pool);
+            caps.pushKV("signer_available", signer_available);
+            caps.pushKV("external_signer", pwallet->IsWalletFlagSet(WALLET_FLAG_EXTERNAL_SIGNER));
+            o.pushKV("ready_capabilities", caps);
+            // Empty descriptor wallets are not exchange-ready: they cannot
+            // construct or observe deposits until a pool or signer exists.
+            const bool ready = descriptors && disable_private_keys && synced && (has_pool || signer_available);
             o.pushKV("ready", ready);
             o.pushKV("signer_configured", !gArgs.GetArg("-signer", "").empty());
-            o.pushKV("signer", SignerHealthOrNull());
+            o.pushKV("signer", signer);
             return o;
         },
     };
@@ -702,8 +772,11 @@ RPCHelpMan deriveexchangeaddress()
             int64_t index64 = -1;
             if (first.isNum()) index64 = first.getInt<int64_t>();
             else if (opt.exists("index")) index64 = opt["index"].getInt<int64_t>();
-            if (index64 < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "index cannot be negative");
-            const uint32_t index = static_cast<uint32_t>(index64);
+            uint32_t index = 0;
+            std::string idx_err;
+            if (!ParseUint32Index(index64, index, "index", idx_err)) {
+                throw JSONRPCError(RPC_INVALID_PARAMETER, idx_err);
+            }
             uint32_t branch = bcp1::BRANCH_DEPOSIT;
             uint32_t account = 0;
             PQAlgorithm algo = PQAlgorithm::ML_DSA_44;
@@ -713,22 +786,22 @@ RPCHelpMan deriveexchangeaddress()
                 branch = static_cast<uint32_t>(b);
             }
             if (opt.exists("account")) {
-                const int a = opt["account"].getInt<int>();
-                if (a < 0) throw JSONRPCError(RPC_INVALID_PARAMETER, "account cannot be negative");
-                account = static_cast<uint32_t>(a);
+                std::string acc_err;
+                if (!ParseUint32Index(opt["account"].getInt<int64_t>(), account, "account", acc_err)) {
+                    throw JSONRPCError(RPC_INVALID_PARAMETER, acc_err);
+                }
             }
             if (opt.exists("algorithm") && !bcp1::ParseAlgo(opt["algorithm"].get_str(), algo)) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "unknown algorithm");
             }
-            const std::string want = PoolLabel(branch, index);
+            const std::string want = PoolLabel(account, branch, index);
             const std::string path = strprintf("m/87h/%uh/%uh/%u/%u",
                                                Params().IsTestChain() ? 1 : 0, account, branch, index);
             {
                 LOCK(pwallet->cs_wallet);
                 for (const auto& [dest, entry] : pwallet->m_address_book) {
                     const std::string label = entry.GetLabel();
-                    if (label == want ||
-                        (branch == bcp1::BRANCH_DEPOSIT && index == 0 && label == "bcp1-deposit")) {
+                    if (LabelMatchesPool(label, account, branch, index) || label == want) {
                         UniValue o(UniValue::VOBJ);
                         o.pushKV("address", EncodeDestination(dest));
                         o.pushKV("index", static_cast<int64_t>(index));
@@ -788,7 +861,7 @@ RPCHelpMan importdepositpool()
                     {"address", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "P2MR address"},
                     {"pubkey", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "Watch-only ML-DSA-44 pubkey"},
                     {"pubkey_slh", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "Watch-only SLH-DSA-128s pubkey (default 2-leaf wallet tree)"},
-                    {"label", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Address-book label (default deposit/<index>)"},
+                    {"label", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Address-book label (default <account>/deposit|change/<index>)"},
                     {"branch", RPCArg::Type::NUM, RPCArg::Default{0}, "0 deposit / 1 change"},
                 }},
             }, RPCArgOptions{.skip_type_check = true}},
@@ -797,9 +870,11 @@ RPCHelpMan importdepositpool()
             }},
         },
         RPCResult{RPCResult::Type::OBJ, "", "", {
+            {RPCResult::Type::ELISION, "", "BCP/1 fields"},
             {RPCResult::Type::BOOL, "success", "true if imported"},
             {RPCResult::Type::NUM, "imported", "Number of descriptors added"},
             {RPCResult::Type::BOOL, "solvable", "false when any entry was address-only (addr()) and cannot fill signing digests"},
+            {RPCResult::Type::BOOL, "address_only", "true when any entry was address-only"},
             {RPCResult::Type::BOOL, "public_child_derivation", "Always false"},
             {RPCResult::Type::BOOL, "rescan", "Whether a rescan ran"},
             {RPCResult::Type::ELISION, "", "warnings"},

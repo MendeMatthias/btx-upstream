@@ -191,7 +191,8 @@ BOOST_AUTO_TEST_CASE(cr11_scale_07_slow_export_consumer)
     const std::string hid = cr11_test::Json(r)["export_id"].get_str();
     r = e->Handle(hcp_test::AuthReq(*e, "GET", "/exports/" + hid, tok));
     BOOST_CHECK_EQUAL(r.status, 200);
-    BOOST_CHECK(cr11_test::Json(r)["ready"].isTrue());
+    BOOST_CHECK(cr11_test::Json(r)["ready"].isFalse());
+    BOOST_CHECK(cr11_test::Json(r)["retrieved"].isTrue());
     BOOST_CHECK(r.body.find("SECRET-EXPORT") == std::string::npos);
 
     const UniValue pub = e->ExportPublic(false);
