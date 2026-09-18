@@ -5,11 +5,13 @@
 // AHP-API-01..08 helper RPC aliases. Frame/core/signature/trust stay separate.
 
 #include <modelnet/catalog.h>
+#include <modelnet/hello_caps.h>
 #include <modelnet/helper.h>
 #include <modelnet/http_bridge.h>
 #include <modelnet/package_acquisition.h>
 #include <modelnet/package_core.h>
 #include <test/util/setup_common.h>
+#include <test/modelnet_n02_idem.h>
 #include <univalue.h>
 #include <util/fs.h>
 
@@ -29,8 +31,9 @@ namespace {
 
 UniValue Rpc(const std::string& method, const UniValue& o)
 {
+    UniValue inner = WithN02Idempotency(method, o);
     UniValue params(UniValue::VARR);
-    params.push_back(o);
+    params.push_back(inner);
     UniValue req(UniValue::VOBJ);
     req.pushKV("method", method);
     req.pushKV("params", params);
@@ -93,6 +96,31 @@ BOOST_AUTO_TEST_CASE(ahp_api_01_capabilities)
     BOOST_CHECK(!result["wallet_sign"].get_bool());
     BOOST_CHECK(!result["writes_project_agents_md"].get_bool());
     BOOST_CHECK(!result["remote_inference"].get_bool());
+
+    const UniValue advertised = modelnet::HelloCapabilityArray();
+    BOOST_REQUIRE(advertised.isArray());
+    bool saw_handoff = false, saw_core_v2 = false, saw_pkg = false;
+    for (const auto& c : advertised.getValues()) {
+        std::string n;
+        BOOST_REQUIRE(modelnet::HelloCapabilityEntryName(c, n));
+        BOOST_CHECK(c.isObject());
+        BOOST_CHECK(c.exists("min") && c.exists("max"));
+        if (n == "AGENT_HANDOFF_V1") saw_handoff = true;
+        if (n == "BTXPKG_CORE_V2") saw_core_v2 = true;
+        if (n == "PACKAGE_V1") saw_pkg = true;
+    }
+    BOOST_CHECK(saw_handoff);
+    BOOST_CHECK(saw_core_v2);
+    BOOST_CHECK(saw_pkg);
+
+    UniValue hello(UniValue::VOBJ);
+    hello.pushKV("capabilities", advertised);
+    BOOST_CHECK(modelnet::HelloHasCapability(hello, "AGENT_HANDOFF_V1"));
+    UniValue str_caps(UniValue::VARR);
+    str_caps.push_back("AGENT_HANDOFF_V1");
+    UniValue hello_str(UniValue::VOBJ);
+    hello_str.pushKV("capabilities", str_caps);
+    BOOST_CHECK(modelnet::HelloHasCapability(hello_str, "AGENT_HANDOFF_V1"));
 
     std::string alias_of;
     BOOST_CHECK_EQUAL(modelnet::ResolveHelperMethodAlias("inspectbtxpackage", alias_of), "inspectbtxpackage");

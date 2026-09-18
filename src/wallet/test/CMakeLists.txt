@@ -27,6 +27,7 @@ target_sources(test_btx
     wallet_transaction_tests.cpp
     walletdb_tests.cpp
     walletload_tests.cpp
+    bcp1_tests.cpp
     ../../test/shielded_coin_selection_tests.cpp
     ../../test/shielded_wallet_address_tests.cpp
 )

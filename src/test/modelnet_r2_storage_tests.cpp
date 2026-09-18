@@ -422,4 +422,37 @@ BOOST_AUTO_TEST_CASE(r2s_08_write_creds_break_fake_signing)
     BOOST_CHECK_EQUAL(client.Fake()->ObjectCount(), 0U);
 }
 
+BOOST_AUTO_TEST_CASE(r2s_09_physical_whole_file_and_large_extents_fakes3)
+{
+    const fs::path creds = m_path_root / "r2s-09-creds";
+    WriteCreds(creds, kFixtureAccess, kFixtureSecret);
+    modelnet::CloudStoreConfig cfg = BaseCfg(creds);
+    modelnet::S3PieceStore store{cfg};
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(store.Init(err), err);
+
+    modelnet::Digest48 artifact;
+    artifact.data.fill(0x42);
+    const std::vector<unsigned char> whole{'w', 'h', 'o', 'l', 'e'};
+    BOOST_REQUIRE(store.PutWholeFile(artifact, 0, Span<const unsigned char>{whole}, err));
+    std::vector<unsigned char> got;
+    BOOST_REQUIRE(store.GetWholeFile(artifact, 0, got, err));
+    BOOST_CHECK_EQUAL_COLLECTIONS(got.begin(), got.end(), whole.begin(), whole.end());
+
+    const std::vector<unsigned char> ext0{'e', '0'};
+    const std::vector<unsigned char> ext1{'e', '1'};
+    BOOST_REQUIRE(store.PutLargeExtent(artifact, 0, 0, Span<const unsigned char>{ext0}, err));
+    BOOST_REQUIRE(store.PutLargeExtent(artifact, 0, 1, Span<const unsigned char>{ext1}, err));
+    got.clear();
+    BOOST_REQUIRE(store.GetLargeExtent(artifact, 0, 0, got, err));
+    BOOST_CHECK_EQUAL_COLLECTIONS(got.begin(), got.end(), ext0.begin(), ext0.end());
+    got.clear();
+    BOOST_REQUIRE(store.GetLargeExtent(artifact, 0, 1, got, err));
+    BOOST_CHECK_EQUAL_COLLECTIONS(got.begin(), got.end(), ext1.begin(), ext1.end());
+
+    const auto plan = modelnet::PlanObjectLayout(whole.size() + ext0.size() + ext1.size(),
+                                                 modelnet::PhysicalObjectLayout::WHOLE_FILE);
+    BOOST_CHECK(!plan.replaces_source_files);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

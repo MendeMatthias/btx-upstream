@@ -512,6 +512,7 @@ class ModelNetMinioLayoutsTest(BitcoinTestFramework):
             "use_fake": fake,
             "allow_http_loopback": not fake,
             "automatic_spend_atoms": 0,
+            "idempotency_key": f"minio-{layout}-{'fake' if fake else 'live'}",
         }
 
     def _run_matrix(self, fake):
@@ -525,6 +526,7 @@ class ModelNetMinioLayoutsTest(BitcoinTestFramework):
                 "endpoint": "https://acct.r2.cloudflarestorage.com",
                 "bucket": BUCKET,
                 "aws_secret_access_key": "supersecretvalue",
+                "idempotency_key": "minio-secret-reject",
             })
             raise AssertionError("setcloudstorage must reject raw secrets in RPC JSON")
         except JSONRPCException as exc:
@@ -537,6 +539,7 @@ class ModelNetMinioLayoutsTest(BitcoinTestFramework):
         try:
             cfg = self._cloud_cfg("AUTO", fake)
             cfg["allow_link_local"] = True
+            cfg["idempotency_key"] = f"minio-link-local-{'fake' if fake else 'live'}"
             node.setcloudstorage(cfg)
             raise AssertionError("setcloudstorage must reject allow_link_local")
         except JSONRPCException as exc:

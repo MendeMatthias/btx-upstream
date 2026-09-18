@@ -8,6 +8,7 @@
 #include <modelnet/bootstrap_distributor.h>
 #include <modelnet/catalog.h>
 #include <modelnet/erasure_store.h>
+#include <modelnet/helper.h>
 #include <modelnet/import_plan.h>
 #include <modelnet/index_reconcile.h>
 #include <modelnet/io_executor.h>
@@ -499,6 +500,65 @@ BOOST_AUTO_TEST_CASE(io_executor_drain_is_not_io_uring)
     BOOST_CHECK_EQUAL(io.Outstanding(), 0);
     BOOST_REQUIRE(io.Submit(err));
     BOOST_CHECK(!io.StatusJson()["io_uring"].get_bool());
+}
+
+BOOST_AUTO_TEST_CASE(n02_upload_policy_idempotency_key_required_and_conflict)
+{
+    const fs::path tmp = m_path_root / "n02-upload-idem";
+    modelnet::ModelCatalog cat{tmp / "cat", 1 << 20};
+    UniValue params(UniValue::VARR);
+    UniValue body(UniValue::VOBJ);
+    body.pushKV("max_slots", 3);
+    params.push_back(body);
+    UniValue result;
+    std::string code, err;
+    BOOST_CHECK(!modelnet::DispatchNetwork02Rpc(cat, "setmodeluploadpolicy", params, result, code, err));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK_EQUAL(result["automatic_spend_atoms"].getInt<int>(), 0);
+
+    body.pushKV("idempotency_key", "n02-tests-upload-k1");
+    params = UniValue(UniValue::VARR);
+    params.push_back(body);
+    BOOST_REQUIRE(modelnet::DispatchNetwork02Rpc(cat, "setmodeluploadpolicy", params, result, code, err));
+    const std::string first = result.write();
+    UniValue replay;
+    BOOST_REQUIRE(modelnet::DispatchNetwork02Rpc(cat, "setmodeluploadpolicy", params, replay, code, err));
+    BOOST_CHECK_EQUAL(first, replay.write());
+
+    UniValue other = body;
+    other.pushKV("max_slots", 11);
+    UniValue conflict_params(UniValue::VARR);
+    conflict_params.push_back(other);
+    UniValue conflicted;
+    BOOST_CHECK(!modelnet::DispatchNetwork02Rpc(cat, "setmodeluploadpolicy", conflict_params, conflicted, code, err));
+    BOOST_CHECK(code == "IDEMPOTENCY_CONFLICT" || code == "REJECTED");
+    BOOST_CHECK_EQUAL(conflicted["status"].get_str(), "REJECTED");
+    BOOST_CHECK_EQUAL(conflicted["automatic_spend_atoms"].getInt<int>(), 0);
+
+    UniValue info;
+    BOOST_REQUIRE(modelnet::DispatchNetwork02Rpc(cat, "getmodeluploadinfo", UniValue(UniValue::VARR), info, code, err));
+    BOOST_CHECK_EQUAL(info["max_slots"].getInt<int>(), 3);
+}
+
+BOOST_AUTO_TEST_CASE(n02_helper_path_cloud_mirror_require_idempotency_key)
+{
+    const fs::path tmp = m_path_root / "n02-helper-idem";
+    modelnet::ModelCatalog cat{tmp / "cat", 1 << 20};
+    UniValue result;
+    std::string code, err;
+    const char* methods[] = {"setcloudstorage", "setmodelstoragepolicy", "setmodelmirror"};
+    for (const char* method : methods) {
+        UniValue req(UniValue::VOBJ);
+        req.pushKV("method", method);
+        req.pushKV("params", UniValue(UniValue::VARR));
+        result = UniValue(UniValue::VOBJ);
+        code.clear();
+        err.clear();
+        BOOST_CHECK_MESSAGE(!modelnet::DispatchHelperRpc(cat, req, result, code, err),
+                            std::string(method) + " helper path accepted a costly write without idempotency_key");
+        BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+        BOOST_CHECK_EQUAL(result["automatic_spend_atoms"].getInt<int>(), 0);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

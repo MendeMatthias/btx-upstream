@@ -376,7 +376,7 @@ class ModelNet0348Test(BitcoinTestFramework):
             raise AssertionError(f"torrentd: {transport}")
         self._zero_spend(transport, "transport")
 
-        pkg = node.createbtxpackage({"kind": "btxbundle", "schema_version": 1})
+        pkg = node.createbtxpackage({"kind": "btxbundle", "schema_version": 1, "idempotency_key": "0348-create-pkg"})
         hex_blob = pkg.get("hex")
         if not isinstance(hex_blob, str) or len(hex_blob) < 2:
             raise AssertionError(f"createbtxpackage hex: {pkg}")
@@ -384,13 +384,13 @@ class ModelNet0348Test(BitcoinTestFramework):
             raise AssertionError(f"createbtxpackage magnet_analog: {pkg}")
         self._zero_spend(pkg, "createbtxpackage")
 
-        bundle = node.exportbtxbundle({"kind": "btxbundle", "schema_version": 1})
+        bundle = node.exportbtxbundle({"kind": "btxbundle", "schema_version": 1, "idempotency_key": "0348-export-bundle"})
         if bundle.get("magnet_analog") is not False:
             raise AssertionError(f"exportbtxbundle magnet_analog: {bundle}")
         if bundle.get("wallet_signed") is True:
             raise AssertionError(f"exportbtxbundle must not wallet-sign: {bundle}")
         self._zero_spend(bundle, "exportbtxbundle")
-        pkg_alias = node.exportbtxpackage({"kind": "btxbundle", "schema_version": 1})
+        pkg_alias = node.exportbtxpackage({"kind": "btxbundle", "schema_version": 1, "idempotency_key": "0348-export-pkg"})
         if pkg_alias.get("magnet_analog") is not False:
             raise AssertionError(f"exportbtxpackage magnet_analog: {pkg_alias}")
         self._zero_spend(pkg_alias, "exportbtxpackage")
@@ -425,6 +425,7 @@ class ModelNet0348Test(BitcoinTestFramework):
             "stripe_count": 2,
             "final_real_piece_count": 16,
             "shard_index_root": "b" * 96,
+            "idempotency_key": "0348-erasure",
             "stripes": [
                 {"index": 0, "positions": list(range(16))},
                 {"index": 1, "positions": list(range(15))},
@@ -576,6 +577,7 @@ class ModelNet0348Test(BitcoinTestFramework):
                 "destination_path": "model.safetensors",
                 "size_bytes": len(st_bytes),
             }],
+            "idempotency_key": "0348-import-local",
         }
         imported = self._call_or_skip(node, "executemodelimport", import_plan, "executemodelimport")
         if imported is not None:

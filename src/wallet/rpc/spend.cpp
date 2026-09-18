@@ -19,6 +19,7 @@
 #include <wallet/feebumper.h>
 #include <wallet/fees.h>
 #include <wallet/rpc/util.h>
+#include <wallet/bcp1_watchonly.h>
 #include <wallet/spend.h>
 #include <wallet/wallet.h>
 
@@ -1086,6 +1087,11 @@ RPCHelpMan signrawtransactionwithwallet()
     const std::shared_ptr<const CWallet> pwallet = GetWalletForJSONRPCRequest(request);
     if (!pwallet) return UniValue::VNULL;
 
+    bilingual_str refuse_err;
+    if (RefusePrivateSign(*pwallet, refuse_err)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+    }
+
     CMutableTransaction mtx;
     if (!DecodeHexTx(mtx, request.params[0].get_str())) {
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "TX decode failed. Make sure the tx has at least one input.");
@@ -1844,6 +1850,13 @@ RPCHelpMan walletprocesspsbt()
         if (request.params.size() > 2) {
             // Same behaviour as too many args passed normally
             throw std::runtime_error(self.ToString());
+        }
+    }
+
+    if (sign) {
+        bilingual_str refuse_err;
+        if (RefusePrivateSign(wallet, refuse_err)) {
+            throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
         }
     }
 

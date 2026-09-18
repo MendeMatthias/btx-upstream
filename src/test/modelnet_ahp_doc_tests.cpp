@@ -15,13 +15,15 @@
 // AHP-DOC-11 explicit safe extraction
 // AHP-DOC-12 translated prose
 //
-// In-process except the AHP-DOC-09 / JIT-API-07 btx-open spawn. Never writes
-// AGENTS.md to m_path_root, $HOME, or the project.
+// In-process except the AHP-DOC-09 / JIT-API-07 btx-open spawn (inspect + fail-closed).
+// Never writes AGENTS.md to m_path_root, $HOME, or the project.
 
 #include <bitcoin-build-config.h> // IWYU pragma: keep
 
+#include <crypto/common.h>
 #include <crypto/hex_base.h>
 #include <crypto/sha384.h>
+#include <modelnet/package_bundle.h>
 #include <modelnet/package_core.h>
 #include <modelnet/package_documents.h>
 #include <span.h>
@@ -34,14 +36,18 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <sys/wait.h>
 #include <system_error>
 #include <unistd.h>
 #include <vector>
@@ -255,6 +261,25 @@ std::string ShellQuote(const std::string& s)
     }
     q += "'";
     return q;
+}
+
+struct BtxOpenRun {
+    int wait_status{0};
+    std::string stdout_text;
+};
+
+BtxOpenRun SpawnBtxOpen(const fs::path& file)
+{
+    BtxOpenRun run;
+    const std::string cmd = ShellQuote(MODELNET_BTX_OPEN_PATH) + " " + ShellQuote(fs::PathToString(file));
+    FILE* fp = popen(cmd.c_str(), "r");
+    BOOST_REQUIRE(fp);
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), fp) != nullptr) {
+        run.stdout_text.append(buf);
+    }
+    run.wait_status = pclose(fp);
+    return run;
 }
 #endif
 
@@ -741,6 +766,63 @@ BOOST_AUTO_TEST_CASE(ahp_doc_09_btx_open_does_not_write_workspace)
     }
     BOOST_CHECK_EQUAL(CountAgentsMd(workspace), agents_before);
     BOOST_CHECK(!fs::exists(m_path_root / "AGENTS.md"));
+}
+
+BOOST_AUTO_TEST_CASE(ahp_doc_09_btx_open_fail_closed_json)
+{
+#ifndef MODELNET_BTX_OPEN_PATH
+    BOOST_TEST_MESSAGE("AHP-DOC-09 fail-closed btx-open spawn NOT_RUN: MODELNET_BTX_OPEN_PATH unset");
+#else
+    const fs::path dir = m_path_root / "ahp-doc-09-fail-closed";
+    fs::create_directories(dir);
+
+    auto check_error_json = [](const BtxOpenRun& run, const char* code) {
+        BOOST_REQUIRE_MESSAGE(WIFEXITED(run.wait_status), run.stdout_text);
+        BOOST_REQUIRE(!WIFSIGNALED(run.wait_status));
+        BOOST_CHECK_NE(WEXITSTATUS(run.wait_status), 0);
+        UniValue o;
+        BOOST_REQUIRE_MESSAGE(o.read(run.stdout_text), run.stdout_text);
+        BOOST_REQUIRE(o.exists("error") && o["error"].isObject());
+        BOOST_CHECK_EQUAL(o["error"]["code"].get_str(), code);
+        BOOST_CHECK_EQUAL(o["automatic_spend_atoms"].getInt<int64_t>(), 0);
+        BOOST_CHECK(!o["agents_md_write"].get_bool());
+    };
+
+    {
+        const fs::path p = dir / "int-overflow-core-version.btx";
+        WriteFile(p, R"({"core":{"version":2147483648}})");
+        check_error_json(SpawnBtxOpen(p), "UNSUPPORTED_CORE_VERSION");
+    }
+    {
+        const fs::path p = dir / "core-v4.btx";
+        WriteFile(p, R"({"core":{"version":4}})");
+        check_error_json(SpawnBtxOpen(p), "CORE_V4_FORBIDDEN");
+    }
+    {
+        const fs::path p = dir / "core-v1.btx";
+        WriteFile(p, R"({"core":{"version":1}})");
+        const BtxOpenRun run = SpawnBtxOpen(p);
+        BOOST_CHECK(WIFEXITED(run.wait_status));
+        BOOST_CHECK_EQUAL(WEXITSTATUS(run.wait_status), 0);
+        BOOST_CHECK(run.stdout_text.find("core_version=1") != std::string::npos);
+        BOOST_CHECK(run.stdout_text.find("CORE_V4_FORBIDDEN") == std::string::npos);
+    }
+    {
+        std::vector<unsigned char> h(68, 0);
+        std::memcpy(h.data(), modelnet::BTXPKG_MAGIC, 8);
+        WriteLE32(h.data() + 8, modelnet::BTXPKG_CORE_FLAGS);
+        WriteLE64(h.data() + 12, std::numeric_limits<uint64_t>::max());
+        const fs::path p = dir / "claimed-len-max.btx";
+        std::ofstream out{p, std::ios::binary | std::ios::trunc};
+        BOOST_REQUIRE(out.good());
+        out.write(reinterpret_cast<const char*>(h.data()), static_cast<std::streamsize>(h.size()));
+        BOOST_REQUIRE(out.good());
+        out.close();
+        check_error_json(SpawnBtxOpen(p), "PACKAGE_TOO_LARGE");
+    }
+    BOOST_CHECK(!fs::exists(dir / "AGENTS.md"));
+    BOOST_CHECK(!fs::exists(m_path_root / "AGENTS.md"));
+#endif
 }
 
 BOOST_AUTO_TEST_CASE(ahp_doc_10_readable_sidecar_mismatch)

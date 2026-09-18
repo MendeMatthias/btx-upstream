@@ -1,11 +1,13 @@
 # Storage backends (0.34.8-dev)
 
 **Status:** **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`). Not a
-shipping tag. Last shipping tag is **v0.34.7**. This page describes the
-intended layout. Helper cloud RPCs exist in this tree. FakeS3 is
-**unit-tested**. Live HTTPS/R2 is **NOT_RUN**. CLI verbs still fail closed if
-an older helper lacks the method. This document is **not** a PASS, not WAN
-evidence, and not a claim that a live origin is attached.
+shipping tag (`IS_RELEASE=false` means this tree is not sealed, not that
+the code is missing). Last shipping tag is **v0.34.7**. This page describes
+the intended layout. Helper MinIO / cloud RPCs **exist** in this tree
+(`setcloudstorage` / `testcloudstorage` / `getcloudstorageinfo`). FakeS3 is
+**unit-tested**. Live R2 WAN is **HONEST_NOT_RUN**. CLI verbs still fail
+closed if an older helper lacks the method. This document is **not** a PASS,
+not WAN evidence, and not a claim that a live origin is attached.
 
 People: [HUMANS.md](../../HUMANS.md) and [first-run.md](first-run.md).
 Agents: [AGENTS.md](../../AGENTS.md) and [agent-recipes.md](agent-recipes.md).
@@ -31,13 +33,13 @@ include bucket, URL, or layout.
 |---|---|---|
 | Local filesystem `ModelStore` | yes | still the swarm body |
 | `hostmodel` / watch folder | yes | unchanged |
-| S3 / R2 / MinIO backend | **not shipped** | FakeS3 **unit-tested**; live HTTPS/R2 **NOT_RUN**; RPCs exist; wrapper fails closed if an older helper lacks the method |
+| S3 / R2 / MinIO backend | not in the 0.34.7 shipping tag | RPCs **exist**; FakeS3 **unit-tested**; live R2 WAN **HONEST_NOT_RUN**; wrapper fails closed if an older helper lacks the method |
 | Cloud layout AUTO | n/a | R2 AUTO → `SOURCE_FILES` + `STREAM_FILE` |
 
 FakeS3 (`use_fake=true`) is the tested transport. OpenSSL HTTPS client
 transport is compiled (`S3HttpsTransportAvailable()`), but a live Cloudflare
-R2 round-trip is **NOT_RUN** (not PASS). SCALE huge / 400GiB body stream is
-**NOT_RUN**. R2 AUTO is `SOURCE_FILES` +
+R2 WAN round-trip is **HONEST_NOT_RUN** (not PASS). SCALE huge / 400GiB body
+stream is **NOT_RUN**. R2 AUTO is `SOURCE_FILES` +
 `STREAM_FILE`. Pieces remain the swarm unit. Qt Models page watches/cloud
 panels are 0.34.8-dev **source**; this tree is `BUILD_GUI=OFF` (do not claim
 `bitcoin-qt` was built). `CLIENT_VERSION_IS_RELEASE=false`.
@@ -92,7 +94,8 @@ reachability, auth, read/write, latency, error counts, bytes, and GET / PUT
 / HEAD / Range / multipart / presign counts, plus budget remaining (lifetime
 and UTC day/month windows when configured). **No
 secrets.** FakeS3 is unit-tested. `testcloudstorage` is a **local helper
-probe**, not a live HTTPS/R2 receipt and not a PASS.
+probe**, not a live R2 WAN receipt and not a PASS. Live R2 WAN remains
+**HONEST_NOT_RUN**.
 
 ## Dollar prices are not protocol
 

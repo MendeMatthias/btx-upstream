@@ -16,6 +16,7 @@
 #include <modelnet/helper.h>
 #include <modelnet/http_bridge.h>
 #include <modelnet/package_bundle.h>
+#include <modelnet/package_core.h>
 #include <modelnet/package_pjson.h>
 #include <modelnet/piece_picker.h>
 #include <modelnet/piece_ranges.h>
@@ -126,6 +127,55 @@ BOOST_AUTO_TEST_CASE(unique_todo_f2_wallet_sign)
     BOOST_CHECK(!created.exists("wallet_seed"));
     ZeroSpend(created, "F2 createsubscriptionmandate");
     BOOST_TEST_MESSAGE("HONEST_NOT_RUN F2 wallet-signed mandate; wallet_sign stays false");
+}
+
+BOOST_AUTO_TEST_CASE(unique_todo_getsubscriptionactivity)
+{
+    modelnet::ModelCatalog cat{m_path_root / "todo-subact", 1 << 20};
+    std::string code, err;
+    UniValue p(UniValue::VARR);
+    p.push_back(MandateJson());
+    UniValue created;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("createsubscriptionmandate", p), created, code, err), err);
+    ZeroSpend(created, "getsubscriptionactivity create");
+    const std::string mid = created["mandate_id"].get_str();
+
+    UniValue rsv(UniValue::VOBJ);
+    rsv.pushKV("mandate_id", mid);
+    rsv.pushKV("event_id", "e-todo-act");
+    rsv.pushKV("publisher_id", std::string(96, 'b'));
+    rsv.pushKV("object_kind", "RELEASE");
+    rsv.pushKV("action", "FUND_WITH_MANDATE");
+    UniValue terms(UniValue::VOBJ);
+    terms.pushKV("terms_id", std::string(96, 'd'));
+    terms.pushKV("publisher_id", std::string(96, 'b'));
+    terms.pushKV("network_id", std::string(64, '0'));
+    terms.pushKV("principal_atoms", "1");
+    terms.pushKV("fee_atoms", "0");
+    terms.pushKV("object_kind", "RELEASE");
+    terms.pushKV("confirmations", 1);
+    rsv.pushKV("signed_terms", terms);
+    UniValue rparams(UniValue::VARR);
+    rparams.push_back(rsv);
+    UniValue reserved;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("reservesubscriptionmandate", rparams), reserved, code, err), err);
+    ZeroSpend(reserved, "getsubscriptionactivity reserve");
+
+    UniValue ap(UniValue::VOBJ);
+    ap.pushKV("mandate_id", mid);
+    ap.pushKV("limit", 10);
+    UniValue aparams(UniValue::VARR);
+    aparams.push_back(ap);
+    UniValue activity;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("getsubscriptionactivity", aparams), activity, code, err), err);
+    ZeroSpend(activity, "getsubscriptionactivity");
+    BOOST_REQUIRE(activity.exists("actions") && activity["actions"].isArray());
+    BOOST_REQUIRE_EQUAL(activity["actions"].size(), 1U);
+    BOOST_CHECK_EQUAL(activity["actions"][0]["event_id"].get_str(), "e-todo-act");
+    BOOST_CHECK_EQUAL(activity["actions"][0]["terms_id"].get_str(), std::string(96, 'd'));
+    BOOST_CHECK(activity["actions"][0]["txid"].get_str().empty());
+    BOOST_CHECK(activity["telemetry"].isFalse());
+    BOOST_CHECK(!activity["wallet_signed"].get_bool());
 }
 
 BOOST_AUTO_TEST_CASE(unique_todo_a2_modelindex)
@@ -688,14 +738,17 @@ BOOST_AUTO_TEST_CASE(unique_todo_ordinary_tools_inspect)
     const std::string raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     BOOST_REQUIRE_GE(raw.size(), 8U);
     BOOST_CHECK_EQUAL(raw.compare(0, 8, "BTXPKG\x00\x01", 8), 0);
-    UniValue pkg;
     std::string err;
     const auto bytes = Span<const unsigned char>{reinterpret_cast<const unsigned char*>(raw.data()), raw.size()};
-    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxBundle(bytes, pkg, err), err);
-    BOOST_REQUIRE(pkg.exists("core") && pkg["core"].isObject());
-    BOOST_REQUIRE(pkg["core"]["documents"].isArray());
+    UniValue as_bundle;
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(bytes, as_bundle, err));
+    BOOST_CHECK_EQUAL(err, "conflicting dual body");
+    modelnet::DecodedBtxPackage pkg;
+    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxPackage(bytes, pkg, err), err);
+    BOOST_REQUIRE(pkg.core.isObject());
+    BOOST_REQUIRE(pkg.core["documents"].isArray());
     bool saw_agents = false;
-    for (const auto& d : pkg["core"]["documents"].getValues()) {
+    for (const auto& d : pkg.core["documents"].getValues()) {
         if (!d.isObject() || !d.exists("path") || !d["path"].isStr()) continue;
         if (d["path"].get_str() == "AGENTS.md") {
             saw_agents = true;

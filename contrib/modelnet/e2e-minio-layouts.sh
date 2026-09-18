@@ -424,6 +424,7 @@ def cloud_cfg(layout):
         "use_fake": FAKE_ONLY,
         "allow_http_loopback": not FAKE_ONLY,
         "automatic_spend_atoms": 0,
+        "idempotency_key": f"e2e-minio-{layout}",
     }
 
 

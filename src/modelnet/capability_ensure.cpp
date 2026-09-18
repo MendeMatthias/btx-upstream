@@ -44,12 +44,12 @@ struct TtcTrace {
 };
 
 struct IdempotentEnsure {
-    std::string job_id;
+    std::string payload;
     UniValue result;
 };
 
 struct UpdateIdem {
-    std::string digest;
+    std::string payload;
     UniValue result;
 };
 
@@ -161,6 +161,29 @@ bool FieldTrue(const UniValue& o, const char* k)
         return s == "1" || s == "true" || s == "TRUE";
     }
     return false;
+}
+
+std::string IdempotencyScope(const UniValue& request, const std::string& idem)
+{
+    std::string caller;
+    if (request.exists("grant") && request["grant"].isObject()) {
+        caller = FieldStr(request["grant"], "caller");
+    }
+    if (caller.empty()) caller = FieldStr(request, "as");
+    if (caller.empty()) caller = FieldStr(request, "caller");
+    return caller + '\n' + idem;
+}
+
+std::string PayloadFingerprint(const UniValue& request)
+{
+    UniValue body(UniValue::VOBJ);
+    if (request.isObject()) {
+        for (const auto& k : request.getKeys()) {
+            if (k == "idempotency_key") continue;
+            body.pushKV(k, request[k]);
+        }
+    }
+    return body.write();
 }
 
 bool SpendForbidden(const UniValue& o, UniValue& result, std::string& err_code, std::string& err)
@@ -441,14 +464,16 @@ bool PlanCapabilityUpdate(const UniValue& request, UniValue& result, std::string
     std::string digest = FieldStr(request, "digest");
     if (digest.empty()) digest = FieldStr(request, "expected_digest");
     const std::string idem = FieldStr(request, "idempotency_key");
-
+    const std::string payload_fp = PayloadFingerprint(request);
+    // Missing key: existing write policy — proceed as a new write, do not conflict.
     if (!idem.empty()) {
+        const std::string scope = IdempotencyScope(request, idem);
         std::lock_guard<std::mutex> lock(g_ensure_mu);
-        auto it = g_update_idem.find(idem);
+        auto it = g_update_idem.find(scope);
         if (it != g_update_idem.end()) {
-            if (!digest.empty() && digest != it->second.digest) {
+            if (it->second.payload != payload_fp) {
                 return FailResult(result, err_code, err, "IDEMPOTENCY_CONFLICT",
-                                  "changed digest requires new authorization", "update");
+                                  "idempotency_key reused with a different payload", "update");
             }
             result = it->second.result;
             result.pushKV("idempotent", true);
@@ -497,9 +522,9 @@ bool PlanCapabilityUpdate(const UniValue& request, UniValue& result, std::string
     if (!idem.empty()) {
         std::lock_guard<std::mutex> lock(g_ensure_mu);
         UpdateIdem rec;
-        rec.digest = digest;
+        rec.payload = payload_fp;
         rec.result = result;
-        g_update_idem[idem] = std::move(rec);
+        g_update_idem[IdempotencyScope(request, idem)] = std::move(rec);
     }
     return true;
 }
@@ -562,10 +587,17 @@ bool EnsureCapability(ModelCatalog& cat, const UniValue& request, UniValue& resu
 
     const std::string inject = Inject(request);
     const std::string idem = FieldStr(request, "idempotency_key");
+    const std::string payload_fp = PayloadFingerprint(request);
+    // Missing key: existing write policy — each call is a new execute, not a replay.
     if (!idem.empty()) {
+        const std::string scope = IdempotencyScope(request, idem);
         std::lock_guard<std::mutex> lock(g_ensure_mu);
-        auto it = g_ensure_idem.find(idem);
+        auto it = g_ensure_idem.find(scope);
         if (it != g_ensure_idem.end()) {
+            if (it->second.payload != payload_fp) {
+                return FailResult(result, err_code, err, "IDEMPOTENCY_CONFLICT",
+                                  "idempotency_key reused with a different payload", "admit");
+            }
             result = it->second.result;
             result.pushKV("idempotent", true);
             PushZero(result);
@@ -782,9 +814,9 @@ bool EnsureCapability(ModelCatalog& cat, const UniValue& request, UniValue& resu
     if (!idem.empty()) {
         std::lock_guard<std::mutex> lock(g_ensure_mu);
         IdempotentEnsure rec;
-        rec.job_id = job.job_id;
+        rec.payload = payload_fp;
         rec.result = result;
-        g_ensure_idem[idem] = std::move(rec);
+        g_ensure_idem[IdempotencyScope(request, idem)] = std::move(rec);
     }
     return true;
 }

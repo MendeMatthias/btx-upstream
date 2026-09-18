@@ -3,7 +3,6 @@
 // file COPYING or https://opensource.org/license/mit/.
 
 #include <crypto/common.h>
-#include <crypto/sha384.h>
 #include <modelnet/firstrun.h>
 #include <modelnet/package_bundle.h>
 #include <modelnet/package_core.h>
@@ -17,8 +16,10 @@
 
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -54,6 +55,19 @@ bool MixedUriAndFile(const std::string& s)
 {
     if (StartsWithBtxUri(s)) return HasWhitespace(s);
     return s.find("btx://") != std::string::npos;
+}
+
+int PrintErrorJson(const std::string& code, const std::string& message)
+{
+    UniValue inner(UniValue::VOBJ);
+    inner.pushKV("code", code);
+    inner.pushKV("message", message);
+    UniValue o(UniValue::VOBJ);
+    o.pushKV("error", inner);
+    o.pushKV("automatic_spend_atoms", 0);
+    o.pushKV("agents_md_write", false);
+    std::cout << o.write() << "\n";
+    return 1;
 }
 
 bool ReadBoundedFile(const std::string& path, std::vector<unsigned char>& bytes, std::string& err)
@@ -166,45 +180,116 @@ void PrintInspectFooter()
               << "note=local inspect only; does not install, open the wallet, use the network, or write AGENTS.md\n";
 }
 
+/** Range-check core.version without getInt (which throws on overflow). */
+bool InspectCoreVersion(const UniValue& core, int& ver, std::string& err_code)
+{
+    ver = 0;
+    err_code.clear();
+    if (!core.exists("version") || !core["version"].isNum()) {
+        err_code = "UNSUPPORTED_CORE_VERSION";
+        return false;
+    }
+    const std::string& vs = core["version"].getValStr();
+    if (vs == "1") {
+        ver = 1;
+        return true;
+    }
+    if (vs == "2") {
+        ver = 2;
+        return true;
+    }
+    if (vs == "3") {
+        ver = 3;
+        return true;
+    }
+    if (vs == "4") {
+        err_code = "CORE_V4_FORBIDDEN";
+        return false;
+    }
+    err_code = "UNSUPPORTED_CORE_VERSION";
+    return false;
+}
+
+bool ClaimedLengthTooLarge(Span<const unsigned char> bytes)
+{
+    if (bytes.size() < 20) return false;
+    if (std::memcmp(bytes.data(), modelnet::BTXPKG_MAGIC, 8) != 0) return false;
+    const uint64_t n = ReadLE64(bytes.data() + 12);
+    if (n == std::numeric_limits<uint64_t>::max()) return true;
+    if (n > 4ull * 1024 * 1024) return true;
+    if (n > std::numeric_limits<size_t>::max() - 68) return true;
+    return false;
+}
+
 int InspectLocalPackage(const std::string& path)
 {
     std::vector<unsigned char> bytes;
     std::string err;
     if (!ReadBoundedFile(path, bytes, err)) {
-        std::cerr << err << "\n";
-        return 1;
+        const std::string code = (err == "PACKAGE_TOO_LARGE") ? err : "INVALID_PARAMETER";
+        return PrintErrorJson(code, err);
     }
     const bool magic = modelnet::LooksLikeBtxBundle(Span<const unsigned char>{bytes.data(), bytes.size()});
+    if (magic && ClaimedLengthTooLarge(Span<const unsigned char>{bytes.data(), bytes.size()})) {
+        return PrintErrorJson("PACKAGE_TOO_LARGE", "PACKAGE_TOO_LARGE");
+    }
+
     UniValue decoded(UniValue::VOBJ);
     bool parsed = false;
     modelnet::DecodedBtxPackage pkg;
-    if (magic && modelnet::DecodeBtxPackage(Span<const unsigned char>{bytes.data(), bytes.size()}, pkg, err)) {
-        decoded = pkg.payload;
-        parsed = true;
-        err.clear();
-    } else if (magic) {
-        parsed = modelnet::DecodeBtxBundle(Span<const unsigned char>{bytes.data(), bytes.size()}, decoded, err);
+    UniValue bundle(UniValue::VOBJ);
+    std::string pkg_err, bundle_err;
+    bool as_pkg = false;
+    bool as_bundle = false;
+    if (magic) {
+        as_pkg = modelnet::DecodeBtxPackage(Span<const unsigned char>{bytes.data(), bytes.size()}, pkg, pkg_err);
+        as_bundle = modelnet::DecodeBtxBundle(Span<const unsigned char>{bytes.data(), bytes.size()}, bundle, bundle_err);
+        if (as_pkg && as_bundle) {
+            return PrintErrorJson("BAD_PACKAGE_MAGIC", "conflicting dual body");
+        }
+        if (as_pkg) {
+            decoded = pkg.payload;
+            parsed = true;
+            err.clear();
+        } else if (as_bundle) {
+            decoded = bundle;
+            parsed = true;
+            err = bundle_err;
+        } else if (bundle_err == "conflicting dual body") {
+            return PrintErrorJson("BAD_PACKAGE_MAGIC", "conflicting dual body");
+        } else if (pkg.err_code == "PACKAGE_TOO_LARGE" || bundle_err == "flags/size/trailing") {
+            if (ClaimedLengthTooLarge(Span<const unsigned char>{bytes.data(), bytes.size()})) {
+                return PrintErrorJson("PACKAGE_TOO_LARGE", "PACKAGE_TOO_LARGE");
+            }
+        }
     }
     if (!parsed) {
         decoded = UniValue(UniValue::VOBJ);
         const std::string raw(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         if (!decoded.read(raw) || !decoded.isObject()) {
-            std::cerr << (err.empty() ? "unreadable package" : err) << "\n";
-            return 1;
+            const std::string code = pkg.err_code.empty() ? "INVALID_PARAMETER" : pkg.err_code;
+            return PrintErrorJson(code, err.empty() ? (pkg_err.empty() ? "unreadable package" : pkg_err) : err);
         }
         parsed = true;
     }
-
-    std::cout << "path=" << modelnet::EscapeForTerminal(path) << "\n"
-              << "looks_like_btxbundle=" << (magic ? "true" : "false") << "\n";
 
     const UniValue* core = nullptr;
     if (decoded.exists("core") && decoded["core"].isObject()) {
         core = &decoded["core"];
     }
 
-    if (core && core->exists("version") && (*core)["version"].isNum()) {
-        const int ver = (*core)["version"].getInt<int>();
+    int ver = 0;
+    if (core) {
+        std::string ver_code;
+        if (!InspectCoreVersion(*core, ver, ver_code)) {
+            return PrintErrorJson(ver_code, ver_code);
+        }
+    }
+
+    std::cout << "path=" << modelnet::EscapeForTerminal(path) << "\n"
+              << "looks_like_btxbundle=" << (magic ? "true" : "false") << "\n";
+
+    if (core) {
         std::cout << "core_version=" << ver << "\n";
         modelnet::Digest48 id;
         if (TryPackageCoreId(*core, id)) {
@@ -230,29 +315,35 @@ int InspectLocalPackage(const std::string& path)
 
 int main(int argc, char* argv[])
 {
-    if (argc < 2 || std::string(argv[1]) == "-help" || std::string(argv[1]) == "-h") {
-        std::cerr <<
-            "btx-open — bounded BTX resource URI dispatcher (0.34.7)\n"
-            "Opens an inspection preview only. Does not run inference, mine,\n"
-            "open the spending wallet, import trust, or upload files.\n"
-            "Usage: btx-open <btx://resource>\n"
-            "       btx-open <path.btx>\n";
-        return argc < 2 ? 1 : 0;
-    }
-    if (argc != 2) {
-        std::cerr << "btx-open accepts exactly one URI or .btx path argument and does not invoke a shell\n";
-        return 1;
-    }
-    const std::string arg{argv[1]};
-    if (MixedUriAndFile(arg)) {
-        std::cerr << "btx-open rejects mixed URI and file arguments; pass exactly one btx:// URI or one path\n";
-        return 1;
-    }
-    if (StartsWithBtxUri(arg)) {
+    try {
+        if (argc < 2 || std::string(argv[1]) == "-help" || std::string(argv[1]) == "-h") {
+            std::cerr <<
+                "btx-open — bounded BTX resource URI dispatcher (0.34.7)\n"
+                "Opens an inspection preview only. Does not run inference, mine,\n"
+                "open the spending wallet, import trust, or upload files.\n"
+                "Usage: btx-open <btx://resource>\n"
+                "       btx-open <path.btx>\n";
+            return argc < 2 ? 1 : 0;
+        }
+        if (argc != 2) {
+            std::cerr << "btx-open accepts exactly one URI or .btx path argument and does not invoke a shell\n";
+            return 1;
+        }
+        const std::string arg{argv[1]};
+        if (MixedUriAndFile(arg)) {
+            std::cerr << "btx-open rejects mixed URI and file arguments; pass exactly one btx:// URI or one path\n";
+            return 1;
+        }
+        if (StartsWithBtxUri(arg)) {
+            return PrintUriPreview(argv[1]);
+        }
+        if (EndsWithBtx(arg) || FileLooksLikeBtxBundle(arg)) {
+            return InspectLocalPackage(arg);
+        }
         return PrintUriPreview(argv[1]);
+    } catch (const std::exception& e) {
+        return PrintErrorJson("INVALID_PARAMETER", e.what());
+    } catch (...) {
+        return PrintErrorJson("INVALID_PARAMETER", "unreadable package");
     }
-    if (EndsWithBtx(arg) || FileLooksLikeBtxBundle(arg)) {
-        return InspectLocalPackage(arg);
-    }
-    return PrintUriPreview(argv[1]);
 }

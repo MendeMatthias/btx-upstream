@@ -106,8 +106,9 @@ Install and first-run: [doc/btx-download-and-go.md](doc/btx-download-and-go.md).
 
 Using and proving the model network: [doc/modelnet/howto.md](doc/modelnet/howto.md).
 
-This working tree also contains **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`).
-That is **not** a shipping tag. Host, seed, search, share, watch folder,
+This working tree is **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`).
+That is **not** a shipping tag; the last released client remains **v0.34.7**.
+Host, seed, search, share, watch folder,
 `showmodel` / `unhostmodel` / `exportmodellink`, mining `first_run` doctor
 tiles, bounty `checklist` / `--validate`, and doctor:
 [doc/modelnet/first-run.md](doc/modelnet/first-run.md). CLI wrapper:
@@ -118,7 +119,7 @@ helper lacks the method: [doc/modelnet/storage-backends.md](doc/modelnet/storage
 [doc/modelnet/watches.md](doc/modelnet/watches.md). Filesystem `-modelwatch`
 is not a publisher watch.
 
-### Source → storage → model (0.34.8-dev, not shipped)
+### Source → storage → model (0.34.8-dev; `IS_RELEASE=false`)
 
 A person can pin a **local** file (or review an ImportPlan for Hugging Face /
 torrent), choose **local disk** or an S3-compatible backend, and publish a
@@ -140,7 +141,7 @@ Live Hugging Face HTTP, live R2 WAN, GUI, and wallet-signed subscriptions are
 **not** claimed here. Cloud add uses `--credential-ref`, never a raw secret on
 argv: [doc/modelnet/storage-backends.md](doc/modelnet/storage-backends.md).
 
-### Hosted Control Plane / walletless discovery (0.34.8-dev, not shipped)
+### Hosted Control Plane / walletless discovery (0.34.8-dev; `IS_RELEASE=false`)
 
 A person can **discover** public capabilities through a hosted catalogue without
 opening a monetary wallet, mining, or completing a full chain sync. The
@@ -301,8 +302,8 @@ search when you do not want the query to leave this node.
   [doc/modelnet/events.md](doc/modelnet/events.md),
   [doc/modelnet/watches.md](doc/modelnet/watches.md),
   [doc/modelnet/mirroring.md](doc/modelnet/mirroring.md).
-  Hosted Control Plane / walletless discovery (not shipped; not live CEX
-  IdP): [doc/hosted/README.md](doc/hosted/README.md),
+  Hosted Control Plane / walletless discovery (`IS_RELEASE=false`; not live
+  CEX IdP): [doc/hosted/README.md](doc/hosted/README.md),
   [doc/modelnet/hcp/](doc/modelnet/hcp/). Cognitive Reserve v1.1 is a
   negotiated HCP/1 extension of that same plane (not a fifth plane; 34 HCP
   ops preserved): [doc/modelnet/crf/](doc/modelnet/crf/).

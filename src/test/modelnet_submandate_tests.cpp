@@ -463,6 +463,7 @@ BOOST_AUTO_TEST_CASE(mandate_sub_12_http_explorer_cannot_mutate_mandates)
     using namespace modelnet;
     BOOST_CHECK(IsSubscriptionHelperMethod("createsubscriptionmandate"));
     BOOST_CHECK(IsSubscriptionHelperMethod("getsubscriptionmandate"));
+    BOOST_CHECK(IsSubscriptionHelperMethod("getsubscriptionactivity"));
     BOOST_CHECK(IsSubscriptionHelperMethod("revokesubscriptionmandate"));
     BOOST_CHECK(IsSubscriptionHelperMethod("reservesubscriptionmandate"));
     BOOST_CHECK(!IsSubscriptionHelperMethod("createagentmandate"));
@@ -474,6 +475,8 @@ BOOST_AUTO_TEST_CASE(mandate_sub_12_http_explorer_cannot_mutate_mandates)
     BOOST_REQUIRE(HandleBridgeRequest("GET", "/revokesubscriptionmandate", "", br));
     BOOST_CHECK_EQUAL(br.http_status, 403);
     BOOST_REQUIRE(HandleBridgeRequest("GET", "/getsubscriptionmandate", "", br));
+    BOOST_CHECK_EQUAL(br.http_status, 403);
+    BOOST_REQUIRE(HandleBridgeRequest("GET", "/getsubscriptionactivity", "", br));
     BOOST_CHECK_EQUAL(br.http_status, 403);
     BOOST_REQUIRE(HandleBridgeRequest("GET", "/reservesubscriptionmandate", "", br));
     BOOST_CHECK_EQUAL(br.http_status, 403);
@@ -525,6 +528,37 @@ BOOST_AUTO_TEST_CASE(remaining_subscription_helper_rpc)
     UniValue reserved;
     BOOST_REQUIRE_MESSAGE(DispatchHelperRpc(cat, Rpc("reservesubscriptionmandate", Arr(rsv)), reserved, code, err), err);
     AssertHelperNoWallet(reserved);
+
+    UniValue actp(UniValue::VOBJ);
+    actp.pushKV("mandate_id", mid);
+    actp.pushKV("limit", 10);
+    UniValue activity;
+    BOOST_REQUIRE_MESSAGE(DispatchHelperRpc(cat, Rpc("getsubscriptionactivity", Arr(actp)), activity, code, err), err);
+    AssertHelperNoWallet(activity);
+    BOOST_REQUIRE(activity.exists("actions") && activity["actions"].isArray());
+    BOOST_REQUIRE_EQUAL(activity["actions"].size(), 1U);
+    BOOST_CHECK_EQUAL(activity["actions"][0]["event_id"].get_str(), "e-helper");
+    BOOST_CHECK_EQUAL(activity["actions"][0]["terms_id"].get_str(), HexN(96, 'd'));
+    BOOST_CHECK(activity["actions"][0]["txid"].get_str().empty());
+    BOOST_CHECK(!activity["telemetry"].get_bool());
+    BOOST_CHECK_EQUAL(activity["automatic_spend_atoms"].getInt<int64_t>(), 0);
+
+    UniValue missing(UniValue::VOBJ);
+    actp.pushKV("mandate_id", "no-such-mandate");
+    BOOST_CHECK(!DispatchHelperRpc(cat, Rpc("getsubscriptionactivity", Arr(actp)), activity, code, err));
+    BOOST_CHECK_EQUAL(code, "NOT_FOUND");
+
+    UniValue badlim(UniValue::VOBJ);
+    badlim.pushKV("mandate_id", mid);
+    badlim.pushKV("limit", 0);
+    BOOST_CHECK(!DispatchHelperRpc(cat, Rpc("getsubscriptionactivity", Arr(badlim)), activity, code, err));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+
+    UniValue badcur(UniValue::VOBJ);
+    badcur.pushKV("mandate_id", mid);
+    badcur.pushKV("cursor", "no-such-event");
+    BOOST_CHECK(!DispatchHelperRpc(cat, Rpc("getsubscriptionactivity", Arr(badcur)), activity, code, err));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
 
     UniValue revp(UniValue::VOBJ);
     revp.pushKV("mandate_id", mid);

@@ -12,6 +12,7 @@
 #include <script/script.h>
 #include <script/signingprovider.h>
 #include <script/solver.h>
+#include <pqkey.h>
 #include <util/bip32.h>
 #include <util/strencodings.h>
 #include <util/translation.h>
@@ -22,6 +23,8 @@
 
 #include <univalue.h>
 #include <algorithm>
+#include <set>
+#include <variant>
 
 namespace wallet {
 static constexpr auto LEGACY_MULTISIG_DISABLED_ERROR =
@@ -841,7 +844,19 @@ public:
 
     UniValue operator()(const WitnessV1Taproot& id) const { return UniValue(UniValue::VOBJ); }
     UniValue operator()(const PayToAnchor& id) const { return UniValue(UniValue::VOBJ); }
-    UniValue operator()(const WitnessV2P2MR& id) const { return UniValue(UniValue::VOBJ); }
+    UniValue operator()(const WitnessV2P2MR& id) const
+    {
+        UniValue obj(UniValue::VOBJ);
+        const auto* flat = dynamic_cast<const FlatSigningProvider*>(provider);
+        if (!flat) return obj;
+        for (const auto& [pubkey, pq_key] : flat->pq_keys) {
+            if (pubkey.size() == MLDSA44_PUBKEY_SIZE || pubkey.size() == SLHDSA128S_PUBKEY_SIZE) {
+                obj.pushKV("pubkey", HexStr(pubkey));
+                break;
+            }
+        }
+        return obj;
+    }
     UniValue operator()(const WitnessUnknown& id) const { return UniValue(UniValue::VOBJ); }
 };
 
@@ -976,6 +991,35 @@ RPCHelpMan getaddressinfo()
 
     UniValue detail = DescribeWalletAddress(*pwallet, dest);
     ret.pushKVs(std::move(detail));
+
+    // P2MR getaddressinfo historically omitted the 1312-byte ML-DSA pubkey
+    // (the visitor for witness v2 was empty). Watch-only deposit pools need
+    // that pubkey so importdepositpool can build a solvable mr() descriptor
+    // rather than an unsolvable addr() watch.
+    if (std::holds_alternative<WitnessV2P2MR>(dest) && !ret.exists("pubkey")) {
+        auto try_flat = [&](const FlatSigningProvider* p) {
+            if (!p) return false;
+            for (const auto& [pubkey, pq_key] : p->pq_keys) {
+                if (pubkey.size() == MLDSA44_PUBKEY_SIZE || pubkey.size() == SLHDSA128S_PUBKEY_SIZE) {
+                    ret.pushKV("pubkey", HexStr(pubkey));
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::set<ScriptPubKeyMan*> mans = spk_mans;
+        if (mans.empty()) mans = pwallet->GetAllScriptPubKeyMans();
+        for (ScriptPubKeyMan* man : mans) {
+            auto* dman = dynamic_cast<DescriptorScriptPubKeyMan*>(man);
+            if (!dman) continue;
+            if (auto p = dman->GetP2MRSizingProvider(scriptPubKey)) {
+                if (try_flat(p.get())) break;
+            }
+            if (auto p = dman->GetSigningProvider(scriptPubKey, /*include_private=*/false)) {
+                if (try_flat(p.get())) break;
+            }
+        }
+    }
 
     ret.pushKV("ischange", ScriptIsChange(*pwallet, scriptPubKey));
 

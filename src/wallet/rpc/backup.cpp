@@ -37,6 +37,7 @@
 #include <wallet/receive.h>
 #include <wallet/crypter.h>
 #include <wallet/rpc/util.h>
+#include <wallet/bcp1_watchonly.h>
 #include <wallet/shielded_wallet.h>
 #include <wallet/wallet.h>
 #include <wallet/walletdb.h>
@@ -2376,6 +2377,11 @@ RPCHelpMan dumpprivkey()
     const std::shared_ptr<const CWallet> pwallet = GetWalletForJSONRPCRequest(request);
     if (!pwallet) return UniValue::VNULL;
 
+    bilingual_str refuse_err;
+    if (RefusePrivateSign(*pwallet, refuse_err)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+    }
+
     const LegacyScriptPubKeyMan& spk_man = EnsureConstLegacyScriptPubKeyMan(*pwallet);
 
     LOCK2(pwallet->cs_wallet, spk_man.cs_KeyStore);
@@ -2416,6 +2422,11 @@ RPCHelpMan dumpmasterprivkey()
     std::shared_ptr<CWallet> const wallet = GetWalletForJSONRPCRequest(request);
     if (!wallet) return NullUniValue;
     const CWallet* const pwallet = wallet.get();
+
+    bilingual_str refuse_err;
+    if (RefusePrivateSign(*pwallet, refuse_err)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+    }
 
     LegacyScriptPubKeyMan& spk_man = EnsureLegacyScriptPubKeyMan(*wallet);
 
@@ -2469,6 +2480,11 @@ RPCHelpMan dumpwallet()
 
     const std::shared_ptr<const CWallet> pwallet = GetWalletForJSONRPCRequest(request);
     if (!pwallet) return UniValue::VNULL;
+
+    bilingual_str dump_refuse;
+    if (RefusePrivateSign(*pwallet, dump_refuse)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, dump_refuse.original);
+    }
 
     const CWallet& wallet = *pwallet;
     const LegacyScriptPubKeyMan& spk_man = EnsureConstLegacyScriptPubKeyMan(wallet);

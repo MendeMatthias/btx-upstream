@@ -20,6 +20,7 @@
 #include <bitcoin-build-config.h> // IWYU pragma: keep
 #include <modelnet/catalog.h>
 #include <modelnet/helper.h>
+#include <test/modelnet_n02_idem.h>
 #include <modelnet/identity.h>
 #include <modelnet/piece_picker.h>
 #include <modelnet/piece_ranges.h>
@@ -82,7 +83,7 @@ UniValue ModelEntry(const std::string& artifact_hex, uint32_t piece_count, const
 UniValue HealerCall(modelnet::ModelCatalog& cat, const UniValue& arg)
 {
     UniValue params(UniValue::VARR);
-    params.push_back(arg);
+    params.push_back(WithN02Idempotency("setmodelswarmhealer", arg));
     UniValue req(UniValue::VOBJ);
     req.pushKV("method", "setmodelswarmhealer");
     req.pushKV("params", params);

@@ -29,6 +29,8 @@ struct QuerySummary {
     uint32_t hit_count{0};
     uint32_t truncated{0};
     std::vector<std::string> sample_ids;
+    uint64_t snapshot_generation{0};
+    uint64_t tombstone_floor{0};
 };
 
 QuerySummary SummarizeQueryHits(const std::vector<std::string>& ids, size_t max_sample);

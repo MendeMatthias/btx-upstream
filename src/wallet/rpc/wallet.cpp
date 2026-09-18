@@ -14,11 +14,15 @@
 #include <wallet/receive.h>
 #include <wallet/rpc/wallet.h>
 #include <wallet/rpc/util.h>
+#include <wallet/rpc/bcp1.h>
+#include <wallet/bcp1_watchonly.h>
 #include <wallet/shielded_wallet.h>
 #include <wallet/wallet.h>
 #include <wallet/walletutil.h>
 
 #include <optional>
+#include <iterator>
+#include <vector>
 
 #include <univalue.h>
 
@@ -493,6 +497,8 @@ static RPCHelpMan createwallet()
 #endif
     }
 
+    ApplyExchangeWatchOnlyCreateFlags(flags, *context.args);
+
 #ifndef USE_BDB
     if (!(flags & WALLET_FLAG_DESCRIPTORS)) {
         throw JSONRPCError(RPC_WALLET_ERROR, "Compiled without bdb support (required for legacy wallets)");
@@ -511,6 +517,11 @@ static RPCHelpMan createwallet()
     if (!wallet) {
         RPCErrorCode code = status == DatabaseStatus::FAILED_ENCRYPT ? RPC_WALLET_ENCRYPTION_FAILED : RPC_WALLET_ERROR;
         throw JSONRPCError(code, error.original);
+    }
+
+    bilingual_str watchonly_err;
+    if (!EnsureExchangeWatchOnly(*wallet, *context.args, watchonly_err)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, watchonly_err.original);
     }
 
     UniValue obj(UniValue::VOBJ);
@@ -1279,7 +1290,7 @@ RPCHelpMan buildhtlcrefund();
 
 Span<const CRPCCommand> GetWalletRPCCommands()
 {
-    static const CRPCCommand commands[]{
+    static const CRPCCommand base[]{
         {"rawtransactions", &fundrawtransaction},
         {"wallet", &abandontransaction},
         {"wallet", &abortrescan},
@@ -1455,6 +1466,12 @@ Span<const CRPCCommand> GetWalletRPCCommands()
         {"wallet", &buildhtlcclaim},
         {"wallet", &buildhtlcrefund},
     };
+    static const std::vector<CRPCCommand> commands = [] {
+        std::vector<CRPCCommand> v(std::begin(base), std::end(base));
+        const auto bcp1 = GetBCP1WalletRPCCommands();
+        v.insert(v.end(), bcp1.begin(), bcp1.end());
+        return v;
+    }();
     return commands;
 }
 } // namespace wallet

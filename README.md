@@ -35,6 +35,9 @@ shielded state. Do not read this tree as shipping a live shielded pool.
 This repository contains the full node implementation, wallet, mining
 infrastructure, Native Model Network helper, and test suites.
 
+This working tree is **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`).
+The last released client remains **v0.34.7**.
+
 ## Start here
 
 This README is the **human** front door. It is not the agent operations
@@ -81,9 +84,10 @@ manual and not the long essay.
 
 ## Current release — v0.34.7
 
-**v0.34.7** is the shipping tag of this tree. `CLIENT_VERSION` is **0.34.7**
-with `CLIENT_VERSION_IS_RELEASE=true`. Seal and freeze hashes are written
-when the tag is sealed (see
+**This tree is 0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`). It is not a
+shipping tag. The last released client remains **v0.34.7**
+(`CLIENT_VERSION_IS_RELEASE=true` on that tag). Seal and freeze hashes are
+written when a tag is sealed (see
 [doc/release-process.md](doc/release-process.md)). The previous monetary
 tag is **v0.34** (seal `dc46dee2`, freeze `ecfaa6c9`). Epoch A Profile 1
 ExactReplay is live on mainnet at height **185000**. EncDr stall recovery
@@ -244,15 +248,17 @@ Operator and researcher docs: [doc/modelnet/README.md](doc/modelnet/README.md),
 [doc/modelnet/model-economy.md](doc/modelnet/model-economy.md),
 [doc/modelnet/feed.md](doc/modelnet/feed.md).
 People vs agents: [HUMANS.md](HUMANS.md) / [AGENTS.md](AGENTS.md).
-0.34.8-dev optional cloud/events/watches (fail closed, not shipped):
+0.34.8-dev optional cloud/events/watches (RPCs exist; `IS_RELEASE=false`;
+fail closed if an older helper lacks the method; live R2 WAN is
+**HONEST_NOT_RUN**):
 [doc/modelnet/storage-backends.md](doc/modelnet/storage-backends.md),
 [doc/modelnet/watches.md](doc/modelnet/watches.md).
 Release notes: [doc/release-notes/release-notes-0.34.7.md](doc/release-notes/release-notes-0.34.7.md)
 (shipping tag). 0.34.8-dev first-run notes:
 [doc/release-notes/release-notes-0.34.8.md](doc/release-notes/release-notes-0.34.8.md)
 (`CLIENT_VERSION_IS_RELEASE=false`; not a shipping tag).
-Hosted Control Plane / walletless discovery (0.34.8-dev, not shipped; not a
-live CEX IdP): [doc/hosted/README.md](doc/hosted/README.md),
+Hosted Control Plane / walletless discovery (0.34.8-dev,
+`IS_RELEASE=false`; not a live CEX IdP): [doc/hosted/README.md](doc/hosted/README.md),
 [doc/modelnet/hcp/](doc/modelnet/hcp/).
 
 ### Model bounties (demand-side)
@@ -282,9 +288,10 @@ Escrow reuses existing P2MR templates only — no new opcode:
 - Contributor lot: `mr(cltv_multi_pq(locktime,m,keys…),refund(height,refund_key))`
 - Staged winner payout: `mr(htlc_sha256(hash,claimant),refund(height,original_refund_key))`
 
-This tree ships **v0.34.7** with `CLIENT_VERSION_IS_RELEASE=true`. Bounty
-coordination runs on the isolated helper; the wallet still signs every
-spend. See [doc/bounties.md](doc/bounties.md) and
+This tree is **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`). Bounty
+coordination shipped in **v0.34.7** and continues here on the isolated
+helper; the wallet still signs every spend. See
+[doc/bounties.md](doc/bounties.md) and
 [doc/bounty-rpc.md](doc/bounty-rpc.md).
 
 Agents default to read-only discovery (`searchbounties`, `getbounty`,
@@ -300,8 +307,9 @@ enhancements are expected to come from **community forks and modifications,
 not from a continuing operator release schedule on this line.** That is a
 handover, not a roadmap.
 
-**v0.34.7** is the shipping tag of this tree
-(`CLIENT_VERSION_IS_RELEASE=true`). The Native Model Network is an
+**v0.34.7** remains the last shipping tag
+(`CLIENT_VERSION_IS_RELEASE=true` on that tag). This tree is **0.34.8-dev**
+(`CLIENT_VERSION_IS_RELEASE=false`). The Native Model Network is an
 **isolated in-tree plane** on the 0.34.6 monetary baseline: it does not
 change ExactReplay, issuance, or fork choice, and it does not revoke this
 handover. See [Native Model Network (0.34.7)](#native-model-network-0347).
@@ -445,7 +453,8 @@ While Epoch A still uses ExactReplay as consensus authority, a validating
 node runs `-matmulvalidation=consensus` and needs no pin. CPU archives that
 cannot ExactReplay may opt into trusted-mirror with attestors they choose;
 that is community-fork topology, not a shipped signer set. The 0.34.1
-monetary handover still applies; this tree ships **v0.34.7**. Historical
+monetary handover still applies; this tree is **0.34.8-dev** (last shipping
+tag **v0.34.7**). Historical
 notes live in
 [doc/btx-gpu-verified-network-transition.md](doc/btx-gpu-verified-network-transition.md).
 
@@ -461,7 +470,8 @@ feature, not a live surface. See [Shielded Pool](#shielded-pool).
 ## GPU-verified network (three-phase)
 
 That three-phase topology is **community-fork work**. The 0.34.1 monetary
-handover still applies; this tree's shipping tag is **v0.34.7**.
+handover still applies; this tree is **0.34.8-dev** (last shipping tag
+**v0.34.7**).
 
 Profile 1 ExactReplay is the Epoch-A consensus check. It needs a qualified
 GPU. The recommended mode is `-matmulvalidation=consensus`: **this node**
@@ -1768,8 +1778,8 @@ The RPC surface also supports:
 
 ## Contributing
 
-**v0.34.7 is the shipping tag of this tree**
-(`CLIENT_VERSION_IS_RELEASE=true`). The **0.34.1 monetary handover** still
+**This tree is 0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`). The last
+shipping tag remains **v0.34.7**. The **0.34.1 monetary handover** still
 stands: further monetary-consensus work is expected from community forks,
 not from a continuing operator release schedule on this line. The Native
 Model Network is an isolated in-tree plane on the 0.34.6 monetary baseline;

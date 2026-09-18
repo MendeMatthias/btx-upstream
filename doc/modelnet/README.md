@@ -1,7 +1,9 @@
-# BTX Native Model Network (0.34.7)
+# BTX Native Model Network (0.34.8-dev)
 
-**Status:** **0.34.7 release.** This is the shipped Native Model Network, not a
-draft RC and not a document awaiting merge.
+**Status:** **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`). This tree is
+not a shipping tag. The last shipping tag is **v0.34.7**. The Native Model
+Network shipped in 0.34.7; this index covers that plane plus 0.34.8-dev
+surfaces.
 
 **Readers:** people start at [HUMANS.md](../../HUMANS.md). Autonomous agents
 start at [AGENTS.md](../../AGENTS.md). The strategic essay is
@@ -103,7 +105,8 @@ See [propagation.md](propagation.md).
   executes pickle, `.pt`, Python, `.so`, or CUDA kernels.
 - `btx-open` — preview-only URI dispatcher (exactly one argument, no shell).
 
-**0.34.8-dev Hosted Control Plane** (not shipped): `btx-hcpd` is a loopback
+**0.34.8-dev Hosted Control Plane** (`IS_RELEASE=false`; code is in this
+tree): `btx-hcpd` is a loopback
 gateway with **34 typed REST operations** and **no** `/rpc` passthrough.
 `btx-hosted` is the walletless discovery preset (`automatic_spend_atoms=0`).
 OAuth is never in `btxd`. There is no public HTTP capability API on `btxd` or
@@ -213,12 +216,12 @@ In-tree capability bits are not CSV PASS and not a B0 rewrite. The bar is
 | [recovery.md](recovery.md) | DOC-03 helper / campaign / HTLC recovery |
 | [first-run.md](first-run.md) | Host / seed / search / share / watch folder / doctor (0.34.8-dev) |
 | [agent-recipes.md](agent-recipes.md) | Agent door (never spend, never inference) |
-| [storage-backends.md](storage-backends.md) | 0.34.8-dev: piece vs cloud object; R2 AUTO; **not shipped** |
+| [storage-backends.md](storage-backends.md) | 0.34.8-dev: piece vs cloud object; MinIO/cloud RPCs exist; R2 AUTO; `IS_RELEASE=false`; live R2 WAN **HONEST_NOT_RUN** |
 | [cloud-seeding.md](cloud-seeding.md) | 0.34.8-dev: origin as bootstrap, not billing model; fail closed |
 | [events.md](events.md) | 0.34.8-dev local event journal |
 | [watches.md](watches.md) | Filesystem `-modelwatch` vs publisher watch |
 | [mirroring.md](mirroring.md) | Profiles + keep/follow; no auto-spend |
-| [hcp/](hcp/) | **0.34.8-dev HCP/1** (not shipped): hosted control plane |
+| [hcp/](hcp/) | **0.34.8-dev HCP/1** (`IS_RELEASE=false`): hosted control plane |
 | [crf/](crf/) | **0.34.8-dev Cognitive Reserve v1.1** (negotiated HCP/1 extension; not a fifth plane) |
 | [hcp/01_CEX_2030s_Strategy.md](hcp/01_CEX_2030s_Strategy.md) | Strategy paper (not a shipping claim) |
 | [hcp/01_CEX_2030s_Strategy.md](hcp/01_CEX_2030s_Strategy.md) | Strategy paper (not a shipping claim) |

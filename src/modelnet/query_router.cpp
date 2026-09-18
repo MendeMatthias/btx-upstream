@@ -56,7 +56,9 @@ size_t QueryRouter::SampleCap() const
 
 QuerySummary QueryRouter::SummarizeIds(const std::vector<std::string>& ids) const
 {
-    return SummarizeQueryHits(ids, SampleCap());
+    QuerySummary s = SummarizeQueryHits(ids, SampleCap());
+    s.snapshot_generation = m_snapshot_generation++;
+    return s;
 }
 
 QuerySummary QueryRouter::SummarizeHits(const std::vector<SearchHit>& hits) const

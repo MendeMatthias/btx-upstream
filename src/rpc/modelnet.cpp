@@ -1472,6 +1472,7 @@ BOUNTY_PROXY(getagentactivity, "Redacted local audit. No telemetry.\n")
 BOUNTY_PROXY(reservemandate, "Atomic mandate reservation. Cannot exceed budget or swap refund keys.\n")
 BOUNTY_PROXY(createsubscriptionmandate, "Finite SubscriptionMandate for future objects. Distinct from AgentMandate. Never unbounded. automatic_spend_atoms remains 0.\n")
 BOUNTY_PROXY(getsubscriptionmandate, "Inspect a SubscriptionMandate. No wallet keys.\n")
+BOUNTY_PROXY(getsubscriptionactivity, "WALLET_OWNER ActionPage: event to terms to reservation. Never wallet keys or telemetry. automatic_spend_atoms remains 0.\n")
 BOUNTY_PROXY(revokesubscriptionmandate, "Blocks new SubscriptionMandate signatures. Already broadcast stays real.\n")
 BOUNTY_PROXY(reservesubscriptionmandate, "Atomic SubscriptionMandate reservation. Cannot exceed budget.\n")
 BOUNTY_PROXY(watchmodelpublisher, "Local publisher watch. Distinct from filesystem -modelwatch. Default NOTIFY. No spend.\n")
@@ -2019,6 +2020,7 @@ void RegisterModelNetRPCCommands(CRPCTable& t)
         {"modelnet", &reservemandate},
         {"modelnet", &createsubscriptionmandate},
         {"modelnet", &getsubscriptionmandate},
+        {"modelnet", &getsubscriptionactivity},
         {"modelnet", &revokesubscriptionmandate},
         {"modelnet", &reservesubscriptionmandate},
         {"modelnet", &watchmodelpublisher},

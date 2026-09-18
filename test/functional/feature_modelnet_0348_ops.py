@@ -353,6 +353,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
                 "endpoint": "https://acct.r2.cloudflarestorage.com",
                 "bucket": "btx-models",
                 "aws_secret_access_key": "supersecretvalue",
+                "idempotency_key": "ops-cloud-secret-reject",
             })
             raise AssertionError("setcloudstorage must reject raw secrets in JSON")
         except JSONRPCException as exc:
@@ -371,6 +372,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
             "layout": "AUTO",
             "credential_ref": str(creds),
             "use_fake": True,
+            "idempotency_key": "ops-cloud-fake",
         })
         if isinstance(applied, dict):
             self._zero_spend(applied, "setcloudstorage fake")
@@ -388,13 +390,13 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
         if mirror.get("consensus") is True or mirror.get("search_authority") is True:
             raise AssertionError(f"mirror privilege: {mirror}")
         try:
-            node.setmodelmirror({"publisher_id": "pub-ops", "keep_latest": 1, "automatic_spend_atoms": 1})
+            node.setmodelmirror({"publisher_id": "pub-ops", "keep_latest": 1, "automatic_spend_atoms": 1, "idempotency_key": "ops-mirror-spend-reject"})
             raise AssertionError("setmodelmirror must reject nonzero automatic_spend_atoms")
         except JSONRPCException as exc:
             blob = str(exc.error if isinstance(exc.error, dict) else exc).lower()
             if "automatic_spend" not in blob and "must remain 0" not in blob:
                 raise AssertionError(f"setmodelmirror spend reject: {exc}") from exc
-        setm = node.setmodelmirror({"publisher_id": "pub-ops", "keep_latest": 1, "automatic_spend_atoms": 0})
+        setm = node.setmodelmirror({"publisher_id": "pub-ops", "keep_latest": 1, "automatic_spend_atoms": 0, "idempotency_key": "ops-mirror-ok"})
         self._zero_spend(setm, "setmodelmirror")
 
         watch = node.watchmodelpublisher({"publisher_id": "pub-ops", "action": "NOTIFY"})
@@ -480,6 +482,19 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
             self._zero_spend(reserved, "reservesubscriptionmandate")
             if reserved.get("wallet_signed") is True:
                 raise AssertionError(f"reservesubscriptionmandate wallet_signed: {reserved}")
+            activity = node.getsubscriptionactivity({"mandate_id": created.get("mandate_id"), "limit": 10})
+            if not isinstance(activity, dict):
+                raise AssertionError(f"getsubscriptionactivity: {activity}")
+            self._zero_spend(activity, "getsubscriptionactivity")
+            if activity.get("wallet_signed") is True:
+                raise AssertionError(f"getsubscriptionactivity wallet_signed: {activity}")
+            if activity.get("telemetry") is True:
+                raise AssertionError(f"getsubscriptionactivity telemetry: {activity}")
+            actions = activity.get("actions")
+            if not isinstance(actions, list) or not actions:
+                raise AssertionError(f"getsubscriptionactivity actions: {activity}")
+            if actions[0].get("event_id") != "e-ops-reserve":
+                raise AssertionError(f"getsubscriptionactivity event_id: {actions[0]}")
             revoked = self._rpc_or_skip(node.revokesubscriptionmandate, {"mandate_id": created.get("mandate_id")})
             if isinstance(revoked, dict):
                 self._zero_spend(revoked, "revokesubscriptionmandate")
@@ -503,6 +518,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
                 "destination_path": "imported/model.safetensors",
                 "size_bytes": st.stat().st_size,
             }],
+            "idempotency_key": "ops-import-local",
         }
         imported = node.executemodelimport(plan)
         if not isinstance(imported, dict):
@@ -540,6 +556,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
                 "destination_path": "model.safetensors",
                 "size_bytes": 5,
             }],
+            "idempotency_key": "ops-import-hf",
         }
         try:
             hf = node.executemodelimport(hf_plan)
@@ -615,7 +632,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
         if got_ch.get("signature_ok") is not True:
             raise AssertionError(f"getmodelchannel signature_ok: {got_ch}")
 
-        boot_set = self._rpc_or_skip(node.setbootstrapdistributor, {"file_size_bytes": 4096})
+        boot_set = self._rpc_or_skip(node.setbootstrapdistributor, {"file_size_bytes": 4096, "idempotency_key": "ops-boot"})
         if isinstance(boot_set, dict):
             self._zero_spend(boot_set, "setbootstrapdistributor")
             if boot_set.get("false_missing_advertised") is True:
@@ -627,7 +644,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
                 raise AssertionError(f"routing throughput_is_ranking: {route}")
             if route.get("delegated_routing_is_consensus") is True:
                 raise AssertionError(f"routing consensus: {route}")
-        disc = self._rpc_or_skip(node.setmodeldiscoverypolicy, {})
+        disc = self._rpc_or_skip(node.setmodeldiscoverypolicy, {"idempotency_key": "ops-disc"})
         if isinstance(disc, dict):
             self._zero_spend(disc, "setmodeldiscoverypolicy")
             if disc.get("throughput_is_ranking") is True:
@@ -710,11 +727,11 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
         upl = self._rpc_or_skip(node.getmodeluploadinfo, {})
         if isinstance(upl, dict):
             self._zero_spend(upl, "getmodeluploadinfo")
-        self._rpc_or_skip(node.setmodeluploadpolicy, {"max_slots": 2})
-        healer = self._rpc_or_skip(node.setmodelswarmhealer, {"enabled": False})
+        self._rpc_or_skip(node.setmodeluploadpolicy, {"max_slots": 2, "idempotency_key": "ops-upload"})
+        healer = self._rpc_or_skip(node.setmodelswarmhealer, {"enabled": False, "idempotency_key": "ops-healer"})
         if isinstance(healer, dict):
             self._zero_spend(healer, "setmodelswarmhealer")
-        tsp = self._rpc_or_skip(node.settorrentsourcepolicy, {"s3_credentials": False})
+        tsp = self._rpc_or_skip(node.settorrentsourcepolicy, {"s3_credentials": False, "idempotency_key": "ops-torrent"})
         if isinstance(tsp, dict):
             self._zero_spend(tsp, "settorrentsourcepolicy")
             if tsp.get("torrent_worker_s3_credentials") is True:
@@ -744,10 +761,10 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
         ms = self._rpc_or_skip(node.getmodelmirrorstatus, {})
         if isinstance(ms, dict):
             self._zero_spend(ms, "getmodelmirrorstatus")
-        mig = self._rpc_or_skip(node.planmodelstoragemigration, {"mode": "DETACH"})
+        mig = self._rpc_or_skip(node.planmodelstoragemigration, {"mode": "DETACH", "idempotency_key": "ops-mig-plan"})
         if isinstance(mig, dict):
             self._zero_spend(mig, "planmodelstoragemigration")
-        emig = self._rpc_or_skip(node.executemodelstoragemigration, {"mode": "DETACH"})
+        emig = self._rpc_or_skip(node.executemodelstoragemigration, {"mode": "DETACH", "idempotency_key": "ops-mig-exec"})
         if isinstance(emig, dict):
             self._zero_spend(emig, "executemodelstoragemigration")
             if emig.get("bulk_io") is True:
@@ -766,6 +783,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
             "stripe_count": 2,
             "final_real_piece_count": 16,
             "shard_index_root": "b" * 96,
+            "idempotency_key": "ops-erasure",
             "stripes": [
                 {"index": 0, "positions": list(range(16))},
                 {"index": 1, "positions": list(range(15))},
@@ -892,7 +910,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
         })
         if isinstance(sub, dict):
             self._zero_spend(sub, "validatesubpiece")
-        storpol = self._rpc_or_skip(node.setmodelstoragepolicy, {})
+        storpol = self._rpc_or_skip(node.setmodelstoragepolicy, {"idempotency_key": "ops-storpol"})
         if isinstance(storpol, dict):
             self._zero_spend(storpol, "setmodelstoragepolicy")
             if storpol.get("bulk_io") is True:
@@ -912,7 +930,7 @@ class ModelNet0348OpsTest(BitcoinTestFramework):
         if chain.get("chain") != "regtest":
             raise AssertionError(f"chain after helper down: {chain}")
         try:
-            node.executemodelimport({"plan_id": "aa" * 48})
+            node.executemodelimport({"plan_id": "aa" * 48, "idempotency_key": "ops-import-helper-down"})
             raise AssertionError("executemodelimport after helper down must fail closed")
         except JSONRPCException as exc:
             msg = str(exc.error if isinstance(exc.error, dict) else exc).lower()

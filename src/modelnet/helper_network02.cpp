@@ -45,9 +45,11 @@
 #include <util/fs.h>
 #include <util/strencodings.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -76,6 +78,7 @@ struct AcqJob {
     std::string state{"PLANNED"};
     UniValue receipt{UniValue::VOBJ};
     uint64_t reserved_bytes{0};
+    std::string exec_fp;
 };
 std::map<std::string, AcqJob> g_acq;
 
@@ -85,6 +88,141 @@ struct StorageMigrationJournal {
     ObjectLayoutPlan plan;
 };
 StorageMigrationJournal g_migrate;
+
+struct Network02IdemEntry {
+    std::string body_fp;
+    UniValue result;
+    std::string err_code;
+    std::string err;
+    bool ok{true};
+};
+std::mutex g_n02_idem_mu;
+std::map<std::string, Network02IdemEntry> g_n02_idem;
+std::map<std::string, Network02IdemEntry> g_acq_exec_idem;
+
+std::string CanonicalNetwork02WriteMethod(const std::string& method)
+{
+    if (method == "addmodelstorage") return "setcloudstorage";
+    if (method == "exportbtxpackage") return "exportbtxbundle";
+    return method;
+}
+
+bool IsNetwork02CostlyWrite(const std::string& method)
+{
+    return method == "setcloudstorage" || method == "executemodelimport" || method == "createbtxpackage" ||
+           method == "exportbtxbundle" || method == "preparemodelerasure" || method == "executemodelerasure" ||
+           method == "setbootstrapdistributor" || method == "setmodeluploadpolicy" ||
+           method == "planmodelstoragemigration" || method == "executemodelstoragemigration" ||
+           method == "setmodelswarmhealer" || method == "settorrentsourcepolicy" ||
+           method == "setmodeldiscoverypolicy" || method == "setmodelmirror" || method == "setmodelstoragepolicy";
+}
+
+std::string Network02IdempotencyKey(const UniValue& o)
+{
+    if (o.exists("idempotency_key") && o["idempotency_key"].isStr()) return o["idempotency_key"].get_str();
+    return {};
+}
+
+std::string Network02IdemCaller(const UniValue& o)
+{
+    if (o.exists("caller") && o["caller"].isStr()) return o["caller"].get_str();
+    if (o.exists("caller_id") && o["caller_id"].isStr()) return o["caller_id"].get_str();
+    if (o.exists("as") && o["as"].isStr()) return o["as"].get_str();
+    return {};
+}
+
+std::string Network02IdemScope(const std::string& caller, const std::string& method, const std::string& key)
+{
+    std::string scope;
+    scope.reserve(caller.size() + method.size() + key.size() + 2);
+    scope.append(caller);
+    scope.push_back('\0');
+    scope.append(method);
+    scope.push_back('\0');
+    scope.append(key);
+    return scope;
+}
+
+std::string Network02BodyFingerprint(const UniValue& o)
+{
+    UniValue stripped(UniValue::VOBJ);
+    if (o.isObject()) {
+        std::vector<std::string> keys = o.getKeys();
+        std::sort(keys.begin(), keys.end());
+        for (const auto& k : keys) {
+            if (k == "idempotency_key" || k == "caller" || k == "caller_id" || k == "as") continue;
+            stripped.pushKV(k, o[k]);
+        }
+    }
+    return stripped.write();
+}
+
+void Network02IdemFail(UniValue& result, std::string& err_code, std::string& err, const std::string& code,
+                       const std::string& message)
+{
+    result = UniValue(UniValue::VOBJ);
+    result.pushKV("schema_version", 1);
+    result.pushKV("automatic_spend_atoms", 0);
+    if (code == "IDEMPOTENCY_CONFLICT") result.pushKV("status", "REJECTED");
+    err_code = code;
+    err = message;
+}
+
+std::string ExecuteAcqPlanFingerprint(const UniValue& o)
+{
+    UniValue stripped(UniValue::VOBJ);
+    if (o.exists("plan_id")) stripped.pushKV("plan_id", o["plan_id"]);
+    if (o.exists("verified_local_files")) stripped.pushKV("verified_local_files", o["verified_local_files"]);
+    return stripped.write();
+}
+
+/** Caller-scoped executebtxacquisition store. Missing key keeps existing
+ *  unkeyed execute behavior (other NETWORK-02 costly writes still require a
+ *  key). Lookup runs before plan_id MODEL_READY so a conflicting files set
+ *  cannot replay the first job_id as success. */
+bool WithExecuteAcquisitionIdempotency(const UniValue& o, UniValue& result, std::string& err_code, std::string& err,
+                                      const std::function<bool()>& once)
+{
+    const std::string key = Network02IdempotencyKey(o);
+    if (key.empty()) return once();
+    const std::string scope = Network02IdemScope(Network02IdemCaller(o), "executebtxacquisition", key);
+    const std::string fp = Network02BodyFingerprint(o);
+    {
+        std::lock_guard<std::mutex> lock(g_n02_idem_mu);
+        auto it = g_acq_exec_idem.find(scope);
+        if (it != g_acq_exec_idem.end()) {
+            if (it->second.body_fp != fp) {
+                Network02IdemFail(result, err_code, err, "IDEMPOTENCY_CONFLICT", "idempotency conflict");
+                return false;
+            }
+            result = it->second.result;
+            err_code = it->second.err_code;
+            err = it->second.err;
+            return it->second.ok;
+        }
+    }
+    const bool ok = once();
+    std::lock_guard<std::mutex> lock(g_n02_idem_mu);
+    auto it = g_acq_exec_idem.find(scope);
+    if (it != g_acq_exec_idem.end()) {
+        if (it->second.body_fp != fp) {
+            Network02IdemFail(result, err_code, err, "IDEMPOTENCY_CONFLICT", "idempotency conflict");
+            return false;
+        }
+        result = it->second.result;
+        err_code = it->second.err_code;
+        err = it->second.err;
+        return it->second.ok;
+    }
+    Network02IdemEntry entry;
+    entry.body_fp = fp;
+    entry.result = result;
+    entry.err_code = err_code;
+    entry.err = err;
+    entry.ok = ok;
+    g_acq_exec_idem.emplace(scope, std::move(entry));
+    return ok;
+}
 
 fs::path HelperRoot(const ModelCatalog& cat)
 {
@@ -678,8 +816,8 @@ std::string ResolveHelperMethodAlias(const std::string& method, std::string& ali
     return method;
 }
 
-bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const UniValue& params, UniValue& result,
-                           std::string& err_code, std::string& err)
+bool DispatchNetwork02RpcOnce(ModelCatalog& cat, const std::string& method, const UniValue& params, UniValue& result,
+                              std::string& err_code, std::string& err)
 {
     result = UniValue(UniValue::VOBJ);
     result.pushKV("schema_version", 1);
@@ -1187,6 +1325,7 @@ bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const Un
         return true;
     }
     if (method == "executebtxacquisition") {
+        return WithExecuteAcquisitionIdempotency(o, result, err_code, err, [&]() -> bool {
         const std::string plan_id = o.exists("plan_id") && o["plan_id"].isStr() ? o["plan_id"].get_str() : "";
         ExecuteAcquisitionRequest ex_req;
         bool have_files = false;
@@ -1204,6 +1343,12 @@ bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const Un
                 return false;
             }
             if (it->second.state == "MODEL_READY" && it->second.receipt.isObject()) {
+                const std::string fp = ExecuteAcqPlanFingerprint(o);
+                if (!it->second.exec_fp.empty() && it->second.exec_fp != fp) {
+                    Network02IdemFail(result, err_code, err, "IDEMPOTENCY_CONFLICT",
+                                      "executebtxacquisition payload conflict");
+                    return false;
+                }
                 result = it->second.receipt;
                 result.pushKV("job_id", plan_id);
                 result.pushKV("automatic_spend_atoms", 0);
@@ -1277,6 +1422,7 @@ bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const Un
             }
             it->second.reserved_bytes += reserved;
             it->second.state = "MODEL_READY";
+            it->second.exec_fp = ExecuteAcqPlanFingerprint(o);
             it->second.receipt = rec.json;
             result = rec.json;
             result.pushKV("job_id", plan_id);
@@ -1319,6 +1465,7 @@ bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const Un
         result = rec;
         result.pushKV("job_id", plan_id);
         return true;
+        });
     }
     if (method == "getbtxacquisition" || method == "cancelbtxacquisition") {
         const std::string plan_id = o.exists("plan_id") && o["plan_id"].isStr() ? o["plan_id"].get_str() : "";
@@ -1389,9 +1536,93 @@ bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const Un
         result.pushKV("automatic_spend_atoms", 0);
         return true;
     }
+    if (method == "setcloudstorage") {
+        result.pushKV("applied", false);
+        result.pushKV("bulk_io", false);
+        result.pushKV("live_r2_wan", "NOT_RUN");
+        result.pushKV("automatic_spend_atoms", 0);
+        result.pushKV("note", "local credential handle only; live HTTPS R2 remains NOT_RUN");
+        return true;
+    }
+    if (method == "setmodelstoragepolicy") {
+        result.pushKV("policy_applied", false);
+        result.pushKV("bulk_io", false);
+        result.pushKV("silent_migrate", false);
+        result.pushKV("automatic_spend_atoms", 0);
+        result.pushKV("note", "future layout/cache policy only; existing objects do not migrate");
+        return true;
+    }
+    if (method == "setmodelmirror") {
+        result.pushKV("role", "node");
+        result.pushKV("mirror_privilege", false);
+        result.pushKV("consensus", false);
+        result.pushKV("search_authority", false);
+        result.pushKV("automatic_spend_atoms", 0);
+        result.pushKV("note", "local keep/follow policy, not a monetary or consensus privilege");
+        return true;
+    }
     err_code = "METHOD_NOT_FOUND";
     err = method;
     return false;
+}
+
+bool WithNetwork02Idempotency(const std::string& method, const UniValue& params, UniValue& result,
+                              std::string& err_code, std::string& err, const std::function<bool()>& once)
+{
+    const std::string write_method = CanonicalNetwork02WriteMethod(method);
+    if (!IsNetwork02CostlyWrite(write_method)) return once();
+    const UniValue o = ObjectArg(params);
+    const std::string key = Network02IdempotencyKey(o);
+    if (key.empty()) {
+        Network02IdemFail(result, err_code, err, "INVALID_PARAMETER", "idempotency_key required");
+        return false;
+    }
+    const std::string scope = Network02IdemScope(Network02IdemCaller(o), write_method, key);
+    const std::string fp = Network02BodyFingerprint(o);
+    {
+        std::lock_guard<std::mutex> lock(g_n02_idem_mu);
+        auto it = g_n02_idem.find(scope);
+        if (it != g_n02_idem.end()) {
+            if (it->second.body_fp != fp) {
+                Network02IdemFail(result, err_code, err, "IDEMPOTENCY_CONFLICT", "idempotency conflict");
+                return false;
+            }
+            result = it->second.result;
+            err_code = it->second.err_code;
+            err = it->second.err;
+            return it->second.ok;
+        }
+    }
+    const bool ok = once();
+    std::lock_guard<std::mutex> lock(g_n02_idem_mu);
+    auto it = g_n02_idem.find(scope);
+    if (it != g_n02_idem.end()) {
+        if (it->second.body_fp != fp) {
+            Network02IdemFail(result, err_code, err, "IDEMPOTENCY_CONFLICT", "idempotency conflict");
+            return false;
+        }
+        result = it->second.result;
+        err_code = it->second.err_code;
+        err = it->second.err;
+        return it->second.ok;
+    }
+    Network02IdemEntry entry;
+    entry.body_fp = fp;
+    entry.result = result;
+    entry.err_code = err_code;
+    entry.err = err;
+    entry.ok = ok;
+    g_n02_idem.emplace(scope, std::move(entry));
+    return ok;
+}
+
+bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const UniValue& params, UniValue& result,
+                           std::string& err_code, std::string& err)
+{
+    const std::string write_method = CanonicalNetwork02WriteMethod(method);
+    return WithNetwork02Idempotency(method, params, result, err_code, err, [&] {
+        return DispatchNetwork02RpcOnce(cat, write_method, params, result, err_code, err);
+    });
 }
 
 bool TryAdmitModelUpload(const std::string& identity, const std::string& netgroup, uint64_t bytes,

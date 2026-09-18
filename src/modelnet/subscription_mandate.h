@@ -177,6 +177,9 @@ public:
     bool MarkBroadcast(const std::string& event_id, std::string& err);
     SubscriptionMandate Mandate() const;
     UniValue StatusJson() const;
+    /** WALLET_OWNER ActionPage: event → terms → reservation. Never wallet material.
+     *  `cursor` is the last event_id from a previous page (exclusive). `limit` is 1..100. */
+    UniValue ActivityPage(const std::string& cursor, int limit) const;
     /** Durable form of the mandate plus its spent budget and open reservations. */
     UniValue SaveStateJson() const;
     bool LoadStateJson(const UniValue& state, std::string& err);

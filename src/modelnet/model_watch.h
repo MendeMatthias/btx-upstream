@@ -135,6 +135,7 @@ public:
     std::vector<ModelWatch> List() const;
     bool Match(const ModelEvent& ev, const ModelWatch& watch) const { return WatchMatchesEvent(watch, ev); }
     void NoteEvent(const ModelEvent& ev);
+    /** Admission gate: FUND_WITH_MANDATE is omitted if the mandate is missing or Revoked(). */
     std::vector<QueuedWatchAction> DrainActions();
     std::vector<QueuedWatchAction> PeekActions() const;
 

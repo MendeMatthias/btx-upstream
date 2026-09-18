@@ -6,6 +6,7 @@
 // bulk/io, helper RPC wiring. Packaged acceptance-matrix.csv stays NOT_RUN.
 
 #include <crypto/common.h>
+#include <test/modelnet_n02_idem.h>
 #include <modelnet/bulk_controller.h>
 #include <modelnet/catalog.h>
 #include <modelnet/crypto.h>
@@ -17,6 +18,8 @@
 #include <modelnet/io_executor.h>
 #include <modelnet/lan_discovery.h>
 #include <modelnet/multipart_journal.h>
+#include <modelnet/operation_budget.h>
+#include <modelnet/query_router.h>
 #include <modelnet/object_layout.h>
 #include <modelnet/package_export.h>
 #include <modelnet/physical_dedup.h>
@@ -58,7 +61,7 @@ UniValue Rpc(const std::string& method, const UniValue& params)
 {
     UniValue req(UniValue::VOBJ);
     req.pushKV("method", method);
-    req.pushKV("params", params);
+    req.pushKV("params", WithN02Idempotency(method, params));
     return req;
 }
 
@@ -156,9 +159,14 @@ BOOST_AUTO_TEST_CASE(hello_capability_array_includes_network02)
     BOOST_REQUIRE(caps.isArray());
     bool sub = false, pkg = false, gossip = false;
     for (const auto& c : caps.getValues()) {
-        if (c.get_str() == modelnet::SUBPIECE_V1) sub = true;
-        if (c.get_str() == "PACKAGE_V1") pkg = true;
-        if (c.get_str() == "METADATA_GOSSIP_V1") gossip = true;
+        std::string n;
+        BOOST_REQUIRE(modelnet::HelloCapabilityEntryName(c, n));
+        if (n == modelnet::SUBPIECE_V1) sub = true;
+        if (n == "PACKAGE_V1") pkg = true;
+        if (n == "METADATA_GOSSIP_V1") gossip = true;
+        if (c.isObject()) {
+            BOOST_CHECK(c.exists("min") && c.exists("max"));
+        }
     }
     BOOST_CHECK(sub);
     BOOST_CHECK(pkg);
@@ -440,6 +448,97 @@ BOOST_AUTO_TEST_CASE(catalog_aliases_and_remaining_network02_contracts)
     BOOST_REQUIRE(j.NotePart(part, jerr));
     BOOST_REQUIRE(j.Complete(jerr));
     BOOST_CHECK(!modelnet::MultipartEtagIsCanonicalIdentity());
+}
+
+BOOST_AUTO_TEST_CASE(n02_multipart_seven_phase_journal)
+{
+    using modelnet::MultipartPhase;
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::NONE), 0U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::INITIATED), 1U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::PARTS), 2U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::COMPLETED), 3U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::ABORTED), 4U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::INIT_PLANNED), 5U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::COMPLETE_PLANNED), 6U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::OBJECT_COMMITTED), 7U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(MultipartPhase::REMOTE_OUTCOME_UNKNOWN), 8U);
+
+    modelnet::MultipartJournal j;
+    std::string err;
+    const std::string snap = "snap-seven-phase";
+    BOOST_REQUIRE(j.PlanInit("models/org/obj", snap, 2, err));
+    BOOST_CHECK(j.Phase() == MultipartPhase::INIT_PLANNED);
+    BOOST_REQUIRE(j.Initiate("models/org/obj", "upload-seven", snap, 2, err));
+    BOOST_CHECK(j.Phase() == MultipartPhase::INITIATED);
+
+    modelnet::MultipartPart p0;
+    p0.index = 0;
+    p0.offset = 0;
+    p0.length = 32;
+    p0.etag = "etag-0";
+    modelnet::MultipartPart p1;
+    p1.index = 1;
+    p1.offset = 32;
+    p1.length = 16;
+    p1.etag = "etag-1";
+    BOOST_REQUIRE(j.NotePart(p0, err));
+    BOOST_CHECK(j.Phase() == MultipartPhase::PARTS);
+    BOOST_REQUIRE(j.NotePart(p1, err));
+    BOOST_REQUIRE(j.PlanComplete(err));
+    BOOST_CHECK(j.Phase() == MultipartPhase::COMPLETE_PLANNED);
+    BOOST_REQUIRE(j.Complete(err));
+    BOOST_CHECK(j.Phase() == MultipartPhase::COMPLETED);
+    BOOST_REQUIRE(j.CommitObject(err));
+    BOOST_CHECK(j.Phase() == MultipartPhase::OBJECT_COMMITTED);
+    BOOST_CHECK_EQUAL(j.ListParts().size(), 2U);
+    BOOST_CHECK_EQUAL(j.Json()["phase"].get_str(), "OBJECT_COMMITTED");
+
+    modelnet::MultipartJournal uncertain;
+    BOOST_REQUIRE(uncertain.Initiate("k2", "u2", snap, 1, err));
+    BOOST_REQUIRE(uncertain.NotePart(p0, err));
+    BOOST_REQUIRE(uncertain.NoteRemoteUnknown(err));
+    BOOST_CHECK(uncertain.Phase() == MultipartPhase::REMOTE_OUTCOME_UNKNOWN);
+}
+
+BOOST_AUTO_TEST_CASE(n02_operation_budget_reserve_release_cancel)
+{
+    using namespace modelnet;
+    OperationBudget budget;
+    budget.max_bytes = 128;
+    budget.max_ops = OPERATION_BUDGET_DEFAULT_MAX_OPS;
+    CancelToken token;
+    std::string err;
+
+    BOOST_REQUIRE(Reserve(budget, 64, 1, err));
+    BOOST_REQUIRE(Reserve(budget, 32, 1, err));
+    BOOST_CHECK(!Reserve(budget, 64, 1, err));
+
+    OperationBudget tight;
+    tight.max_ops = OPERATION_BUDGET_MAX_OPS_CAP;
+    for (uint64_t i = 0; i < OPERATION_BUDGET_MAX_OPS_CAP; ++i) {
+        BOOST_REQUIRE(Reserve(tight, 0, 1, err));
+    }
+    BOOST_CHECK(!Reserve(tight, 0, 1, err));
+
+    Release(budget, 64, 1);
+    BOOST_REQUIRE(Reserve(budget, 64, 1, err));
+
+    Cancel(budget, &token);
+    BOOST_CHECK(budget.cancelled);
+    BOOST_CHECK(token.cancelled);
+    BOOST_CHECK(!Reserve(budget, 1, 1, err));
+}
+
+BOOST_AUTO_TEST_CASE(n02_query_summary_snapshot_generation_stamps)
+{
+    modelnet::QueryRouter router;
+    std::vector<std::string> ids{"a", "b", "c"};
+    const auto first = router.SummarizeIds(ids);
+    BOOST_CHECK_EQUAL(first.hit_count, 3U);
+    BOOST_CHECK_EQUAL(first.snapshot_generation, 1U);
+    const auto second = router.SummarizeIds(ids);
+    BOOST_CHECK_EQUAL(second.snapshot_generation, 2U);
+    BOOST_CHECK_EQUAL(second.tombstone_floor, 0U);
 }
 
 BOOST_AUTO_TEST_CASE(n02_healer_and_execute_migration_are_not_stubs)

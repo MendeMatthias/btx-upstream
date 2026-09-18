@@ -95,6 +95,16 @@ public:
                        std::string& err);
     bool GetPieceObject(const Digest48& artifact, uint32_t file_index, uint32_t piece_index,
                         std::vector<unsigned char>& out, std::string& err);
+
+    /** PhysicalObjectLayout WHOLE_FILE / LARGE_EXTENTS. FakeS3 loopback only. */
+    bool PutWholeFile(const Digest48& artifact, uint32_t file_index, Span<const unsigned char> body,
+                      std::string& err);
+    bool GetWholeFile(const Digest48& artifact, uint32_t file_index, std::vector<unsigned char>& out,
+                      std::string& err);
+    bool PutLargeExtent(const Digest48& artifact, uint32_t file_index, uint32_t extent_index,
+                        Span<const unsigned char> body, std::string& err);
+    bool GetLargeExtent(const Digest48& artifact, uint32_t file_index, uint32_t extent_index,
+                        std::vector<unsigned char>& out, std::string& err);
     bool PresignSourceFileGet(const Digest48& artifact, uint32_t file_index, int ttl_seconds, std::string& url,
                               std::string& err);
     bool FetchPresignedGet(const std::string& url, std::vector<unsigned char>& out, std::string& err);

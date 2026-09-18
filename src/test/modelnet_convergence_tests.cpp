@@ -13,6 +13,7 @@
 #include <modelnet/erasure_manifest.h>
 #include <modelnet/erasure_store.h>
 #include <modelnet/helper.h>
+#include <test/modelnet_n02_idem.h>
 #include <modelnet/index_reconcile.h>
 #include <modelnet/lan_discovery.h>
 #include <modelnet/object_layout.h>
@@ -432,7 +433,7 @@ BOOST_AUTO_TEST_CASE(conv_rpc_stubs_are_live_journal_not_flags)
     UniValue result;
     UniValue req(UniValue::VOBJ);
     req.pushKV("method", "executemodelstoragemigration");
-    req.pushKV("params", UniValue(UniValue::VARR));
+    req.pushKV("params", WithN02Idempotency("executemodelstoragemigration", UniValue(UniValue::VARR)));
     BOOST_REQUIRE(DispatchHelperRpc(cat, req, result, code, err));
     BOOST_CHECK(result["executed"].get_bool());
     BOOST_CHECK(!result["bulk_io"].get_bool());
@@ -444,7 +445,7 @@ BOOST_AUTO_TEST_CASE(conv_rpc_stubs_are_live_journal_not_flags)
     hparams.push_back(hp);
     UniValue heal(UniValue::VOBJ);
     heal.pushKV("method", "setmodelswarmhealer");
-    heal.pushKV("params", hparams);
+    heal.pushKV("params", WithN02Idempotency("setmodelswarmhealer", hparams));
     result = UniValue(UniValue::VOBJ);
     BOOST_REQUIRE(DispatchHelperRpc(cat, heal, result, code, err));
     BOOST_CHECK(result["healer"].get_bool());
@@ -453,7 +454,7 @@ BOOST_AUTO_TEST_CASE(conv_rpc_stubs_are_live_journal_not_flags)
 
     UniValue pol(UniValue::VOBJ);
     pol.pushKV("method", "settorrentsourcepolicy");
-    pol.pushKV("params", UniValue(UniValue::VARR));
+    pol.pushKV("params", WithN02Idempotency("settorrentsourcepolicy", UniValue(UniValue::VARR)));
     result = UniValue(UniValue::VOBJ);
     BOOST_REQUIRE(DispatchHelperRpc(cat, pol, result, code, err));
     BOOST_CHECK(result["reverse_bridge_live"].get_bool());

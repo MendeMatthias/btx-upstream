@@ -11,8 +11,16 @@
 
 namespace modelnet {
 
+/** Advertised hello capabilities: array of {name, min, max} (version range). */
 UniValue HelloCapabilityArray();
+/** True if hello advertises `name`. Accepts string entries and {name,min,max} objects. */
 bool HelloHasCapability(const UniValue& hello, const std::string& name);
+/** Name from a legacy string entry or an object with a string "name" field. */
+bool HelloCapabilityEntryName(const UniValue& entry, std::string& name);
+/** Clamp advertised {name,min,max} against a peer hello. Empty intersection drops the name. */
+UniValue IntersectHelloCapabilities(const UniValue& local, const UniValue& remote);
+/** Advertise local {name,min,max}. If `peer` carries a capabilities array, return the intersection. */
+UniValue HelloCapabilityArrayMaybeIntersect(const UniValue& peer);
 
 } // namespace modelnet
 

@@ -18,6 +18,7 @@
 #include <modelnet/package_execute.h>
 #include <modelnet/transfer_session.h>
 #include <test/util/setup_common.h>
+#include <test/modelnet_n02_idem.h>
 #include <univalue.h>
 #include <util/fs.h>
 #include <unistd.h>
@@ -40,8 +41,9 @@ namespace {
 
 UniValue Rpc(const std::string& method, const UniValue& o)
 {
+    UniValue inner = WithN02Idempotency(method, o);
     UniValue params(UniValue::VARR);
-    params.push_back(o);
+    params.push_back(inner);
     UniValue req(UniValue::VOBJ);
     req.pushKV("method", method);
     req.pushKV("params", params);

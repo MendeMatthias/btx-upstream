@@ -14,6 +14,10 @@ const char* MultipartPhaseName(MultipartPhase p)
     case MultipartPhase::PARTS: return "PARTS";
     case MultipartPhase::COMPLETED: return "COMPLETED";
     case MultipartPhase::ABORTED: return "ABORTED";
+    case MultipartPhase::INIT_PLANNED: return "INIT_PLANNED";
+    case MultipartPhase::COMPLETE_PLANNED: return "COMPLETE_PLANNED";
+    case MultipartPhase::OBJECT_COMMITTED: return "OBJECT_COMMITTED";
+    case MultipartPhase::REMOTE_OUTCOME_UNKNOWN: return "REMOTE_OUTCOME_UNKNOWN";
     }
     return "NONE";
 }
@@ -21,6 +25,30 @@ const char* MultipartPhaseName(MultipartPhase p)
 bool MultipartEtagIsCanonicalIdentity()
 {
     return false;
+}
+
+bool MultipartJournal::PlanInit(const std::string& object_key, const std::string& source_snapshot,
+                                uint64_t planned_parts, std::string& err)
+{
+    if (m_phase != MultipartPhase::NONE) {
+        err = "phase";
+        return false;
+    }
+    if (object_key.empty()) {
+        err = "upload identity";
+        return false;
+    }
+    if (planned_parts == 0) {
+        err = "planned_parts";
+        return false;
+    }
+    m_object_key = object_key;
+    m_upload_id.clear();
+    m_source_snapshot = source_snapshot;
+    m_planned_parts = planned_parts;
+    m_parts.clear();
+    m_phase = MultipartPhase::INIT_PLANNED;
+    return true;
 }
 
 bool MultipartJournal::Initiate(const std::string& object_key, const std::string& upload_id,
@@ -33,6 +61,12 @@ bool MultipartJournal::Initiate(const std::string& object_key, const std::string
     if (planned_parts == 0) {
         err = "planned_parts";
         return false;
+    }
+    if (m_phase == MultipartPhase::INIT_PLANNED) {
+        if (object_key != m_object_key || source_snapshot != m_source_snapshot || planned_parts != m_planned_parts) {
+            err = "plan mismatch";
+            return false;
+        }
     }
     m_object_key = object_key;
     m_upload_id = upload_id;
@@ -62,9 +96,24 @@ bool MultipartJournal::NotePart(const MultipartPart& part, std::string& err)
     return true;
 }
 
+bool MultipartJournal::PlanComplete(std::string& err)
+{
+    if (m_phase != MultipartPhase::PARTS) {
+        err = "phase";
+        return false;
+    }
+    if (m_parts.size() != m_planned_parts) {
+        err = "incomplete parts";
+        return false;
+    }
+    m_phase = MultipartPhase::COMPLETE_PLANNED;
+    return true;
+}
+
 bool MultipartJournal::Complete(std::string& err)
 {
-    if (m_phase != MultipartPhase::PARTS && m_phase != MultipartPhase::INITIATED) {
+    if (m_phase != MultipartPhase::PARTS && m_phase != MultipartPhase::INITIATED &&
+        m_phase != MultipartPhase::COMPLETE_PLANNED) {
         err = "phase";
         return false;
     }
@@ -73,6 +122,27 @@ bool MultipartJournal::Complete(std::string& err)
         return false;
     }
     m_phase = MultipartPhase::COMPLETED;
+    return true;
+}
+
+bool MultipartJournal::CommitObject(std::string& err)
+{
+    if (m_phase != MultipartPhase::COMPLETED) {
+        err = "phase";
+        return false;
+    }
+    m_phase = MultipartPhase::OBJECT_COMMITTED;
+    return true;
+}
+
+bool MultipartJournal::NoteRemoteUnknown(std::string& err)
+{
+    if (m_phase != MultipartPhase::INITIATED && m_phase != MultipartPhase::PARTS &&
+        m_phase != MultipartPhase::COMPLETE_PLANNED && m_phase != MultipartPhase::COMPLETED) {
+        err = "phase";
+        return false;
+    }
+    m_phase = MultipartPhase::REMOTE_OUTCOME_UNKNOWN;
     return true;
 }
 

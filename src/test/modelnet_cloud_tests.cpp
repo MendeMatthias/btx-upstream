@@ -39,6 +39,7 @@
 #include <crypto/sha384.h>
 #include <span.h>
 #include <test/util/setup_common.h>
+#include <test/modelnet_n02_idem.h>
 #include <univalue.h>
 #include <util/fs.h>
 
@@ -292,6 +293,7 @@ BOOST_AUTO_TEST_CASE(cloud_07c_piece_objects_hydrate_incomplete)
     cfg.pushKV("layout", "PIECE_OBJECTS");
     cfg.pushKV("credential_ref", fs::PathToString(creds));
     cfg.pushKV("use_fake", true);
+    cfg.pushKV("idempotency_key", "cloud-07c-set");
     UniValue params(UniValue::VARR);
     params.push_back(cfg);
     UniValue req(UniValue::VOBJ);
@@ -760,6 +762,7 @@ BOOST_AUTO_TEST_CASE(cloud_rpc_set_hostmodel_events_no_secrets)
     cfg.pushKV("layout", "AUTO");
     cfg.pushKV("credential_ref", fs::PathToString(creds));
     cfg.pushKV("use_fake", true);
+    cfg.pushKV("idempotency_key", "cloud-rpc-set");
     UniValue params(UniValue::VARR);
     params.push_back(cfg);
     UniValue req(UniValue::VOBJ);
@@ -775,6 +778,7 @@ BOOST_AUTO_TEST_CASE(cloud_rpc_set_hostmodel_events_no_secrets)
 
     UniValue bad(UniValue::VOBJ);
     cfg.pushKV("aws_secret_access_key", kSecret);
+    cfg.pushKV("idempotency_key", "cloud-rpc-secret-reject");
     UniValue badp(UniValue::VARR);
     badp.push_back(cfg);
     UniValue badreq(UniValue::VOBJ);

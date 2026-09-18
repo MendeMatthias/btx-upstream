@@ -29,7 +29,8 @@ issuance, miner preference, BanMan, AddrMan, or monetary peer scoring.
 
 ### HCP plane (`btx-hcpd` / `btx-hosted`)
 
-0.34.8-dev, **not shipped**. Operator index: [doc/hosted/README.md](doc/hosted/README.md).
+0.34.8-dev, `CLIENT_VERSION_IS_RELEASE=false` (not a shipping tag; code is
+in this tree). Operator index: [doc/hosted/README.md](doc/hosted/README.md).
 Spec: [doc/modelnet/hcp/](doc/modelnet/hcp/). Authority:
 [audit/hcp-authority-matrix.md](audit/hcp-authority-matrix.md).
 
@@ -132,7 +133,7 @@ getmodelsharecard | getmodeltransfers | getmodelaliases | setmodelalias
 scanmodelwatch                   # filesystem -modelwatch=<dir>; not a publisher watch
 searchmodels | getmodel (FREE_ONLY) | exportmodelpath
 createbountydraft | listbountydrafts | getbountydraft | updatebountydraft | deletebountydraft | validatebountyterms
-# 0.34.8-dev (fail closed if helper lacks method; not shipped):
+# 0.34.8-dev (RPCs exist; IS_RELEASE=false; fail closed if an older helper lacks method):
 getcloudstorageinfo | testcloudstorage | setcloudstorage
 # catalog aliases (result.alias_of names the private method):
 addmodelstorage | listmodelstorage | getmodelcapabilities
@@ -225,7 +226,8 @@ do not advertise them in `getbountycapabilities` until execution is real.
 
 ## Release and session constraints
 
-`CLIENT_VERSION_IS_RELEASE` is **true** for 0.34.7.
+This tree is **0.34.8-dev** (`CLIENT_VERSION_IS_RELEASE=false`). The last
+shipping tag is **0.34.7** (`CLIENT_VERSION_IS_RELEASE=true` on that tag).
 
 - No unapproved git push, merge, or `CLIENT_VERSION` bump.
 - Do not compile (`cmake`, `ninja`, `cmake --build`) unless the operator asked.

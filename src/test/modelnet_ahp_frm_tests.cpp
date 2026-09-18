@@ -4,7 +4,7 @@
 //
 // AHP-FRM-01 .. AHP-FRM-12 native framing cases (Lane A 01-04/10 + Lane H remainder).
 // Expected core_id from python3 reference/btx_package.py only — not native PASS.
-// EncodeBtxBundle is intentionally unused: NETWORK-02 keeps UniValue::write framing.
+// Bundle JSON uses BTXPKG_BUNDLE_FLAGS; PJSON1 packages keep flags=0.
 // Coordinator owns CMakeLists.txt. No ninja in this lane.
 
 #include <crypto/common.h>
@@ -152,6 +152,13 @@ BOOST_AUTO_TEST_CASE(ahp_frm_01_header_golden)
     std::vector<unsigned char> bundle;
     BOOST_REQUIRE_MESSAGE(modelnet::EncodeBtxBundle(payload, bundle, err), err);
     BOOST_CHECK(bundle != encoded);
+    BOOST_REQUIRE_GE(bundle.size(), 12U);
+    BOOST_CHECK_EQUAL(ReadLE32(bundle.data() + 8), modelnet::BTXPKG_BUNDLE_FLAGS);
+    BOOST_CHECK_EQUAL(ReadLE32(encoded.data() + 8), modelnet::BTXPKG_CORE_FLAGS);
+    UniValue as_bundle;
+    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxBundle(bundle, as_bundle, err), err);
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(golden, as_bundle, err));
+    BOOST_CHECK_EQUAL(err, "conflicting dual body");
 }
 
 BOOST_AUTO_TEST_CASE(ahp_frm_02_truncation_trailing)
@@ -204,6 +211,15 @@ BOOST_AUTO_TEST_CASE(ahp_frm_03_length_bomb)
     WriteLE64(bomb.data() + 12, std::numeric_limits<uint64_t>::max());
     BOOST_CHECK(!modelnet::DecodeBtxPackage(bomb, dec, err));
     BOOST_CHECK_EQUAL(dec.err_code, "PACKAGE_TOO_LARGE");
+
+    UniValue bundle_out;
+    bomb = HeaderWithLength(std::numeric_limits<uint64_t>::max(), modelnet::BTXPKG_BUNDLE_FLAGS);
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(bomb, bundle_out, err));
+    BOOST_CHECK_EQUAL(err, "flags/size/trailing");
+    bomb.resize(76);
+    WriteLE64(bomb.data() + 12, std::numeric_limits<uint64_t>::max());
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(bomb, bundle_out, err));
+    BOOST_CHECK_EQUAL(err, "flags/size/trailing");
 }
 
 BOOST_AUTO_TEST_CASE(ahp_frm_04_digest_corruption)

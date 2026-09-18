@@ -22,6 +22,7 @@
 
 #include <modelnet/capability.h>
 #include <modelnet/catalog.h>
+#include <modelnet/hello_caps.h>
 #include <modelnet/helper.h>
 #include <modelnet/transfer_session.h>
 #include <test/util/setup_common.h>
@@ -356,6 +357,117 @@ BOOST_AUTO_TEST_CASE(JIT_UPDATE_07)
     UniValue c;
     BOOST_CHECK(!modelnet::PlanCapabilityUpdate(changed, c, code, err));
     BOOST_CHECK_EQUAL(code, "IDEMPOTENCY_CONFLICT");
+    BOOST_CHECK_EQUAL(c["error_code"].get_str(), "IDEMPOTENCY_CONFLICT");
+}
+
+BOOST_AUTO_TEST_CASE(JIT_ENSURE_IDEMPOTENCY_KEY_PAYLOAD)
+{
+    BOOST_TEST_MESSAGE("ensure: same key+payload replays; same key+different payload conflicts");
+    modelnet::ModelCatalog cat{m_path_root / "ensure-idem", 1 << 20};
+    const auto plan = StorePlan();
+    UniValue req = EnsureReq(plan);
+    req.pushKV("idempotency_key", "ensure-k-same");
+    req.pushKV("runtime_id", "synthetic-cpu-fixture");
+    UniValue first, replay;
+    std::string code, err;
+    BOOST_REQUIRE_MESSAGE(modelnet::EnsureCapability(cat, req, first, code, err), err);
+    BOOST_REQUIRE(first.exists("job_id") && first["job_id"].isStr());
+    const std::string job = first["job_id"].get_str();
+    BOOST_REQUIRE_MESSAGE(modelnet::EnsureCapability(cat, req, replay, code, err), err);
+    BOOST_CHECK(replay["idempotent"].get_bool());
+    BOOST_CHECK_EQUAL(replay["job_id"].get_str(), job);
+    BOOST_CHECK_EQUAL(replay["automatic_spend_atoms"].getInt<int>(), 0);
+
+    UniValue other = req;
+    other.pushKV("runtime_id", "synthetic-cpu-fixture-alt");
+    UniValue conflict;
+    BOOST_CHECK(!modelnet::EnsureCapability(cat, other, conflict, code, err));
+    BOOST_CHECK_EQUAL(code, "IDEMPOTENCY_CONFLICT");
+    BOOST_CHECK_EQUAL(conflict["error_code"].get_str(), "IDEMPOTENCY_CONFLICT");
+    BOOST_CHECK(!conflict.exists("job_id"));
+    BOOST_CHECK(!conflict["idempotent"].isTrue());
+    BOOST_CHECK_EQUAL(conflict["automatic_spend_atoms"].getInt<int>(), 0);
+
+    UniValue nokey_a = EnsureReq(plan);
+    UniValue nokey_b = EnsureReq(plan);
+    UniValue a, b;
+    BOOST_REQUIRE_MESSAGE(modelnet::EnsureCapability(cat, nokey_a, a, code, err), err);
+    BOOST_REQUIRE_MESSAGE(modelnet::EnsureCapability(cat, nokey_b, b, code, err), err);
+    BOOST_CHECK(a["job_id"].get_str() != b["job_id"].get_str());
+}
+
+BOOST_AUTO_TEST_CASE(hello_capability_objects_name_min_max)
+{
+    const UniValue caps = modelnet::HelloCapabilityArray();
+    BOOST_REQUIRE(caps.isArray());
+    BOOST_REQUIRE_GE(caps.size(), 1U);
+    bool sub = false, pkg = false, gossip = false, core_v3 = false;
+    for (const auto& c : caps.getValues()) {
+        std::string n;
+        BOOST_REQUIRE(modelnet::HelloCapabilityEntryName(c, n));
+        BOOST_CHECK(c.isObject());
+        BOOST_CHECK(!c.isStr());
+        BOOST_CHECK(c.exists("min") && c["min"].isNum());
+        BOOST_CHECK(c.exists("max") && c["max"].isNum());
+        BOOST_CHECK_LE(c["min"].getInt<int>(), c["max"].getInt<int>());
+        if (n == "SUBPIECE_V1") {
+            sub = true;
+            BOOST_CHECK_EQUAL(c["min"].getInt<int>(), 1);
+            BOOST_CHECK_EQUAL(c["max"].getInt<int>(), 1);
+        }
+        if (n == "PACKAGE_V1") pkg = true;
+        if (n == "METADATA_GOSSIP_V1") gossip = true;
+        if (n == "BTXPKG_CORE_V3") {
+            core_v3 = true;
+            BOOST_CHECK_EQUAL(c["min"].getInt<int>(), 3);
+            BOOST_CHECK_EQUAL(c["max"].getInt<int>(), 3);
+        }
+    }
+    BOOST_CHECK(sub);
+    BOOST_CHECK(pkg);
+    BOOST_CHECK(gossip);
+    BOOST_CHECK(core_v3);
+
+    UniValue peer(UniValue::VOBJ);
+    UniValue peer_caps(UniValue::VARR);
+    UniValue sub_obj(UniValue::VOBJ);
+    sub_obj.pushKV("name", "SUBPIECE_V1");
+    sub_obj.pushKV("min", 1);
+    sub_obj.pushKV("max", 1);
+    peer_caps.push_back(sub_obj);
+    UniValue unknown(UniValue::VOBJ);
+    unknown.pushKV("name", "NOT_A_CAPABILITY");
+    unknown.pushKV("min", 1);
+    unknown.pushKV("max", 9);
+    peer_caps.push_back(unknown);
+    peer.pushKV("capabilities", peer_caps);
+    const UniValue clamped = modelnet::IntersectHelloCapabilities(caps, peer);
+    BOOST_REQUIRE(clamped.isArray());
+    bool saw_sub = false;
+    bool saw_unknown = false;
+    for (const auto& c : clamped.getValues()) {
+        std::string n;
+        BOOST_REQUIRE(modelnet::HelloCapabilityEntryName(c, n));
+        if (n == "SUBPIECE_V1") saw_sub = true;
+        if (n == "NOT_A_CAPABILITY") saw_unknown = true;
+    }
+    BOOST_CHECK(saw_sub);
+    BOOST_CHECK(!saw_unknown);
+
+    UniValue hello(UniValue::VOBJ);
+    hello.pushKV("capabilities", caps);
+    BOOST_CHECK(modelnet::HelloHasCapability(hello, "FULL_FILE_STREAM_V1"));
+    BOOST_CHECK(modelnet::HelloHasCapability(hello, "SUBPIECE_V1"));
+    BOOST_CHECK(modelnet::HelloHasCapability(hello, "AGENT_HANDOFF_V1"));
+    BOOST_CHECK(!modelnet::HelloHasCapability(hello, "NOT_A_CAPABILITY"));
+
+    UniValue strings(UniValue::VARR);
+    strings.push_back(std::string("SUBPIECE_V1"));
+    strings.push_back(std::string("FULL_FILE_STREAM_V1"));
+    UniValue hello_str(UniValue::VOBJ);
+    hello_str.pushKV("capabilities", strings);
+    BOOST_CHECK(modelnet::HelloHasCapability(hello_str, "SUBPIECE_V1"));
+    BOOST_CHECK(modelnet::HelloHasCapability(hello_str, "FULL_FILE_STREAM_V1"));
 }
 
 BOOST_AUTO_TEST_CASE(JIT_JOURNEY_01)

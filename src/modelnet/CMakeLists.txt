@@ -98,6 +98,7 @@ add_library(bitcoin_modelnet STATIC
   source_policy.cpp
   residency_state.cpp
   multipart_journal.cpp
+  operation_budget.cpp
   physical_dedup.cpp
   selective_files.cpp
   lan_discovery.cpp

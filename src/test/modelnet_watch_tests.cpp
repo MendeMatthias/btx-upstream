@@ -8,6 +8,7 @@
 #include <modelnet/identity.h>
 #include <modelnet/model_watch.h>
 #include <modelnet/resource_uri.h>
+#include <modelnet/subscription_mandate.h>
 #include <span.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
@@ -108,6 +109,51 @@ bool ListHasChannel(const UniValue& listed, const modelnet::SignedChannel& ch)
         }
     }
     return false;
+}
+
+UniValue WatchMandateJson(const std::string& mandate_id)
+{
+    UniValue o(UniValue::VOBJ);
+    o.pushKV("mandate_version", 1);
+    o.pushKV("mandate_id", mandate_id);
+    o.pushKV("owner_identity", std::string(96, 'a'));
+    o.pushKV("network_id", std::string(64, '0'));
+    o.pushKV("publisher_id", std::string(96, 'b'));
+    UniValue kinds(UniValue::VARR);
+    kinds.push_back("MODEL");
+    o.pushKV("allowed_kinds", kinds);
+    UniValue acts(UniValue::VARR);
+    acts.push_back("FUND_WITH_MANDATE");
+    o.pushKV("allowed_actions", acts);
+    o.pushKV("per_action_principal_limit_atoms", "50");
+    o.pushKV("total_principal_limit_atoms", "100");
+    o.pushKV("total_fee_limit_atoms", "20");
+    o.pushKV("outstanding_exposure_limit_atoms", "200");
+    o.pushKV("max_actions", 16);
+    o.pushKV("max_concurrent_reservations", 8);
+    o.pushKV("expires_at_ms", "4000000000000");
+    o.pushKV("refund_key_policy", "OWNER_CONTROLLED_ONLY");
+    o.pushKV("minimum_confirmations", 1);
+    o.pushKV("assurance_mode_restrictions", UniValue(UniValue::VARR));
+    o.pushKV("revocation_counter", "0");
+    return o;
+}
+
+UniValue MandateRpcArr(const UniValue& o)
+{
+    UniValue a(UniValue::VARR);
+    a.push_back(o);
+    return a;
+}
+
+size_t CountFundActions(const std::vector<modelnet::QueuedWatchAction>& acts)
+{
+    size_t n = 0;
+    for (const auto& a : acts) {
+        BOOST_CHECK(!a.spends);
+        if (a.action == modelnet::ActionPolicy::FUND_WITH_MANDATE) ++n;
+    }
+    return n;
 }
 
 } // namespace
@@ -523,6 +569,96 @@ BOOST_AUTO_TEST_CASE(fund_with_mandate_action_is_unsigned)
     BOOST_CHECK_EQUAL(o["mandate_id"].get_str(), "mid-1");
     BOOST_CHECK_EQUAL(o["automatic_spend_atoms"].getInt<int>(), 0);
     BOOST_CHECK(!o["spends"].get_bool());
+}
+
+BOOST_AUTO_TEST_CASE(drain_actions_drops_fund_when_mandate_revoked_or_missing)
+{
+    using namespace modelnet;
+    GlobalSubscriptionStore().Reset();
+    ModelWatchStore store(m_path_root / "watch-fund-revoke");
+
+    UniValue created;
+    std::string code, err;
+    BOOST_REQUIRE_MESSAGE(GlobalSubscriptionStore().Dispatch("createsubscriptionmandate", MandateRpcArr(WatchMandateJson("watch-mid")),
+                                                             created, code, err, 1'000'000),
+                          err);
+    const std::string mid = created["mandate_id"].get_str();
+    BOOST_CHECK_EQUAL(mid, "watch-mid");
+
+    ModelWatch fund;
+    fund.kind = WatchKind::PUBLISHER;
+    fund.publisher_id = "pub-fund";
+    fund.action = ActionPolicy::FUND_WITH_MANDATE;
+    fund.mandate_id = mid;
+    BOOST_REQUIRE(store.PutWatch(fund, err));
+
+    ModelWatch keep;
+    keep.kind = WatchKind::PUBLISHER;
+    keep.publisher_id = "pub-fund";
+    keep.action = ActionPolicy::KEEP;
+    BOOST_REQUIRE(store.PutWatch(keep, err));
+
+    store.NoteEvent(MakeSigned("pub-fund", "mid-live"));
+    {
+        const auto live = store.DrainActions();
+        BOOST_REQUIRE_EQUAL(CountFundActions(live), 1U);
+        bool saw_keep = false;
+        for (const auto& a : live) {
+            BOOST_CHECK(!a.spends);
+            const UniValue j = WatchActionToJson(a);
+            BOOST_CHECK_EQUAL(j["automatic_spend_atoms"].getInt<int>(), 0);
+            if (a.action == ActionPolicy::KEEP) saw_keep = true;
+        }
+        BOOST_CHECK(saw_keep);
+    }
+
+    store.NoteEvent(MakeSigned("pub-fund", "mid-queued"));
+    BOOST_CHECK_GE(CountFundActions(store.PeekActions()), 1U);
+
+    UniValue revoked;
+    BOOST_REQUIRE_MESSAGE(GlobalSubscriptionStore().Dispatch("revokesubscriptionmandate", MandateRpcArr(WatchMandateJson("watch-mid")),
+                                                             revoked, code, err, 1'000'000),
+                          err);
+    BOOST_CHECK(revoked["revoked"].get_bool());
+
+    UniValue status;
+    BOOST_REQUIRE_MESSAGE(GlobalSubscriptionStore().Dispatch("getsubscriptionmandate", MandateRpcArr(WatchMandateJson("watch-mid")),
+                                                             status, code, err, 1'000'000),
+                          err);
+    BOOST_CHECK(status["revoked"].get_bool());
+
+    // Enqueue may still hold FUND; Drain is the admission gate.
+    const auto after_revoke = store.DrainActions();
+    BOOST_CHECK_EQUAL(CountFundActions(after_revoke), 0U);
+    bool saw_keep_after = false;
+    for (const auto& a : after_revoke) {
+        BOOST_CHECK(a.action != ActionPolicy::FUND_WITH_MANDATE);
+        BOOST_CHECK(!a.spends);
+        BOOST_CHECK_EQUAL(WatchActionToJson(a)["automatic_spend_atoms"].getInt<int>(), 0);
+        if (a.action == ActionPolicy::KEEP) saw_keep_after = true;
+    }
+    BOOST_CHECK(saw_keep_after);
+
+    store.NoteEvent(MakeSigned("pub-fund", "mid-after-revoke"));
+    const auto queued_after = store.DrainActions();
+    BOOST_CHECK_EQUAL(CountFundActions(queued_after), 0U);
+
+    ModelWatch missing;
+    missing.kind = WatchKind::PUBLISHER;
+    missing.publisher_id = "pub-missing";
+    missing.action = ActionPolicy::FUND_WITH_MANDATE;
+    missing.mandate_id = "no-such-mandate";
+    BOOST_REQUIRE(store.PutWatch(missing, err));
+    store.NoteEvent(MakeSigned("pub-missing", "mid-absent"));
+    BOOST_CHECK_GE(CountFundActions(store.PeekActions()), 1U);
+    const auto absent = store.DrainActions();
+    BOOST_CHECK_EQUAL(CountFundActions(absent), 0U);
+    for (const auto& a : absent) {
+        BOOST_CHECK(a.action != ActionPolicy::FUND_WITH_MANDATE);
+        BOOST_CHECK(!a.spends);
+    }
+
+    GlobalSubscriptionStore().Reset();
 }
 
 BOOST_AUTO_TEST_CASE(remaining_watch_collection_query_get_unwatch_helper)

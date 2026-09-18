@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -89,6 +90,9 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
 bool IsNetwork02HelperMethod(const std::string& method);
 bool DispatchNetwork02Rpc(ModelCatalog& cat, const std::string& method, const UniValue& params, UniValue& result,
                          std::string& err_code, std::string& err);
+/** Caller-scoped idempotency_key gate for NETWORK-02 costly writes. `once` is the mutation. */
+bool WithNetwork02Idempotency(const std::string& method, const UniValue& params, UniValue& result,
+                              std::string& err_code, std::string& err, const std::function<bool()>& once);
 /** Catalog names that reuse private methods. alias_of is empty when method is canonical. */
 std::string ResolveHelperMethodAlias(const std::string& method, std::string& alias_of);
 

@@ -3,6 +3,7 @@
 // file COPYING or https://opensource.org/license/mit/.
 
 #include <test/util/setup_common.h>
+#include <test/modelnet_n02_idem.h>
 #include <crypto/common.h>
 #include <modelnet/catalog.h>
 #include <modelnet/event_journal.h>
@@ -44,7 +45,7 @@ UniValue Rpc(const std::string& method, const UniValue& params = UniValue(UniVal
 {
     UniValue req(UniValue::VOBJ);
     req.pushKV("method", method);
-    req.pushKV("params", params);
+    req.pushKV("params", WithN02Idempotency(method, params));
     return req;
 }
 
@@ -481,6 +482,7 @@ BOOST_AUTO_TEST_CASE(mirror_policy_and_native_file_stream_hello)
 
     UniValue spend(UniValue::VOBJ);
     spend.pushKV("automatic_spend_atoms", 1);
+    spend.pushKV("idempotency_key", "first-run-mirror-spend-reject");
     UniValue badp(UniValue::VARR);
     badp.push_back(spend);
     UniValue req(UniValue::VOBJ);
@@ -752,6 +754,7 @@ BOOST_AUTO_TEST_CASE(setcloudstorage_rejects_link_local_flag_and_secret_shaped_r
     cfg.pushKV("bucket", "btx-models");
     cfg.pushKV("credential_ref", "AKIAFAKESECRETVALUE0000");
     cfg.pushKV("use_fake", true);
+    cfg.pushKV("idempotency_key", "first-run-cloud-secret-ref");
     UniValue p(UniValue::VARR);
     p.push_back(cfg);
     UniValue req(UniValue::VOBJ);
@@ -768,6 +771,7 @@ BOOST_AUTO_TEST_CASE(setcloudstorage_rejects_link_local_flag_and_secret_shaped_r
     cfg2.pushKV("credential_ref", "env:BTX_CLOUD_CREDENTIAL");
     cfg2.pushKV("use_fake", true);
     cfg2.pushKV("allow_link_local", true);
+    cfg2.pushKV("idempotency_key", "first-run-cloud-link-local");
     UniValue p2(UniValue::VARR);
     p2.push_back(cfg2);
     req.pushKV("params", p2);

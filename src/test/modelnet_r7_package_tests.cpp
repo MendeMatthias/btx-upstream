@@ -24,6 +24,7 @@
 #include <crypto/sha384.h>
 #include <modelnet/canonical_codec.h>
 #include <modelnet/package_bundle.h>
+#include <modelnet/package_core.h>
 #include <modelnet/package_economy.h>
 #include <modelnet/package_export.h>
 #include <modelnet/resource_uri.h>
@@ -39,6 +40,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -63,7 +65,7 @@ const std::string kUriModelFamily =
     "btx://pzxsv02jv540unc3w7j4qmwtq97umz6z8rtv2jy49yyx78gphsa7k8xegzmpr8ppvxgjanuvl5nx6mufffwsa";
 
 /** BTXPKG frame over exact payload bytes, so duplicate keys survive into the decoder. */
-std::vector<unsigned char> Frame(const std::string& payload)
+std::vector<unsigned char> Frame(const std::string& payload, uint32_t flags = 0)
 {
     CSHA384 hasher;
     hasher.Write(reinterpret_cast<const unsigned char*>(payload.data()), payload.size());
@@ -71,7 +73,7 @@ std::vector<unsigned char> Frame(const std::string& payload)
     hasher.Finalize(digest);
     std::vector<unsigned char> out(68 + payload.size());
     std::memcpy(out.data(), modelnet::BTXPKG_MAGIC, 8);
-    WriteLE32(out.data() + 8, 0);
+    WriteLE32(out.data() + 8, flags);
     WriteLE64(out.data() + 12, payload.size());
     std::memcpy(out.data() + 20, digest, 48);
     std::memcpy(out.data() + 68, payload.data(), payload.size());
@@ -381,6 +383,8 @@ BOOST_AUTO_TEST_CASE(frame_rejects_flags_trailing_digest_and_oversize)
     auto flags = Frame(payload);
     WriteLE32(flags.data() + 8, 1);
     BOOST_CHECK(!modelnet::DecodeBtxBundle(View(flags), out, err));
+    WriteLE32(flags.data() + 8, modelnet::BTXPKG_BUNDLE_FLAGS);
+    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxBundle(View(flags), out, err), err);
 
     auto lenlie = Frame(payload);
     WriteLE64(lenlie.data() + 12, payload.size() + 5);
@@ -422,6 +426,9 @@ BOOST_AUTO_TEST_CASE(bundle_encoding_follows_insertion_order)
     BOOST_REQUIRE(modelnet::EncodeBtxBundle(a, ba, err));
     BOOST_REQUIRE(modelnet::EncodeBtxBundle(b, bb, err));
     BOOST_CHECK(ba != bb);
+    BOOST_CHECK_EQUAL(ReadLE32(ba.data() + 8), modelnet::BTXPKG_BUNDLE_FLAGS);
+    BOOST_CHECK_EQUAL(ReadLE32(bb.data() + 8), modelnet::BTXPKG_BUNDLE_FLAGS);
+    BOOST_CHECK_NE(modelnet::BTXPKG_BUNDLE_FLAGS, modelnet::BTXPKG_CORE_FLAGS);
 
     // Re-encoding a decoded bundle is stable, which is what a vector fixture needs.
     UniValue back;
@@ -607,7 +614,13 @@ BOOST_AUTO_TEST_CASE(vector_set_on_disk_valid_files_round_trip_both_codecs)
         // is what makes these usable as fixtures at all.
         std::vector<unsigned char> again;
         BOOST_REQUIRE_MESSAGE(modelnet::EncodeBtxBundle(back, again, err), err);
-        BOOST_CHECK(again == framed);
+        BOOST_REQUIRE_GE(again.size(), 12U);
+        BOOST_CHECK_EQUAL(ReadLE32(again.data() + 8), modelnet::BTXPKG_BUNDLE_FLAGS);
+        BOOST_CHECK_EQUAL(FramePayload(again), text);
+        // On-disk vectors still carry flags=0 (legacy JSON-only). Re-encode uses
+        // BTXPKG_BUNDLE_FLAGS, so the header bytes differ; the body must not.
+        BOOST_CHECK(again != framed);
+        BOOST_CHECK_EQUAL(ReadLE32(framed.data() + 8), modelnet::BTXPKG_CORE_FLAGS);
     }
 }
 
@@ -787,14 +800,22 @@ BOOST_AUTO_TEST_CASE(vector_set_on_disk_codec_divergence_shares_one_magic)
     UniValue a, b;
     std::string err;
     BOOST_REQUIRE(modelnet::DecodeBtxBundle(View(write_order), a, err));
-    BOOST_REQUIRE(modelnet::DecodeBtxBundle(View(sorted_order), b, err));
+    // Sorted PJSON1 is a valid package body under flags=0: dual-body conflict.
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(View(sorted_order), b, err));
+    BOOST_CHECK_EQUAL(err, "conflicting dual body");
+    modelnet::DecodedBtxPackage pkg;
+    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxPackage(View(sorted_order), pkg, err), err);
+    BOOST_CHECK_EQUAL(pkg.core_version, 1);
+    modelnet::DecodedBtxPackage write_pkg;
+    BOOST_CHECK(!modelnet::DecodeBtxPackage(View(write_order), write_pkg, err));
 
     // Same logical package, two byte strings, one magic. The frame bytes are
     // malleable; identify a package by package_core_id, never by file hash.
-    BOOST_CHECK_EQUAL(a["core"]["version"].getInt<int>(), b["core"]["version"].getInt<int>());
-    BOOST_CHECK_EQUAL(a["core"]["aaa"].getInt<int>(), b["core"]["aaa"].getInt<int>());
-    BOOST_CHECK(a.write() != b.write());
-    BOOST_CHECK(a["core"].getKeys() != b["core"].getKeys());
+    BOOST_REQUIRE(a.exists("core") && a["core"].isObject());
+    BOOST_CHECK_EQUAL(a["core"]["version"].getInt<int>(), 1);
+    BOOST_CHECK_EQUAL(a["core"]["aaa"].getInt<int>(), 1);
+    BOOST_CHECK(a.write() != std::string(sorted_order.begin() + 68, sorted_order.end()));
+    BOOST_CHECK(a["core"].getKeys() != pkg.core.getKeys());
 }
 
 BOOST_AUTO_TEST_CASE(vector_set_on_disk_manifest_matches_the_directory)
@@ -843,6 +864,54 @@ BOOST_AUTO_TEST_CASE(vector_set_on_disk_manifest_matches_the_directory)
         const auto framed = ReadVectorBytes(dir / "codec-divergence" / name);
         BOOST_CHECK_EQUAL(Sha384Hex(View(framed)), manifest["codec_divergence"][name].get_str());
     }
+}
+
+BOOST_AUTO_TEST_CASE(bundle_flags_zero_rejects_conflicting_dual_body)
+{
+    UniValue core(UniValue::VOBJ);
+    core.pushKV("aaa", 1);
+    core.pushKV("version", 1);
+    UniValue payload(UniValue::VOBJ);
+    payload.pushKV("core", core);
+    std::vector<unsigned char> dual;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(modelnet::EncodeBtxPackage(payload, dual, err), err);
+    BOOST_CHECK_EQUAL(ReadLE32(dual.data() + 8), modelnet::BTXPKG_CORE_FLAGS);
+
+    UniValue as_bundle;
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(View(dual), as_bundle, err));
+    BOOST_CHECK_EQUAL(err, "conflicting dual body");
+    modelnet::DecodedBtxPackage pkg;
+    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxPackage(View(dual), pkg, err), err);
+    BOOST_CHECK_EQUAL(pkg.core_version, 1);
+    BOOST_CHECK_EQUAL(pkg.flags, modelnet::BTXPKG_CORE_FLAGS);
+
+    std::vector<unsigned char> marked;
+    BOOST_REQUIRE_MESSAGE(modelnet::EncodeBtxBundle(payload, marked, err), err);
+    BOOST_CHECK_EQUAL(ReadLE32(marked.data() + 8), modelnet::BTXPKG_BUNDLE_FLAGS);
+    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxBundle(View(marked), as_bundle, err), err);
+    BOOST_CHECK(!modelnet::DecodeBtxPackage(View(marked), pkg, err));
+}
+
+BOOST_AUTO_TEST_CASE(bundle_rejects_claimed_length_overflow_without_copy)
+{
+    UniValue out;
+    std::string err;
+    auto bomb = Frame("{}", modelnet::BTXPKG_BUNDLE_FLAGS);
+    WriteLE64(bomb.data() + 12, std::numeric_limits<uint64_t>::max());
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(View(bomb), out, err));
+    BOOST_CHECK_EQUAL(err, "flags/size/trailing");
+
+    bomb = Frame("{}", modelnet::BTXPKG_BUNDLE_FLAGS);
+    bomb.resize(68);
+    WriteLE64(bomb.data() + 12, std::numeric_limits<uint64_t>::max() - 10);
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(View(bomb), out, err));
+    BOOST_CHECK_EQUAL(err, "flags/size/trailing");
+
+    bomb = Frame("{}", modelnet::BTXPKG_BUNDLE_FLAGS);
+    WriteLE64(bomb.data() + 12, 4ull * 1024 * 1024 + 1);
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(View(bomb), out, err));
+    BOOST_CHECK_EQUAL(err, "flags/size/trailing");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

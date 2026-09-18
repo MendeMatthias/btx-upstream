@@ -8,6 +8,7 @@
 #include <crypto/hex_base.h>
 #include <crypto/sha384.h>
 #include <span.h>
+#include <modelnet/capability.h>
 #include <modelnet/catalog.h>
 #include <modelnet/helper.h>
 #include <modelnet/package_acquisition.h>
@@ -328,6 +329,149 @@ BOOST_AUTO_TEST_CASE(ahp_acq_helper_verified_local_model_ready)
 
     BOOST_REQUIRE(modelnet::DispatchHelperRpc(cat, Rpc("cancelbtxacquisition", ex), result, code, err));
     BOOST_CHECK(result["cancelled"].get_bool());
+}
+
+BOOST_AUTO_TEST_CASE(ahp_acq_10_execute_ensure_idempotency_conflict)
+{
+    const fs::path tmp = m_path_root / "acq-10-idem";
+    modelnet::ModelCatalog cat{tmp / "cat", 1 << 20};
+
+    UniValue recipe(UniValue::VOBJ);
+    recipe.pushKV("recipe_kind", "FULL_MODEL");
+    UniValue comps(UniValue::VARR);
+    UniValue c(UniValue::VOBJ);
+    c.pushKV("name", "base");
+    UniValue res(UniValue::VOBJ);
+    res.pushKV("kind", "MODEL");
+    res.pushKV("digest48", std::string(96, 'a'));
+    c.pushKV("resource", res);
+    c.pushKV("role", "BASE");
+    c.pushKV("required", true);
+    comps.push_back(c);
+    recipe.pushKV("components", comps);
+    recipe.pushKV("readiness_contract", "FULL_REQUIRED_SET");
+
+    UniValue grant(UniValue::VOBJ);
+    grant.pushKV("caller", "local");
+    grant.pushKV("host_bytes", 8388608);
+    grant.pushKV("automatic_spend_atoms", 0);
+
+    UniValue plan_in(UniValue::VOBJ);
+    plan_in.pushKV("recipe", recipe);
+    plan_in.pushKV("grant", grant);
+    UniValue planned;
+    std::string code, err;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("planbtxcapability", plan_in), planned, code, err), err);
+    BOOST_REQUIRE(planned.exists("plan_id") && planned["plan_id"].isStr());
+
+    UniValue ens(UniValue::VOBJ);
+    ens.pushKV("plan_id", planned["plan_id"].get_str());
+    ens.pushKV("grant", grant);
+    ens.pushKV("automatic_spend_atoms", 0);
+    ens.pushKV("helper_alive", true);
+    ens.pushKV("idempotency_key", "ahp-exec-k1");
+    ens.pushKV("runtime_id", "synthetic-cpu-fixture");
+    UniValue first, replay;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("ensurebtxcapability", ens), first, code, err), err);
+    BOOST_REQUIRE(first.exists("job_id"));
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("ensurebtxcapability", ens), replay, code, err), err);
+    BOOST_CHECK(replay["idempotent"].get_bool());
+    BOOST_CHECK_EQUAL(replay["job_id"].get_str(), first["job_id"].get_str());
+    BOOST_CHECK_EQUAL(replay["automatic_spend_atoms"].getInt<int>(), 0);
+
+    UniValue altered = ens;
+    altered.pushKV("runtime_id", "synthetic-cpu-fixture-alt");
+    UniValue conflict;
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, Rpc("ensurebtxcapability", altered), conflict, code, err));
+    BOOST_CHECK_EQUAL(code, "IDEMPOTENCY_CONFLICT");
+    BOOST_CHECK_EQUAL(conflict["error_code"].get_str(), "IDEMPOTENCY_CONFLICT");
+    BOOST_CHECK_EQUAL(conflict["automatic_spend_atoms"].getInt<int>(), 0);
+}
+
+BOOST_AUTO_TEST_CASE(ahp_acq_10_execute_rpc_idempotency_conflict)
+{
+    const fs::path tmp = m_path_root / "acq-10-exec-rpc-idem";
+    fs::create_directories(tmp);
+    modelnet::ModelCatalog cat{tmp / "cat", 1 << 20};
+    const fs::path src = tmp / "src.bin";
+    const std::string payload = "exec-rpc-idem-bytes";
+    {
+        std::ofstream{fs::PathToString(src)} << payload;
+    }
+
+#ifdef MODELNET_AHP_FIXTURE_DIR
+    const fs::path fixture = fs::PathFromString(MODELNET_AHP_FIXTURE_DIR) / "model-agent.btx";
+#else
+    const fs::path fixture = fs::PathFromString(std::string{__FILE__}).parent_path() / "data" / "agent-package" /
+                            "model-agent.btx";
+#endif
+    UniValue plan_o(UniValue::VOBJ);
+    plan_o.pushKV("path", fs::PathToString(fixture));
+    UniValue dest_pol(UniValue::VOBJ);
+    dest_pol.pushKV("destination", (tmp / "out").utf8string());
+    plan_o.pushKV("local_policy", dest_pol);
+
+    UniValue result;
+    std::string code, err;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("planbtxacquisition", plan_o), result, code, err), err);
+    const std::string plan_id = result["plan_id"].get_str();
+
+    UniValue files(UniValue::VARR);
+    UniValue f(UniValue::VOBJ);
+    f.pushKV("path", "weights.gguf");
+    f.pushKV("sha384", Sha384Of(payload));
+    f.pushKV("source_path", fs::PathToString(src));
+    files.push_back(f);
+
+    UniValue ex(UniValue::VOBJ);
+    ex.pushKV("plan_id", plan_id);
+    ex.pushKV("caller", "ahp-acq-10-exec");
+    ex.pushKV("idempotency_key", "ahp-acq-10-execute-k1");
+    ex.pushKV("verified_local_files", files);
+
+    UniValue first;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("executebtxacquisition", ex), first, code, err), err);
+    BOOST_CHECK_EQUAL(first["state"].get_str(), "MODEL_READY");
+    BOOST_REQUIRE(first.exists("job_id") && first["job_id"].isStr());
+    const std::string job_id = first["job_id"].get_str();
+    BOOST_CHECK_EQUAL(first["automatic_spend_atoms"].getInt<int>(), 0);
+
+    UniValue replay;
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, Rpc("executebtxacquisition", ex), replay, code, err), err);
+    BOOST_CHECK_EQUAL(replay["job_id"].get_str(), job_id);
+    BOOST_CHECK_EQUAL(replay["state"].get_str(), "MODEL_READY");
+    BOOST_CHECK_EQUAL(replay["automatic_spend_atoms"].getInt<int>(), 0);
+
+    UniValue other(UniValue::VOBJ);
+    other.pushKV("path", "other.gguf");
+    other.pushKV("sha384", Sha384Of("different-verified-bytes"));
+    other.pushKV("source_path", fs::PathToString(src));
+    UniValue conflict_files(UniValue::VARR);
+    conflict_files.push_back(other);
+    UniValue altered(UniValue::VOBJ);
+    altered.pushKV("plan_id", plan_id);
+    altered.pushKV("caller", "ahp-acq-10-exec");
+    altered.pushKV("idempotency_key", "ahp-acq-10-execute-k1");
+    altered.pushKV("verified_local_files", conflict_files);
+
+    UniValue conflicted;
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, Rpc("executebtxacquisition", altered), conflicted, code, err));
+    BOOST_CHECK_EQUAL(code, "IDEMPOTENCY_CONFLICT");
+    BOOST_CHECK_EQUAL(conflicted["status"].get_str(), "REJECTED");
+    BOOST_CHECK_EQUAL(conflicted["automatic_spend_atoms"].getInt<int>(), 0);
+    BOOST_CHECK(!conflicted.exists("job_id"));
+    BOOST_CHECK(!conflicted.exists("state") || conflicted["state"].get_str() != "MODEL_READY");
+
+    UniValue unique_key_conflict(UniValue::VOBJ);
+    unique_key_conflict.pushKV("plan_id", plan_id);
+    unique_key_conflict.pushKV("caller", "ahp-acq-10-exec");
+    unique_key_conflict.pushKV("idempotency_key", "ahp-acq-10-execute-k2");
+    unique_key_conflict.pushKV("verified_local_files", conflict_files);
+    UniValue unique_conflicted;
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, Rpc("executebtxacquisition", unique_key_conflict), unique_conflicted, code, err));
+    BOOST_CHECK_EQUAL(code, "IDEMPOTENCY_CONFLICT");
+    BOOST_CHECK_EQUAL(unique_conflicted["status"].get_str(), "REJECTED");
+    BOOST_CHECK_EQUAL(unique_conflicted["automatic_spend_atoms"].getInt<int>(), 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

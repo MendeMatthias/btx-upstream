@@ -242,6 +242,40 @@ class ModelNetUniqueTodosTest(BitcoinTestFramework):
             raise AssertionError(f"F2 wallet_signed: {created}")
         self.log.info("unique_todo_f2_wallet_sign mandate_id=%s", created.get("mandate_id"))
 
+        # unique_todo_getsubscriptionactivity
+        reserve_req = {
+            "mandate_id": created.get("mandate_id"),
+            "event_id": "e-todo-act",
+            "publisher_id": "b" * 96,
+            "object_kind": "RELEASE",
+            "action": "FUND_WITH_MANDATE",
+            "signed_terms": {
+                "terms_id": "d" * 96,
+                "publisher_id": "b" * 96,
+                "network_id": "0" * 64,
+                "principal_atoms": "1",
+                "fee_atoms": "0",
+                "object_kind": "RELEASE",
+                "confirmations": 1,
+            },
+        }
+        reserved = node.reservesubscriptionmandate(reserve_req)
+        self._zero(reserved, "getsubscriptionactivity reserve")
+        activity = node.getsubscriptionactivity({"mandate_id": created.get("mandate_id"), "limit": 10})
+        self._zero(activity, "getsubscriptionactivity")
+        if activity.get("telemetry") is True:
+            raise AssertionError(f"getsubscriptionactivity telemetry: {activity}")
+        actions = activity.get("actions")
+        if not isinstance(actions, list) or not actions:
+            raise AssertionError(f"getsubscriptionactivity actions: {activity}")
+        if actions[0].get("event_id") != "e-todo-act":
+            raise AssertionError(f"getsubscriptionactivity event: {actions[0]}")
+        if actions[0].get("terms_id") != "d" * 96:
+            raise AssertionError(f"getsubscriptionactivity terms: {actions[0]}")
+        if actions[0].get("txid"):
+            raise AssertionError(f"getsubscriptionactivity must not invent txid: {actions[0]}")
+        self.log.info("unique_todo_getsubscriptionactivity actions=%s", len(actions))
+
         # unique_todo_a2_modelindex
         modeld = self._modeld_path()
         a2 = subprocess.run(
@@ -726,7 +760,7 @@ class ModelNetUniqueTodosTest(BitcoinTestFramework):
             raise AssertionError(f"revocation must name the delegation: {revoked}")
         self.log.info("unique_todo_delegated_lan revocation targets %s", record_id[:16])
 
-        policy = node.setmodeldiscoverypolicy({"prefer_lan": True})
+        policy = node.setmodeldiscoverypolicy({"prefer_lan": True, "idempotency_key": "unique-disc"})
         self._zero(policy, "setmodeldiscoverypolicy")
         if policy.get("throughput_is_ranking") is not False:
             raise AssertionError(f"discovery policy made throughput authoritative: {policy}")

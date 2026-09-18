@@ -29,6 +29,25 @@ uint64_t RemainingOrZero(uint64_t used, uint64_t cap)
     return used >= cap ? 0 : (cap - used);
 }
 
+std::string PhysicalWholeFileKey(const std::string& prefix, const std::string& artifact_hex, uint32_t file_index)
+{
+    return prefix + "/physical/wf/" + artifact_hex + "/" + std::to_string(file_index);
+}
+
+std::string PhysicalLargeExtentKey(const std::string& prefix, const std::string& artifact_hex, uint32_t file_index,
+                                   uint32_t extent_index)
+{
+    return prefix + "/physical/le/" + artifact_hex + "/" + std::to_string(file_index) + "/" +
+           std::to_string(extent_index);
+}
+
+bool PutSpanObject(S3PieceStore& store, const std::string& key, Span<const unsigned char> body, std::string& err)
+{
+    const std::string raw(reinterpret_cast<const char*>(body.data()), body.size());
+    std::istringstream in(raw);
+    return store.PutObject(key, in, body.size(), err);
+}
+
 } // namespace
 
 S3PieceStore::S3PieceStore(CloudStoreConfig cfg) : m_cfg(std::move(cfg)) {}
@@ -411,6 +430,50 @@ bool S3PieceStore::PresignSourceFileGet(const Digest48& artifact, uint32_t file_
     }
     const std::string key = ObjectKeySourceFile(m_prefix, artifact.Hex(), file_index);
     return m_client.PresignGet(key, ttl_seconds, url, err);
+}
+
+bool S3PieceStore::PutWholeFile(const Digest48& artifact, uint32_t file_index, Span<const unsigned char> body,
+                                std::string& err)
+{
+    if (!m_cfg.s3.use_fake) {
+        err = "WHOLE_FILE store I/O requires FakeS3";
+        return false;
+    }
+    const std::string key = PhysicalWholeFileKey(m_prefix, artifact.Hex(), file_index);
+    return PutSpanObject(*this, key, body, err);
+}
+
+bool S3PieceStore::GetWholeFile(const Digest48& artifact, uint32_t file_index, std::vector<unsigned char>& out,
+                                std::string& err)
+{
+    if (!m_cfg.s3.use_fake) {
+        err = "WHOLE_FILE store I/O requires FakeS3";
+        return false;
+    }
+    const std::string key = PhysicalWholeFileKey(m_prefix, artifact.Hex(), file_index);
+    return GetObject(key, 0, 0, out, err);
+}
+
+bool S3PieceStore::PutLargeExtent(const Digest48& artifact, uint32_t file_index, uint32_t extent_index,
+                                  Span<const unsigned char> body, std::string& err)
+{
+    if (!m_cfg.s3.use_fake) {
+        err = "LARGE_EXTENTS store I/O requires FakeS3";
+        return false;
+    }
+    const std::string key = PhysicalLargeExtentKey(m_prefix, artifact.Hex(), file_index, extent_index);
+    return PutSpanObject(*this, key, body, err);
+}
+
+bool S3PieceStore::GetLargeExtent(const Digest48& artifact, uint32_t file_index, uint32_t extent_index,
+                                  std::vector<unsigned char>& out, std::string& err)
+{
+    if (!m_cfg.s3.use_fake) {
+        err = "LARGE_EXTENTS store I/O requires FakeS3";
+        return false;
+    }
+    const std::string key = PhysicalLargeExtentKey(m_prefix, artifact.Hex(), file_index, extent_index);
+    return GetObject(key, 0, 0, out, err);
 }
 
 bool S3PieceStore::FetchPresignedGet(const std::string& url, std::vector<unsigned char>& out, std::string& err)

@@ -68,9 +68,8 @@ std::vector<unsigned char> LoadBtx(const char* name)
 
 BOOST_AUTO_TEST_CASE(ahp_comp_01_old_peer_new_package)
 {
-    // Native old-codec simulation: the 0.34.7 bundle reader still sees BTXPKG1
-    // and can DecodeBtxBundle. PackageCoreId is not rewritten. A live 0.34.7
-    // peer process remains NOT_RUN (no second tree / no production btxd).
+    // flags=0 PJSON1 is a package body, not a bundle discriminator. DecodeBtxBundle
+    // rejects the conflicting dual body instead of silently parsing JSON.
     const auto desc = LoadBtx("model-agent.btx");
     BOOST_CHECK(modelnet::LooksLikeBtxBundle(desc));
     modelnet::DecodedBtxPackage pkg;
@@ -80,11 +79,11 @@ BOOST_AUTO_TEST_CASE(ahp_comp_01_old_peer_new_package)
     BOOST_CHECK_EQUAL(pkg.package_core_id.Hex(), kModelAgentCoreId);
 
     UniValue bundle_view;
-    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxBundle(desc, bundle_view, err), err);
-    BOOST_REQUIRE(bundle_view.exists("core"));
-    modelnet::Digest48 from_bundle;
-    BOOST_REQUIRE(modelnet::PackageCoreId(bundle_view["core"], from_bundle, err));
-    BOOST_CHECK_EQUAL(from_bundle.Hex(), kModelAgentCoreId);
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(desc, bundle_view, err));
+    BOOST_CHECK_EQUAL(err, "conflicting dual body");
+    modelnet::Digest48 from_pkg;
+    BOOST_REQUIRE(modelnet::PackageCoreId(pkg.core, from_pkg, err));
+    BOOST_CHECK_EQUAL(from_pkg.Hex(), kModelAgentCoreId);
 
     const auto v1 = LoadBtx("legacy-core-v1.btx");
     modelnet::DecodedBtxPackage legacy;
@@ -177,26 +176,28 @@ BOOST_AUTO_TEST_CASE(ahp_comp_03_bundle_vs_descriptor)
     BOOST_CHECK_EQUAL(pjson.size(), n);
     BOOST_CHECK(std::equal(pjson.begin(), pjson.end(), desc.begin() + 68));
 
-    // Existing bundle encoder shares magic but is not the Core-v2 serializer.
+    // Existing bundle encoder shares magic but writes BTXPKG_BUNDLE_FLAGS, not the
+    // Core-v2 serializer (flags=0 PJSON1).
     std::vector<unsigned char> bundle_bytes;
     BOOST_REQUIRE_MESSAGE(modelnet::EncodeBtxBundle(pkg.payload, bundle_bytes, err), err);
     BOOST_CHECK_EQUAL(std::memcmp(bundle_bytes.data(), modelnet::BTXPKG_MAGIC, 8), 0);
-    if (bundle_bytes != desc) {
+    BOOST_CHECK_EQUAL(ReadLE32(bundle_bytes.data() + 8), modelnet::BTXPKG_BUNDLE_FLAGS);
+    BOOST_CHECK(bundle_bytes != desc);
+    {
         modelnet::DecodedBtxPackage as_pkg;
         const bool accepted = modelnet::DecodeBtxPackage(bundle_bytes, as_pkg, err);
         BOOST_CHECK_MESSAGE(
             !accepted,
-            "AHP-COMP-03: non-PJSON1 bundle body must not decode as a Core-v2 package (no identity rewrite)");
+            "AHP-COMP-03: bundle-flagged JSON body must not decode as a Core-v2 package (no identity rewrite)");
     }
 
     UniValue bundle_view;
-    if (modelnet::DecodeBtxBundle(desc, bundle_view, err)) {
-        BOOST_REQUIRE(bundle_view.exists("core"));
-        BOOST_CHECK_EQUAL(bundle_view["core"]["version"].getInt<int>(), 2);
-        modelnet::Digest48 from_view;
-        BOOST_REQUIRE(modelnet::PackageCoreId(bundle_view["core"], from_view, err));
-        BOOST_CHECK_EQUAL(from_view.Hex(), kModelAgentCoreId);
-    }
+    BOOST_CHECK(!modelnet::DecodeBtxBundle(desc, bundle_view, err));
+    BOOST_CHECK_EQUAL(err, "conflicting dual body");
+    UniValue as_json;
+    BOOST_REQUIRE_MESSAGE(modelnet::DecodeBtxBundle(bundle_bytes, as_json, err), err);
+    BOOST_REQUIRE(as_json.exists("core"));
+    BOOST_CHECK_EQUAL(as_json["core"]["version"].getValStr(), "2");
 
     std::vector<unsigned char> zip{'P', 'K', 0x03, 0x04, 0x00, 0x00, 0x00, 0x00};
     zip.resize(80, 0);

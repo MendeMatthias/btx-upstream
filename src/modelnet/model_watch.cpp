@@ -6,6 +6,7 @@
 
 #include <modelnet/crypto.h>
 #include <modelnet/resource_uri.h>
+#include <modelnet/subscription_mandate.h>
 #include <random.h>
 #include <span.h>
 #include <util/strencodings.h>
@@ -30,6 +31,24 @@ int64_t NowMs()
     return static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::system_clock::now().time_since_epoch())
                                     .count());
+}
+
+/** Live, unrevoked SubscriptionMandate. Must not run while ModelWatchStore::m_mu is held. */
+bool MandateAdmitsFund(const std::string& mandate_id)
+{
+    if (mandate_id.empty()) return false;
+    UniValue arg(UniValue::VOBJ);
+    arg.pushKV("mandate_id", mandate_id);
+    UniValue params(UniValue::VARR);
+    params.push_back(std::move(arg));
+    UniValue status;
+    std::string err_code, err;
+    if (!GlobalSubscriptionStore().Dispatch("getsubscriptionmandate", params, status, err_code, err, NowMs())) {
+        return false;
+    }
+    // StatusJson exports SubscriptionBudget::Revoked() as "revoked".
+    if (status.exists("revoked") && status["revoked"].isTrue()) return false;
+    return true;
 }
 
 std::string RandHex(size_t nbytes)
@@ -719,9 +738,25 @@ void ModelWatchStore::NoteEvent(const ModelEvent& ev)
 
 std::vector<QueuedWatchAction> ModelWatchStore::DrainActions()
 {
-    std::lock_guard<std::mutex> lock(m_mu);
+    std::vector<QueuedWatchAction> queued;
+    {
+        std::lock_guard<std::mutex> lock(m_mu);
+        queued.swap(m_actions);
+    }
     std::vector<QueuedWatchAction> out;
-    out.swap(m_actions);
+    out.reserve(queued.size());
+    std::map<std::string, bool> fund_ok;
+    for (auto& a : queued) {
+        a.spends = false;
+        if (a.action == ActionPolicy::FUND_WITH_MANDATE) {
+            auto it = fund_ok.find(a.mandate_id);
+            if (it == fund_ok.end()) {
+                it = fund_ok.emplace(a.mandate_id, MandateAdmitsFund(a.mandate_id)).first;
+            }
+            if (!it->second) continue;
+        }
+        out.push_back(std::move(a));
+    }
     return out;
 }
 

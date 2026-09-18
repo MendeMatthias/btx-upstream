@@ -223,6 +223,7 @@ bool WalletLikePath(const std::string& path)
     if (p.find("createsubscriptionmandate") != std::string::npos) return true;
     if (p.find("revokesubscriptionmandate") != std::string::npos) return true;
     if (p.find("getsubscriptionmandate") != std::string::npos) return true;
+    if (p.find("getsubscriptionactivity") != std::string::npos) return true;
     if (p.find("reservesubscriptionmandate") != std::string::npos) return true;
     if (p.find("observebountychain") != std::string::npos) return true;
     if (p.find("reorgbountychain") != std::string::npos) return true;
@@ -273,6 +274,7 @@ bool MethodLooksWallet(const std::string& method)
     if (m.find("createsubscriptionmandate") != std::string::npos) return true;
     if (m.find("revokesubscriptionmandate") != std::string::npos) return true;
     if (m.find("getsubscriptionmandate") != std::string::npos) return true;
+    if (m.find("getsubscriptionactivity") != std::string::npos) return true;
     if (m.find("reservesubscriptionmandate") != std::string::npos) return true;
     if (m.find("observebountychain") != std::string::npos) return true;
     if (m.find("reorgbountychain") != std::string::npos) return true;

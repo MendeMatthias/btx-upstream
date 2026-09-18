@@ -19,6 +19,10 @@ enum class MultipartPhase : uint8_t {
     PARTS = 2,
     COMPLETED = 3,
     ABORTED = 4,
+    INIT_PLANNED = 5,
+    COMPLETE_PLANNED = 6,
+    OBJECT_COMMITTED = 7,
+    REMOTE_OUTCOME_UNKNOWN = 8,
 };
 
 struct MultipartPart {
@@ -38,12 +42,18 @@ class MultipartJournal {
     uint64_t m_planned_parts{0};
 
 public:
+    bool PlanInit(const std::string& object_key, const std::string& source_snapshot, uint64_t planned_parts,
+                  std::string& err);
     bool Initiate(const std::string& object_key, const std::string& upload_id, const std::string& source_snapshot,
                   uint64_t planned_parts, std::string& err);
     bool NotePart(const MultipartPart& part, std::string& err);
+    bool PlanComplete(std::string& err);
     bool Complete(std::string& err);
+    bool CommitObject(std::string& err);
+    bool NoteRemoteUnknown(std::string& err);
     bool Abort();
     MultipartPhase Phase() const { return m_phase; }
+    const std::vector<MultipartPart>& ListParts() const { return m_parts; }
     UniValue Json() const;
 };
 

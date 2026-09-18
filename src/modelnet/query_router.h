@@ -70,6 +70,7 @@ class QueryRouter {
     QueryDedupe m_dedupe;
     int m_remote_tasks{0};
     bool m_cancelled{false};
+    mutable uint64_t m_snapshot_generation{1};
 
 public:
     explicit QueryRouter(QueryBudget budget = {});

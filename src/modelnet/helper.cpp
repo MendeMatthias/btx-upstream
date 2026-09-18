@@ -1448,7 +1448,7 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         o.pushKV("automatic_spend_atoms", 0);
         o.pushKV("full_file_stream_v1", true);
         o.pushKV("capability", FULL_FILE_STREAM_V1);
-        o.pushKV("capabilities", HelloCapabilityArray());
+        o.pushKV("capabilities", HelloCapabilityArrayMaybeIntersect(UniValue(UniValue::VOBJ)));
         o.pushKV("subpiece_v1", true);
         o.pushKV("quic", false);
         FileStreamCaps caps;
@@ -4544,6 +4544,11 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     EnsureCloudLoaded(cat);
     LoadRetrieveJobs(cat);
     if (IsCloudHelperMethod(method)) {
+        if (method == "setcloudstorage" || method == "setmodelstoragepolicy") {
+            return WithNetwork02Idempotency(method, params, result, err_code, err, [&] {
+                return DispatchCloudStorageRpc(cat, method, params, result, err_code, err);
+            });
+        }
         return DispatchCloudStorageRpc(cat, method, params, result, err_code, err);
     }
     if (IsNetwork02HelperMethod(method)) {
@@ -4556,6 +4561,11 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         return DispatchCapabilityRpc(cat, method, params, result, err_code, err);
     }
     if (IsMirrorHelperMethod(method)) {
+        if (method == "setmodelmirror") {
+            return WithNetwork02Idempotency(method, params, result, err_code, err, [&] {
+                return DispatchMirrorRpc(cat, method, params, result, err_code, err);
+            });
+        }
         return DispatchMirrorRpc(cat, method, params, result, err_code, err);
     }
     if (IsModelWatchHelperMethod(method)) {
@@ -4980,7 +4990,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("automatic_spend_atoms", 0);
         result.pushKV("full_file_stream_v1", true);
         result.pushKV("capability", FULL_FILE_STREAM_V1);
-        result.pushKV("capabilities", HelloCapabilityArray());
+        result.pushKV("capabilities", HelloCapabilityArrayMaybeIntersect(params.isObject() ? params : Arg(0)));
         result.pushKV("subpiece_v1", true);
         result.pushKV("quic", false);
         FileStreamCaps caps;
@@ -8312,6 +8322,14 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
             pcfg.credit = &GlobalTransferCredits();
             pcfg.now_ms = ConnNowMs();
             pcfg.max_per_netgroup = 8;
+            {
+                const auto existing = xfer.Metrics();
+                for (const auto& src : sources) {
+                    if (src.peer.endpoint.empty() || existing.count(src.peer.endpoint)) continue;
+                    PeerMetrics seed;
+                    xfer.ObservePeer(src.peer.endpoint, seed);
+                }
+            }
             const auto live_metrics = xfer.Metrics();
             const auto live_out = xfer.Outstanding();
             const auto picks = PickRarestFirst(file_index, static_cast<uint32_t>(n), miss32, sources, live_metrics, live_out, {}, pcfg);

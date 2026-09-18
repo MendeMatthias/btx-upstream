@@ -558,6 +558,7 @@ BASE_SCRIPTS = [
 # P2MR-only chain. Use --extended (or BTX_RUN_UPSTREAM_BASE_SUITE=1) to run the
 # broad upstream-style matrix.
 BTX_BASE_SCRIPTS = [
+    'feature_bcp1.py --descriptors',
     'feature_p2mr_end_to_end.py',
     'p2mr_end_to_end.py',
     'rpc_pq_wallet.py',

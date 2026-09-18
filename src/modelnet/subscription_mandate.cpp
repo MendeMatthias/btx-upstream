@@ -983,6 +983,43 @@ UniValue SubscriptionBudget::StatusJson() const
     return o;
 }
 
+UniValue SubscriptionBudget::ActivityPage(const std::string& cursor, int limit) const
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    UniValue actions(UniValue::VARR);
+    bool skipping = !cursor.empty();
+    bool saw_cursor = cursor.empty();
+    std::string last;
+    int n = 0;
+    for (const auto& kv : m_by_event) {
+        if (skipping) {
+            if (kv.first == cursor) {
+                skipping = false;
+                saw_cursor = true;
+            }
+            continue;
+        }
+        UniValue row = ReservationToJson(kv.second);
+        row.pushKV("object_id", kv.second.object_id);
+        row.pushKV("terms_id", kv.second.terms_id);
+        row.pushKV("txid", "");
+        actions.push_back(row);
+        last = kv.first;
+        if (++n >= limit) break;
+    }
+    UniValue page(UniValue::VOBJ);
+    page.pushKV("mandate_id", m_mandate.mandate_id);
+    page.pushKV("actions", actions);
+    page.pushKV("cursor_ok", saw_cursor);
+    page.pushKV("next_cursor", (n >= limit && !last.empty()) ? last : "");
+    page.pushKV("limit", limit);
+    page.pushKV("telemetry", false);
+    page.pushKV("automatic_spend_atoms", SUBSCRIPTION_AUTOMATIC_SPEND_ATOMS);
+    page.pushKV("wallet_signed", false);
+    page.pushKV("private_keys", false);
+    return page;
+}
+
 UniValue SubscriptionBudget::SaveStateJson() const
 {
     std::lock_guard<std::mutex> lock(m_mu);
@@ -1209,6 +1246,41 @@ bool SubscriptionStore::Dispatch(const std::string& method, const UniValue& para
         return ok();
     }
 
+    if (method == "getsubscriptionactivity") {
+        const std::string id = StrField(a, "mandate_id").empty() && ArgN(params, 0).isStr() ?
+                                   ArgN(params, 0).get_str() :
+                                   StrField(a, "mandate_id");
+        if (id.empty()) return fail("INVALID_PARAMETER", "mandate_id");
+        auto it = m_budgets.find(id);
+        if (it == m_budgets.end()) return fail("NOT_FOUND", "mandate");
+        int limit = 50;
+        if (a.exists("limit")) {
+            if (a["limit"].isNum()) limit = a["limit"].getInt<int>();
+            else if (a["limit"].isStr()) {
+                try {
+                    limit = std::stoi(a["limit"].get_str());
+                } catch (...) {
+                    return fail("INVALID_PARAMETER", "limit");
+                }
+            } else {
+                return fail("INVALID_PARAMETER", "limit");
+            }
+        }
+        if (limit < 1 || limit > 100) return fail("INVALID_PARAMETER", "limit");
+        const std::string cursor = StrField(a, "cursor");
+        result = it->second->ActivityPage(cursor, limit);
+        if (result.exists("cursor_ok") && result["cursor_ok"].isBool() && !result["cursor_ok"].get_bool()) {
+            return fail("INVALID_PARAMETER", "cursor");
+        }
+        UniValue page(UniValue::VOBJ);
+        for (const std::string& k : result.getKeys()) {
+            if (k == "cursor_ok") continue;
+            page.pushKV(k, result[k]);
+        }
+        result = std::move(page);
+        return ok();
+    }
+
     if (method == "revokesubscriptionmandate") {
         const std::string id = StrField(a, "mandate_id").empty() && ArgN(params, 0).isStr() ?
                                    ArgN(params, 0).get_str() :
@@ -1264,7 +1336,8 @@ bool SubscriptionStore::Dispatch(const std::string& method, const UniValue& para
 bool IsSubscriptionHelperMethod(const std::string& method)
 {
     return method == "createsubscriptionmandate" || method == "getsubscriptionmandate" ||
-           method == "revokesubscriptionmandate" || method == "reservesubscriptionmandate";
+           method == "getsubscriptionactivity" || method == "revokesubscriptionmandate" ||
+           method == "reservesubscriptionmandate";
 }
 
 SubscriptionStore& GlobalSubscriptionStore()
