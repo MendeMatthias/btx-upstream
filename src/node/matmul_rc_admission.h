@@ -101,6 +101,10 @@ public:
         size_t max_unknown_candidates_per_hash{2};
         /** Reconnect-resistant unknown-ticket submission rate per netgroup. */
         size_t max_unknown_submissions_per_netgroup{8};
+        /** Hard cap on distinct netgroups in the rate-history map. Erase/Consume
+         *  must not refund rate, but cycling unique netgroups through the
+         *  bounded quarantine must not grow history without limit. */
+        size_t max_unknown_submission_netgroups{256};
         std::chrono::seconds unknown_submission_window{60};
         std::chrono::seconds ttl{180};
     };

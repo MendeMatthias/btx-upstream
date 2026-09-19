@@ -249,6 +249,15 @@ bool PlanBtxClientInstall(const UniValue& core, const UniValue& trusted_catalogu
     if (CatalogueEmpty(trusted_catalogue)) {
         return Fail(out, err_code, err, "CLIENT_TRUST_REQUIRED", "TRUST_REQUIRED", true);
     }
+    // Passing the package core (or any object that names an installer key /
+    // software_trust_root / agent_handoff) as the "trusted catalogue" is the
+    // AHP appoint-own-key path. Independent catalogue only.
+    if (trusted_catalogue.isObject() &&
+        (trusted_catalogue.exists("agent_handoff") || trusted_catalogue.exists("software_trust_root") ||
+         trusted_catalogue.exists("installer_key") || trusted_catalogue.exists("installer_url") ||
+         trusted_catalogue.exists("installer_sha384"))) {
+        return Fail(out, err_code, err, "CLIENT_TRUST_REQUIRED", "TRUST_REQUIRED", true);
+    }
 
     if (!core_obj.exists("agent_handoff") || !core_obj["agent_handoff"].isObject()) {
         return Fail(out, err_code, err, "CLIENT_TARGET_UNSUPPORTED", "agent_handoff", false);

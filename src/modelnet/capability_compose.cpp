@@ -482,6 +482,9 @@ bool JournalSwitch(const std::string& old_lock, const std::string& new_lock, con
         return true;
     }
     if (kind == "rollback") {
+        // AttrInt defaults missing client_min to 0. A positive floor still
+        // rejects new_min==0 (unlabeled cannot roll back a ranked lock).
+        // Two unlabeled locks are not a trust statement either way.
         const int floor = std::max(g_switch.active_client_min, old_min);
         if (floor > 0 && new_min < floor) {
             err = "SOFTWARE_TRUST_REQUIRED";

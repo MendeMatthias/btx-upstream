@@ -885,9 +885,20 @@ bool DispatchNetwork02RpcOnce(ModelCatalog& cat, const std::string& method, cons
         }
         bool imported = false;
         if (method == "importbtxpackage") {
+            const std::string st = result.exists("signature_status") && result["signature_status"].isStr() ?
+                                        result["signature_status"].get_str() :
+                                        "UNSIGNED";
+            const bool sig_pass = result.exists("signature_cryptographic") &&
+                                  result["signature_cryptographic"].isStr() &&
+                                  result["signature_cryptographic"].get_str() == "PASS";
             UniValue man = result.exists("bundle") ? result["bundle"] : UniValue(UniValue::VOBJ);
             if (man.exists("manifest") && man["manifest"].isObject()) man = man["manifest"];
             if (man.exists("model_id") && man.exists("files") && man["files"].isArray()) {
+                if (st == "UNSIGNED" || st == "NOT_EVALUATED" || !sig_pass) {
+                    err_code = "UNSIGNED_PACKAGE";
+                    err = "import requires a cryptographic signature; inspect remains available";
+                    return false;
+                }
                 if (!cat.InstallFromManifest(man, err, /*complete=*/false)) {
                     err_code = "INVALID_PARAMETER";
                     return false;

@@ -742,8 +742,11 @@ RPCHelpMan newkeypool()
 
     LOCK(pwallet->cs_wallet);
 
+    EnsureWalletIsUnlocked(*pwallet);
     LegacyScriptPubKeyMan& spk_man = EnsureLegacyScriptPubKeyMan(*pwallet, true);
-    spk_man.NewKeyPool();
+    if (!spk_man.NewKeyPool()) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error refreshing keypool.");
+    }
 
     return UniValue::VNULL;
 },

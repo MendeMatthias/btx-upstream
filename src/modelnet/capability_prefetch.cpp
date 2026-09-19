@@ -523,7 +523,15 @@ bool LookupExecutableCache(const UniValue& query, UniValue& hit, std::string& er
     }
     const std::string owner = CanonicalTenantId(it->second.owner.empty() ? TenantOf(it->second.body) : it->second.owner);
     const std::string requester = CanonicalTenantId(RequesterOf(query));
-    if (!owner.empty() && !PrefixVisibleToTenant(owner, requester)) {
+    // Empty owner == empty requester used to pass. An unscoped slot is only
+    // visible to an unscoped query; a tenant must not inherit a cache that
+    // was never bound to it. Usable owners still require PrefixVisibleToTenant.
+    if (TenantIdUsable(owner)) {
+        if (!PrefixVisibleToTenant(owner, requester)) {
+            hit.pushKV("hit", false);
+            return Fail(err_code, err, "CACHE_MISS", "no committed cache");
+        }
+    } else if (TenantIdUsable(requester)) {
         hit.pushKV("hit", false);
         return Fail(err_code, err, "CACHE_MISS", "no committed cache");
     }

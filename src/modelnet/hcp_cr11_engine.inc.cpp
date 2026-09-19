@@ -64,6 +64,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
     auto Need = [&](const std::string& scope, bool financial) -> HcpHttpResponse {
         std::string account, acode;
         if (!Auth(req, scope, account, acode, financial)) return Err(401, acode, acode);
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         cr11.authed_account = account;
         if (cr11.family_view && financial) {
             return Err(403, HCP_ERR_FAMILY_VIEW, "family view is not debit authority");
@@ -96,7 +97,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCr11Locked(const HcpHttpRequest& req)
         } else if (b.exists("accepted_by") && b["accepted_by"].isStr()) {
             owner = b["accepted_by"].get_str();
         }
-        return !owner.empty() && owner == cr11.authed_account;
+        return !cr11.authed_account.empty() && !owner.empty() && owner == cr11.authed_account;
     };
     auto StampOwner = [&](UniValue& b) {
         if (!b.exists("account") && !b.exists("account_ref") && !b.exists("accepted_by")) {

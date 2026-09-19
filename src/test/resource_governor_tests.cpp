@@ -230,6 +230,29 @@ BOOST_AUTO_TEST_CASE(gov_off_denies_mining_not_ungoverned_mode)
     BOOST_CHECK_EQUAL(g.Permit(GovernorJob::MINING).reason, PauseReason::USER_DISABLED);
 }
 
+BOOST_AUTO_TEST_CASE(gov_unarmed_auto_schedule_does_not_fail_open)
+{
+    ResourceGovernor g;
+    g.SetAutoSchedule(true);
+    g.SetMiningConsent(true);
+    BOOST_CHECK(!g.MiningAllowed());
+    BOOST_CHECK(!g.Permit(GovernorJob::MINING).allowed);
+    BOOST_CHECK_EQUAL(g.Permit(GovernorJob::MINING).reason, PauseReason::GOVERNOR_COOLDOWN);
+    g.SetMode(GovernorMode::OFF);
+    BOOST_CHECK(!g.MiningAllowed());
+}
+
+BOOST_AUTO_TEST_CASE(gov_unarmed_manual_consent_preserves_existing_miner)
+{
+    ResourceGovernor g;
+    g.SetAutoSchedule(false);
+    g.SetMiningConsent(true);
+    BOOST_CHECK(g.MiningAllowed());
+    g.SetMode(GovernorMode::OFF);
+    BOOST_CHECK(!g.MiningAllowed());
+    BOOST_CHECK(!g.Permit(GovernorJob::MINING).allowed);
+}
+
 BOOST_AUTO_TEST_CASE(gov_hys_01_short_spike_does_not_flap)
 {
     ResourceGovernor g;

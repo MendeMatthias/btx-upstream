@@ -64,7 +64,7 @@ SplashScreen::SplashScreen(const NetworkStyle* networkStyle)
     QRect rGradient(QPoint(0,0), splashSize);
     pixPaint.fillRect(rGradient, gradient);
 
-    // draw the bitcoin icon, expected size of PNG: 1024x1024
+    // draw the BTX icon, expected size of PNG: 1024x1024
     const QPoint nonstatus_centre(splashSize.width() / 2 / devicePixelRatio, (splashSize.height() - (3 * QFontMetrics(font).lineSpacing() / 2)) / 2 / devicePixelRatio);
     const int icon_top{nonstatus_centre.y() - (nonstatus_centre.x() / 2)};
     QRect rectIcon(QPoint(0, icon_top), QSize(nonstatus_centre.x(), nonstatus_centre.x()));
@@ -75,7 +75,7 @@ SplashScreen::SplashScreen(const NetworkStyle* networkStyle)
     pixPaint.drawPixmap(rectIcon, icon);
 
     // check font size and drawing with
-    // CLIENT_NAME may be one token ("BTX") or two ("Bitcoin Core"). Never
+    // CLIENT_NAME may be one token ("BTX") or more than one word. Never
     // index titleParts[1] unless a second word exists; assertions stay on
     // in Release.
     QStringList titleParts = titleText.split(' ');

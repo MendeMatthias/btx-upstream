@@ -530,7 +530,9 @@ bool ResourceGovernor::MiningAllowed() const
     // mining mode and must stay false here.
     if (m_unavailable || m_mode == GovernorMode::OFF || !m_mining_consent) return false;
     if (m_user_pause || m_validation || m_foreground_ai) return false;
-    if (!m_have_sample) return true; // not armed: do not change existing miner behavior
+    // Unarmed AUTO/hysteresis must not fail-open. MaybeTransition already
+    // starts mining when auto-schedule is off (existing -gen miner). Returning
+    // true here let SolveMatMulV4RC's consent latch skip idle gating.
     return m_mining_active && m_intensity > 0;
 }
 

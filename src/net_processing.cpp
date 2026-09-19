@@ -553,6 +553,13 @@ static constexpr size_t MATMUL_DEFERRED_BODY_MAX_BYTES_PER_NETGROUP{
  *  ~54 deferred bodies — past that, catch-up ages out faster than it validates.
  *  45 minutes covers ~245 blocks of deferred ExactReplay. */
 static constexpr auto MATMUL_DEFERRED_BODY_MAX_AGE{45min};
+/** Hash-only budget-defer stamps. Lookup must not scan the whole map, inserts
+ *  must not refresh an existing deadline, and unique hashes in one window must
+ *  not grow without a cap (same contract as RCDeferredBodyCooldowns). */
+static constexpr size_t MATMUL_BUDGET_DEFERRED_MAX{256};
+/** HEADER_ONLY skip sets are cleared on tip move; a stalled tip plus unique
+ *  competing hashes must still be memory-bounded. */
+static constexpr size_t MAX_HEADER_ONLY_SKIP_HASHES{1024};
 
 //! Claimed unique unattested tip-child for ExactReplay GPU. File-static so
 //! ResetMatMulVerifyAdmissionForTest can clear it between shared-fixture cases.
@@ -2087,7 +2094,7 @@ private:
      *  for this hash. Idle catch-up / GETDATA re-request and the convergence
      *  note must not treat a held hash as missing on the network. Per-peer
      *  GETDATA skip stays netgroup-keyed so an independent source remains
-     *  eligible. */
+     *  eligible; this hash-only probe must never gate FindNextBlocks. */
     bool IsMatMulRCBodyDeferred(const uint256& hash) const NO_THREAD_SAFETY_ANALYSIS;
     std::atomic<bool> m_stopping{false};
 
@@ -3203,26 +3210,43 @@ bool PeerManagerImpl::IsBlockRequested(const uint256& hash)
 bool PeerManagerImpl::IsMatMulBudgetDeferred(const uint256& hash,
                                              std::chrono::microseconds now)
 {
-    for (auto it = m_matmul_budget_deferred.begin(); it != m_matmul_budget_deferred.end();) {
-        if (now >= it->second) {
-            it = m_matmul_budget_deferred.erase(it);  // cooldown elapsed
-        } else {
-            ++it;
-        }
+    // FindNextBlocks calls this once per candidate. A full-store prune here
+    // is O(candidates * deferred) after a unique-hash flood. Expire only the
+    // queried key; NoteMatMulBudgetDeferred prunes and caps on insert.
+    const auto it{m_matmul_budget_deferred.find(hash)};
+    if (it == m_matmul_budget_deferred.end()) return false;
+    if (now >= it->second) {
+        m_matmul_budget_deferred.erase(it);
+        return false;
     }
-    return m_matmul_budget_deferred.count(hash) > 0;
+    return true;
 }
 
 void PeerManagerImpl::NoteMatMulBudgetDeferred(
     const uint256& hash, std::chrono::microseconds cooldown)
 {
-    // Prune on insert as well as on lookup: a hash deferred and never queried
-    // again (reorg, peer gone) would otherwise persist, letting a peer grow this
-    // map with unique hashes.
     const auto now_us{GetTime<std::chrono::microseconds>()};
     std::erase_if(m_matmul_budget_deferred,
                   [&](const auto& e) { return now_us >= e.second; });
-    m_matmul_budget_deferred[hash] = now_us + cooldown;
+    const auto existing{m_matmul_budget_deferred.find(hash)};
+    if (existing != m_matmul_budget_deferred.end()) {
+        // Non-refresh: re-deferring the same hash must not extend the skip
+        // window. Independent sources become eligible when this deadline
+        // fires; a retained body is already skip-fetched via HasRetainedBody.
+        if (now_us < existing->second) return;
+        m_matmul_budget_deferred.erase(existing);
+    }
+    if (m_matmul_budget_deferred.size() >= MATMUL_BUDGET_DEFERRED_MAX) {
+        const auto oldest{std::min_element(
+            m_matmul_budget_deferred.begin(), m_matmul_budget_deferred.end(),
+            [](const auto& lhs, const auto& rhs) {
+                return lhs.second < rhs.second;
+            })};
+        if (oldest != m_matmul_budget_deferred.end()) {
+            m_matmul_budget_deferred.erase(oldest);
+        }
+    }
+    m_matmul_budget_deferred.emplace(hash, now_us + cooldown);
 }
 
 bool PeerManagerImpl::MayDuplicateStaleBlockRequest(const uint256& hash,
@@ -5368,6 +5392,24 @@ static bool TrustedMirrorMayDownloadIndex(
            followed_skip.count(index->GetBlockHash()) != 0;
 }
 
+[[nodiscard]] static bool InsertHeaderOnlySkipHash(std::set<uint256>& hashes,
+                                                   const uint256& hash)
+    EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+{
+    if (!hashes.insert(hash).second) return false;
+    if (hashes.size() > MAX_HEADER_ONLY_SKIP_HASHES) {
+        auto victim{hashes.begin()};
+        if (*victim == hash) {
+            ++victim;
+        }
+        if (victim == hashes.end()) {
+            victim = hashes.begin();
+        }
+        hashes.erase(victim);
+    }
+    return true;
+}
+
 //! True if another unattested tip-child already has a body or ExactReplay
 //! verdict. Used so a trusted mirror persists at most one such child.
 [[nodiscard]] static bool ConfiguredTipChildAlreadyHasBody(
@@ -6783,13 +6825,12 @@ void PeerManagerImpl::FindNextBlocks(std::vector<const CBlockIndex*>& vBlocks, c
             if (IsMatMulBudgetDeferred(pindex->GetBlockHash(),
                                        GetTime<std::chrono::microseconds>())) {
                 const uint256 deferred_hash{pindex->GetBlockHash()};
-                // Issue #163: idle catch-up must not re-GETDATA a hash
-                // MarkMatMulRCBodyDeferred / the retained store already holds.
-                // The body was delivered and is waiting for the verification
-                // job; re-fetch is a busy loop, not progress. Per-peer skip
-                // below stays netgroup-keyed for hashes we do not hold.
-                if (m_matmul_block_lifecycle.HasRetainedBody(deferred_hash) ||
-                    IsMatMulRCBodyDeferred(deferred_hash)) {
+                // Issue #163: idle catch-up must not re-GETDATA a hash the
+                // retained store already holds. Re-fetch is a busy loop, not
+                // progress. Hash-only RC cooldown (ContainsHash) must NOT skip
+                // GETDATA here: that suppressed independent sources. Per-peer
+                // skip below stays netgroup-keyed for hashes we do not hold.
+                if (m_matmul_block_lifecycle.HasRetainedBody(deferred_hash)) {
                     continue;
                 }
                 // Budget defers pace concurrent verifies. When the download
@@ -10322,6 +10363,8 @@ void PeerManagerImpl::HeadersDirectFetchBlocks(CNode& pfrom, const Peer& peer, c
                                                  m_header_only_followed_skip,
                                                  &last_header) &&
                     !m_matmul_block_lifecycle.HasRetainedBody(pindexWalk->GetBlockHash()) &&
+                    !IsMatMulRCBodyDeferred(pindexWalk->GetBlockHash(),
+                                            nodestate->m_keyed_netgroup) &&
                     (!DeploymentActiveAt(*pindexWalk, m_chainman, Consensus::DEPLOYMENT_SEGWIT) ||
                      CanServeWitnesses(peer))) {
                     missing_newest_first.push_back(pindexWalk);
@@ -10345,6 +10388,8 @@ void PeerManagerImpl::HeadersDirectFetchBlocks(CNode& pfrom, const Peer& peer, c
                                                      m_header_only_followed_skip,
                                                      &last_header) &&
                         !m_matmul_block_lifecycle.HasRetainedBody(pindexWalk->GetBlockHash()) &&
+                        !IsMatMulRCBodyDeferred(pindexWalk->GetBlockHash(),
+                                                nodestate->m_keyed_netgroup) &&
                         (!DeploymentActiveAt(*pindexWalk, m_chainman, Consensus::DEPLOYMENT_SEGWIT) || CanServeWitnesses(peer))) {
                     // We don't have this block, and it's not yet in flight.
                     vToFetch.push_back(pindexWalk);
@@ -14705,8 +14750,8 @@ bool PeerManagerImpl::AdmitMatMulBlockVerification(
                                 request_attestations_without_gpu = true;
                                 skip_competing_exactreplay = true;
                                 header_only_competing_first =
-                                    m_header_only_competing.insert(block_hash)
-                                        .second;
+                                    InsertHeaderOnlySkipHash(
+                                        m_header_only_competing, block_hash);
                             }
                         }
                     }
@@ -15542,7 +15587,7 @@ void PeerManagerImpl::ProcessBlockSync(NodeId nodeid, CNode* node, const std::sh
                         g_configured_claimed_tip_child == hash) &&
                        !IndexIsFollowedTipChild(
                            m_chainman, m_chainman.ActiveTip(), index)) {
-                if (m_header_only_followed_skip.insert(hash).second) {
+                if (InsertHeaderOnlySkipHash(m_header_only_followed_skip, hash)) {
                     LogDebug(BCLog::NET,
                              "Followed-chain body hash=%s was not persisted; skip-fetch until tip moves\n",
                              hash.ToString());

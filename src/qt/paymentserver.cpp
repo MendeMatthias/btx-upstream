@@ -34,7 +34,6 @@
 #include <QUrlQuery>
 
 const int BITCOIN_IPC_CONNECT_TIMEOUT = 1000; // milliseconds
-const QString BITCOIN_IPC_PREFIX("bitcoin:");
 const QString BTX_IPC_PREFIX("btx:");
 const QString BTX_MODEL_URI_PREFIX("btx://");
 
@@ -79,8 +78,7 @@ void PaymentServer::ipcParseCommandLine(int argc, char* argv[])
         QString arg(argv[i]);
         if (arg.startsWith("-")) continue;
 
-        if (arg.startsWith(BTX_IPC_PREFIX, Qt::CaseInsensitive) ||
-            arg.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive)) {
+        if (arg.startsWith(BTX_IPC_PREFIX, Qt::CaseInsensitive)) {
             savedPaymentRequests.insert(arg);
         }
     }
@@ -129,7 +127,8 @@ PaymentServer::PaymentServer(QObject* parent, bool startLocalServer)
     : QObject(parent)
 {
     // Install global event filter to catch QFileOpenEvents
-    // on Mac: sent when you click btx: (or leftover bitcoin:) links
+    // on Mac: sent when you click btx: payment links or btx:// model links
+    // bitcoin: is not a BTX payment URI
     // other OSes: helpful when dealing with payment request files
     if (parent)
         parent->installEventFilter(this);
@@ -157,7 +156,7 @@ PaymentServer::PaymentServer(QObject* parent, bool startLocalServer)
 PaymentServer::~PaymentServer() = default;
 
 //
-// OSX-specific way of handling btx: / bitcoin: URIs
+// OSX-specific way of handling btx: payment URIs and btx:// model URIs
 //
 bool PaymentServer::eventFilter(QObject *object, QEvent *event)
 {
@@ -186,39 +185,41 @@ void PaymentServer::uiReady()
 
 void PaymentServer::handleURIOrFile(const QString& s)
 {
+    const QString uri = s.trimmed();
     if (saveURIs)
     {
-        savedPaymentRequests.insert(s);
+        savedPaymentRequests.insert(uri);
         return;
     }
 
     // V11-URI-13: model identity is btx://… and must never enter DecodeDestination.
     // Payment BIP21 is btx:<address> (no //). Do not treat the payment scheme as a model.
-    if (s.startsWith(BTX_MODEL_URI_PREFIX, Qt::CaseInsensitive) ||
-        s.contains(QLatin1String("btx://"), Qt::CaseInsensitive)) {
-        Q_EMIT receivedModelResource(s);
+    // Match only at the start so a BIP21 query cannot smuggle btx:// into model routing.
+    if (uri.startsWith(BTX_MODEL_URI_PREFIX, Qt::CaseInsensitive)) {
+        Q_EMIT receivedModelResource(uri);
         return;
     }
 
-    if (s.startsWith("bitcoin://", Qt::CaseInsensitive))
+    if (uri.startsWith(QLatin1String("bitcoin:"), Qt::CaseInsensitive))
     {
-        Q_EMIT message(tr("URI handling"), tr("'bitcoin://' is not a valid URI. Use 'btx:' for payments."),
+        Q_EMIT message(tr("URI handling"),
+            tr("BTX does not handle Bitcoin URIs. Use a btx: payment URI."),
             CClientUIInterface::MSG_ERROR);
+        return;
     }
-    else if (s.startsWith(BTX_IPC_PREFIX, Qt::CaseInsensitive) ||
-             s.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive))
+    else if (uri.startsWith(BTX_IPC_PREFIX, Qt::CaseInsensitive))
     {
-        QUrlQuery uri((QUrl(s)));
+        QUrlQuery uriQuery((QUrl(uri)));
         // normal URI
         {
             SendCoinsRecipient recipient;
-            if (GUIUtil::parseBitcoinURI(s, &recipient))
+            if (GUIUtil::parseBitcoinURI(uri, &recipient))
             {
                 std::string error_msg;
                 const CTxDestination dest = DecodeDestination(recipient.address.toStdString(), error_msg);
 
                 if (!IsValidDestination(dest)) {
-                    if (uri.hasQueryItem("r")) {  // payment request
+                    if (uriQuery.hasQueryItem("r")) {  // payment request
                         Q_EMIT message(tr("URI handling"),
                             tr("Cannot process payment request because BIP70 is not supported.\n"
                                "Due to widespread security flaws in BIP70 it's strongly recommended that any merchant instructions to switch wallets be ignored.\n"
@@ -233,16 +234,16 @@ void PaymentServer::handleURIOrFile(const QString& s)
             }
             else
                 Q_EMIT message(tr("URI handling"),
-                    tr("URI cannot be parsed! This can be caused by an invalid Bitcoin address or malformed URI parameters."),
+                    tr("URI cannot be parsed! This can be caused by an invalid BTX address or malformed URI parameters."),
                     CClientUIInterface::ICON_WARNING);
 
             return;
         }
     }
 
-    QString path = s;
-    if (s.startsWith(QLatin1String("file:"), Qt::CaseInsensitive)) {
-        path = QUrl(s).toLocalFile();
+    QString path = uri;
+    if (uri.startsWith(QLatin1String("file:"), Qt::CaseInsensitive)) {
+        path = QUrl(uri).toLocalFile();
     }
     if (QFile::exists(path)) {
         const QString lower = path.toLower();

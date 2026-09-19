@@ -664,6 +664,9 @@ bool VerifyPackageCoreSignature(const Digest48& core_id, const UniValue& signatu
 
 bool ParseAgentPackageFile(Span<const unsigned char> data, DecodedBtxPackage& out, std::string& err)
 {
+    // Framing + core schema only. An empty signatures array is valid so
+    // inspect fixtures can be decoded; install/verify paths must still
+    // require a cryptographic PASS (see importbtxpackage / verifybtxpackage).
     if (!DecodeBtxPackage(data, out, err)) return false;
     std::string code;
     if (!ExactKeys(out.payload, kPayloadRequired, kPayloadRequired, "payload", code, err)) {

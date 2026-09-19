@@ -364,6 +364,7 @@ struct HcpEngine::Impl {
     bool outbox_crashed{false};
     std::vector<Ev> outbox;
     std::map<std::string, bool> subs_revoked;
+    std::map<std::string, std::string> subs_account;
 
     struct Fetch {
         int status{200};
@@ -659,6 +660,13 @@ bool HcpEngine::Impl::Auth(const HcpHttpRequest& req, const std::string& need_sc
         }
     }
     account = it->second.account;
+    // A bearer token with an empty account must not satisfy a scoped call.
+    // Ownership compares (`owner == authed_account`) would otherwise match
+    // any object that also stored an empty owner string.
+    if (account.empty()) {
+        err_code = "UNAUTHENTICATED";
+        return false;
+    }
     return true;
 }
 
@@ -922,7 +930,7 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         env.object_type = HCP_TYPE_CAPABILITY_HANDOFF;
         env.body.pushKV("version", 1);
         env.body.pushKV("provider_id", cfg.provider_id);
-        env.body.pushKV("account_ref", account.empty() ? "account-demo" : account);
+        env.body.pushKV("account_ref", account);
         const std::string device = have_body && parsed.exists("device_id") ? parsed["device_id"].get_str() : "device-demo";
         auto dit = devices.find(device);
         if (dit == devices.end() || !dit->second.paired || dit->second.revoked) {
@@ -1467,16 +1475,28 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         if (!Auth(req, "subscriptions:write", account, acode, true)) return Err(401, acode, acode);
         const std::string sid = RandId("sub-");
         subs_revoked[sid] = false;
+        subs_account[sid] = account;
         UniValue o(UniValue::VOBJ);
         o.pushKV("subscription_id", sid);
+        o.pushKV("account", account);
         o.pushKV("finite", true);
         return JsonStatus(201, o);
     }
     if (MatchPath(req.path, "/subscriptions/{subscription_id}/revoke", cap) && req.method == "POST") {
         if (!Auth(req, "subscriptions:write", account, acode, true)) return Err(401, acode, acode);
-        subs_revoked[cap["subscription_id"]] = true;
+        const std::string sid = cap["subscription_id"];
+        auto ait = subs_account.find(sid);
+        if (ait != subs_account.end() && !ait->second.empty() && ait->second != account) {
+            return Err(404, "NOT_FOUND", "subscription");
+        }
+        // Lab SetSubscriptionRevoked may insert a revoked id with no owner.
+        // Unknown ids are not world-revocable.
+        if (ait == subs_account.end() && subs_revoked.find(sid) == subs_revoked.end()) {
+            return Err(404, "NOT_FOUND", "subscription");
+        }
+        subs_revoked[sid] = true;
         UniValue o(UniValue::VOBJ);
-        o.pushKV("subscription_id", cap["subscription_id"]);
+        o.pushKV("subscription_id", sid);
         o.pushKV("revoked", true);
         o.pushKV("new_signatures", false);
         return JsonStatus(200, o);
@@ -1551,7 +1571,7 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         const std::string owner = it->second.exists("account_ref") && it->second["account_ref"].isStr()
                                       ? it->second["account_ref"].get_str()
                                       : std::string{};
-        if (owner != account) return Err(404, "NOT_FOUND", "export");
+        if (owner.empty() || owner != account) return Err(404, "NOT_FOUND", "export");
         UniValue man = it->second;
         // Persist the stored ready bit. GET does not perform export work.
         man.pushKV("retrieved", true);
@@ -1572,8 +1592,10 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         if (!Auth(req, "research:publish", account, acode, false)) return Err(401, acode, acode);
         auto it = research_drafts.find(cap["draft_id"]);
         if (it == research_drafts.end()) return Err(404, "NOT_FOUND", "draft");
-        if (it->second.exists("account") && it->second["account"].isStr() &&
-            it->second["account"].get_str() != account) {
+        const std::string draft_owner = it->second.exists("account") && it->second["account"].isStr()
+                                            ? it->second["account"].get_str()
+                                            : std::string{};
+        if (draft_owner.empty() || draft_owner != account) {
             return Err(404, "NOT_FOUND", "draft");
         }
         std::string ferr;
@@ -1593,8 +1615,10 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         if (!Auth(req, "research:publish", account, acode, true)) return Err(401, acode, acode);
         auto it = research_drafts.find(cap["draft_id"]);
         if (it == research_drafts.end()) return Err(404, "NOT_FOUND", "draft");
-        if (it->second.exists("account") && it->second["account"].isStr() &&
-            it->second["account"].get_str() != account) {
+        const std::string draft_owner = it->second.exists("account") && it->second["account"].isStr()
+                                            ? it->second["account"].get_str()
+                                            : std::string{};
+        if (draft_owner.empty() || draft_owner != account) {
             return Err(404, "NOT_FOUND", "draft");
         }
         if (!it->second.exists("valid") || !it->second["valid"].isTrue()) {

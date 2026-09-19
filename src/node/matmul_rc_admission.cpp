@@ -124,6 +124,9 @@ RCAdmissionStore::RCAdmissionStore(Config config) : m_config{config}
         std::max<size_t>(1, m_config.max_unknown_candidates_per_hash);
     m_config.max_unknown_submissions_per_netgroup =
         std::max<size_t>(1, m_config.max_unknown_submissions_per_netgroup);
+    m_config.max_unknown_submission_netgroups =
+        std::max(m_config.max_unknown_entries,
+                 m_config.max_unknown_submission_netgroups);
 }
 
 RCDeferredBodyCooldowns::RCDeferredBodyCooldowns()
@@ -153,6 +156,9 @@ bool RCDeferredBodyCooldowns::Mark(
             return false;
         }
         m_deadlines.erase(existing);
+    }
+    if (m_deadlines.size() >= m_config.max_entries) {
+        Prune(now);
     }
     if (m_deadlines.size() >= m_config.max_entries) {
         const auto oldest{std::min_element(
@@ -255,6 +261,12 @@ RCAdmissionStore::RememberResult RCAdmissionStore::Remember(
             m_config.max_unknown_candidates_per_hash &&
         m_unknown_entries.count(key) == 0) {
         return RememberResult::HashQuota;
+    }
+    if (m_unknown_submission_history.find(keyed_netgroup) ==
+            m_unknown_submission_history.end() &&
+        m_unknown_submission_history.size() >=
+            m_config.max_unknown_submission_netgroups) {
+        return RememberResult::RateLimited;
     }
     auto& submissions{m_unknown_submission_history[keyed_netgroup]};
     if (submissions.size() >=

@@ -108,12 +108,22 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
     auto Need = [&](const std::string& scope, bool financial) -> HcpHttpResponse {
         std::string account, acode;
         if (!Auth(req, scope, account, acode, financial)) return Err(401, acode, acode);
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         cr11.authed_account = account;
         return HcpHttpResponse{};
     };
 
     auto Owned = [&](const UniValue& b) -> bool {
-        return b.exists("account") && b["account"].isStr() && b["account"].get_str() == cr11.authed_account;
+        // Fail closed: empty authed account or empty stored owner must never
+        // compare equal. Missing owner is not world-readable.
+        if (cr11.authed_account.empty()) return false;
+        std::string owner;
+        if (b.exists("account") && b["account"].isStr()) {
+            owner = b["account"].get_str();
+        } else if (b.exists("account_ref") && b["account_ref"].isStr()) {
+            owner = b["account_ref"].get_str();
+        }
+        return !owner.empty() && owner == cr11.authed_account;
     };
 
     auto FindOwned = [&](std::map<std::string, UniValue>& m, const std::string& id) -> std::map<std::string, UniValue>::iterator {
@@ -154,9 +164,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
         bool any = false;
         bool active = false;
         for (const auto& [id, b] : crl12.bindings) {
-            if (b.exists("account") && b["account"].isStr() && b["account"].get_str() != cr11.authed_account) {
-                continue;
-            }
+            if (!Owned(b)) continue;
             any = true;
             const std::string st = (b.exists("status") && b["status"].isStr()) ? b["status"].get_str() : "PROPOSED";
             if (st == "ACTIVE") active = true;
@@ -1197,7 +1205,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
         if (!chunk_id.empty()) {
             auto cit = crl12.chunks.find(chunk_id);
             if (cit == crl12.chunks.end()) return Err(404, "NOT_FOUND", "chunk");
-            if (cit->second["account"].get_str() != cr11.authed_account) {
+            if (!Owned(cit->second)) {
                 return Err(403, HCP_ERR_CHUNK_NOT_OWNED, chunk_id);
             }
             const std::string want = Jstr("digest", "");

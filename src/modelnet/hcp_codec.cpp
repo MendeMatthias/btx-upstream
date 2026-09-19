@@ -78,6 +78,8 @@ const char* kForbidden[] = {
     "shell", "command", "exec", "cwd", "ld_preload", "LD_PRELOAD", "wget", "curl",
     "env", "environment_vars", "bash", "powershell", "cmd", "runtime_url",
     "executable_url", "install_script", "wallet_rpc", "automatic_spend_atoms",
+    "skip_verification", "disable_verification", "skip_hash", "skip_hash_checks",
+    "installer_key", "software_trust_root", "trust_root",
 };
 
 bool ObjectTypeChars(const std::string& t)
@@ -329,6 +331,10 @@ bool HcpVerify(const HcpEnvelope& env, Span<const unsigned char> pk, std::string
     }
     if (!env.signature_present) {
         err = "unsigned";
+        return false;
+    }
+    if (pk.size() != MLDSA44_PK) {
+        err = "SIGNATURE_INVALID";
         return false;
     }
     if (!VerifyMlDsa44(pk, Span<const unsigned char>{env.body_id.data.data(), Digest48::SIZE},

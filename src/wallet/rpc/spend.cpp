@@ -107,12 +107,19 @@ static const UniValue& GetSubtractFeeFromOutputsOption(const UniValue& options)
 
 static UniValue FinishTransaction(const std::shared_ptr<CWallet> pwallet, const UniValue& options, CMutableTransaction& rawTx)
 {
-    // send / sendall always attempt in-process signing below (FillPSBT with
-    // sign=true). A BCP/1 exchange watch-only wallet must use the external
-    // signing package flow instead.
+    // send / sendall attempt in-process signing below (FillPSBT with
+    // sign=true) unless this is a watch-only wallet. Leftover private keys in a
+    // disable_private_keys wallet must not complete or broadcast the tx.
+    // A BCP/1 exchange watch-only wallet must use the external signing package
+    // flow instead.
     bilingual_str refuse_err;
     if (RefusePrivateSign(*pwallet, refuse_err)) {
         throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+    }
+    const bool allow_inprocess_sign = !pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS) ||
+                                      CanDelegateExternalPsbtSign(*pwallet);
+    if (allow_inprocess_sign) {
+        EnsureWalletIsUnlocked(*pwallet);
     }
 
     if (!options.exists("locktime")) {
@@ -127,7 +134,7 @@ static UniValue FinishTransaction(const std::shared_ptr<CWallet> pwallet, const 
     // so external signers are not asked to sign more than once.
     bool complete;
     pwallet->FillPSBT(psbtx, complete, SIGHASH_DEFAULT, /*sign=*/false, /*bip32derivs=*/true);
-    const auto err{pwallet->FillPSBT(psbtx, complete, SIGHASH_DEFAULT, /*sign=*/true, /*bip32derivs=*/false)};
+    const auto err{pwallet->FillPSBT(psbtx, complete, SIGHASH_DEFAULT, /*sign=*/allow_inprocess_sign, /*bip32derivs=*/false)};
     if (err) {
         throw JSONRPCPSBTError(*err);
     }
@@ -1099,6 +1106,9 @@ RPCHelpMan signrawtransactionwithwallet()
     if (RefusePrivateSign(*pwallet, refuse_err)) {
         throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
     }
+    if (pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS) && !CanDelegateExternalPsbtSign(*pwallet)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Private keys are disabled for this wallet");
+    }
 
     CMutableTransaction mtx;
     if (!DecodeHexTx(mtx, request.params[0].get_str())) {
@@ -1874,6 +1884,9 @@ RPCHelpMan walletprocesspsbt()
         bilingual_str refuse_err;
         if (RefusePrivateSign(wallet, refuse_err)) {
             throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+        }
+        if (wallet.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
+            throw JSONRPCError(RPC_WALLET_ERROR, "Error: Private keys are disabled for this wallet");
         }
     }
 

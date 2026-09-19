@@ -758,7 +758,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-autoupdatemanifesturl=<url>", strprintf("Signed auto-update manifest URL (default: %s)", node::DEFAULT_AUTOUPDATE_MANIFEST_URL), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-autoupdatetrustedorigin=<origin>", strprintf("Trusted auto-update origin. Manifest, signature, and installer URLs must all stay on this origin (default: %s)", node::DEFAULT_AUTOUPDATE_TRUSTED_ORIGIN), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-autoupdatepubkey=<hex>", "Release public key (hex) for version.txt signatures, in the scheme set by -autoupdatepubkeyalgo. Set to 0 to make auto-update inert.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-autoupdatepubkeyalgo=<scheme>", strprintf("Release signature scheme: ml-dsa-44, slh-dsa-128s, or secp256k1. The post-quantum schemes keep the update channel quantum-safe (default: %s).", node::DEFAULT_AUTOUPDATE_RELEASE_PUBKEY_ALGO), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-autoupdatepubkeyalgo=<scheme>", strprintf("Release signature scheme: ml-dsa-44 or slh-dsa-128s (default: %s). Classical secp256k1 is not accepted.", node::DEFAULT_AUTOUPDATE_RELEASE_PUBKEY_ALGO), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-autoupdateinterval=<n>", strprintf("Seconds between auto-update checks (default: %d)", node::DEFAULT_AUTOUPDATE_INTERVAL_SECONDS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-autoupdateinitialdelay=<n>", strprintf("Seconds to wait after startup before the first auto-update check (default: %d)", node::DEFAULT_AUTOUPDATE_INITIAL_DELAY_SECONDS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-autoupdateinitialjitter=<n>", strprintf("Maximum extra random seconds added to the startup auto-update check, to prevent fleet stampedes without delaying urgent releases by a full poll interval (default: %d)", node::DEFAULT_AUTOUPDATE_INITIAL_JITTER_SECONDS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -1051,7 +1051,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-rpcdoccheck", strprintf("Throw a non-fatal error at runtime if the documentation for an RPC is incorrect (default: %u)", DEFAULT_RPC_DOC_CHECK), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::RPC);
     argsman.AddArg("-rpccookiefile=<loc>", "Location of the auth cookie. Relative paths will be prefixed by a net-specific datadir location. (default: data dir)", ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
     argsman.AddArg("-rpccookieperms=<readable-by>", strprintf("Set permissions on the RPC auth cookie file so that it is readable by [owner|group|all] (default: owner [via umask 0077])"), ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
-    argsman.AddArg("-rpcpassword=<pw>", "Password for JSON-RPC connections", ArgsManager::ALLOW_ANY | ArgsManager::SENSITIVE, OptionsCategory::RPC);
+    argsman.AddArg("-rpcpassword=<pw>", "Password for JSON-RPC connections. UNSAFE on the command line; process listings leak it. Prefer cookie authentication or hashed -rpcauth.", ArgsManager::ALLOW_ANY | ArgsManager::SENSITIVE, OptionsCategory::RPC);
     argsman.AddArg("-rpcport=<port>", strprintf("Listen for JSON-RPC connections on <port> (default: %u, testnet3: %u, testnet4: %u, signet: %u, regtest: %u, shieldedv2dev: %u)", defaultBaseParams->RPCPort(), testnetBaseParams->RPCPort(), testnet4BaseParams->RPCPort(), signetBaseParams->RPCPort(), regtestBaseParams->RPCPort(), shieldedv2devBaseParams->RPCPort()), ArgsManager::ALLOW_ANY | ArgsManager::NETWORK_ONLY, OptionsCategory::RPC);
     argsman.AddArg("-rpcservertimeout=<n>", strprintf("Timeout during HTTP requests (default: %d)", DEFAULT_HTTP_SERVER_TIMEOUT), ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::RPC);
     argsman.AddArg("-rpcthreads=<n>", strprintf("Set the number of threads to service RPC calls (default: %d). stop/uptime/getrpcinfo/help/getmemoryinfo run on one extra dedicated control thread so they complete if the ordinary workers are blocked.", DEFAULT_HTTP_THREADS), ArgsManager::ALLOW_ANY, OptionsCategory::RPC);
@@ -1477,7 +1477,7 @@ bool AppInitParameterInteraction(const ArgsManager& args)
         const std::string release_pubkey_algo = args.GetArg("-autoupdatepubkeyalgo", std::string{node::DEFAULT_AUTOUPDATE_RELEASE_PUBKEY_ALGO});
         const auto release_pubkey_hex_len = node::AutoUpdateReleasePubkeyHexLength(release_pubkey_algo);
         if (!release_pubkey_hex_len) {
-            return InitError(_("-autoupdatepubkeyalgo must be one of ml-dsa-44, slh-dsa-128s, or secp256k1."));
+            return InitError(_("-autoupdatepubkeyalgo must be ml-dsa-44 or slh-dsa-128s."));
         }
         if (!release_pubkey.empty() && release_pubkey != "0" && (release_pubkey.size() != *release_pubkey_hex_len || !IsHex(release_pubkey))) {
             return InitError(strprintf(_("-autoupdatepubkey must be a %s public key hex string (%d hex characters), or 0 to make auto-update inert."), release_pubkey_algo, *release_pubkey_hex_len));
@@ -1485,6 +1485,14 @@ bool AppInitParameterInteraction(const ArgsManager& args)
         if (args.GetArg("-autoupdatepython", "python3").empty()) {
             return InitError(_("-autoupdatepython must not be empty."));
         }
+    }
+
+    bool rpcpassword_on_cmdline{false};
+    args.LockSettings([&](const common::Settings& settings) {
+        rpcpassword_on_cmdline = settings.command_line_options.count("rpcpassword") > 0;
+    });
+    if (rpcpassword_on_cmdline) {
+        InitWarning(_("-rpcpassword was given on the command line, which leaks the RPC password through process listings. Use cookie authentication, hashed -rpcauth, or put rpcpassword in the configuration file with restricted permissions."));
     }
 
     if (!fs::is_directory(args.GetBlocksDirPath())) {

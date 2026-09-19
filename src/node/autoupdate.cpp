@@ -10,7 +10,6 @@
 #include <crypto/sha256.h>
 #include <logging.h>
 #include <pqkey.h>
-#include <pubkey.h>
 #include <random.h>
 #include <tinyformat.h>
 #include <univalue.h>
@@ -280,13 +279,32 @@ std::optional<AutoUpdateManifest> ParseManifest(const std::vector<unsigned char>
     return manifest;
 }
 
+bool BodyIsAllHexText(const std::vector<unsigned char>& body)
+{
+    if (body.empty() || (body.size() % 2) != 0) return false;
+    return std::all_of(body.begin(), body.end(), [](unsigned char ch) {
+        return std::isxdigit(ch);
+    });
+}
+
+bool BodyLooksBinary(const std::vector<unsigned char>& body)
+{
+    return std::any_of(body.begin(), body.end(), [](unsigned char ch) {
+        return ch < 0x09 || (ch > 0x0d && ch < 0x20) || ch > 0x7e;
+    });
+}
+
 std::optional<std::vector<unsigned char>> DecodeSignatureBody(const std::vector<unsigned char>& body)
 {
     if (body.empty()) return std::nullopt;
 
-    // DER signatures commonly start with ASN.1 SEQUENCE (0x30). Treat binary
-    // DER as authoritative before attempting text encodings.
-    if (body.front() == 0x30) return body;
+    // Hex text (including encodings that start with ASCII '0' == 0x30) must be
+    // decoded as hex. Treating those bytes as raw DER used to skip hex decode.
+    if (BodyIsAllHexText(body)) {
+        auto parsed = TryParseHex<unsigned char>(std::string{body.begin(), body.end()});
+        if (parsed && !parsed->empty()) return *parsed;
+        return std::nullopt;
+    }
 
     const std::string text = TrimAscii(std::string_view{reinterpret_cast<const char*>(body.data()), body.size()});
     if (text.empty()) return std::nullopt;
@@ -300,7 +318,9 @@ std::optional<std::vector<unsigned char>> DecodeSignatureBody(const std::vector<
         if (!decoded->empty()) return *decoded;
     }
 
-    return std::vector<unsigned char>{text.begin(), text.end()};
+    // Keep raw binary PQ signatures. Do not accept leftover printable garbage.
+    if (BodyLooksBinary(body)) return body;
+    return std::nullopt;
 }
 
 std::string SHA256Hex(const std::vector<unsigned char>& bytes)
@@ -467,14 +487,24 @@ import base64
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 url = sys.argv[1]
 max_bytes = int(sys.argv[2])
 timeout = float(sys.argv[3])
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirects disabled", headers, fp)
+
 try:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("https", "http"):
+        raise RuntimeError("unsupported url scheme")
     request = urllib.request.Request(url, headers={"User-Agent": "BTX-AutoUpdate/0.32"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    opener = urllib.request.build_opener(NoRedirect)
+    with opener.open(request, timeout=timeout) as response:
         body = response.read(max_bytes + 1)
         if len(body) > max_bytes:
             raise RuntimeError("response too large")
@@ -552,27 +582,6 @@ private:
     std::string m_python_command;
 };
 
-class Secp256k1AutoUpdateSignatureVerifier final : public AutoUpdateSignatureVerifier
-{
-public:
-    bool Verify(std::string_view pubkey_hex,
-                const std::vector<unsigned char>& message,
-                const std::vector<unsigned char>& signature) override
-    {
-        const auto pubkey_bytes = TryParseHex<unsigned char>(pubkey_hex);
-        if (!pubkey_bytes || pubkey_bytes->empty()) return false;
-        const CPubKey pubkey{*pubkey_bytes};
-        if (!pubkey.IsFullyValid()) return false;
-
-        uint256 digest;
-        CSHA256().Write(message.data(), message.size()).Finalize(digest.begin());
-        return pubkey.Verify(digest, signature);
-    }
-};
-
-// Post-quantum manifest-signature verifier (ML-DSA-44 / SLH-DSA-128s). The release
-// signature is over SHA256(manifest_body), matching the classical path, but the key
-// and signature are the configured PQ scheme so the update channel is quantum-safe.
 class PQAutoUpdateSignatureVerifier final : public AutoUpdateSignatureVerifier
 {
 public:
@@ -855,9 +864,20 @@ std::string LocalClientVersion()
     return version;
 }
 
+static bool Ipv6LiteralCharAllowed(char ch)
+{
+    return std::isxdigit(static_cast<unsigned char>(ch)) || ch == ':' || ch == '.' || ch == '%';
+}
+
 std::optional<AutoUpdateUrl> ParseAutoUpdateUrl(std::string_view raw_url)
 {
     const std::string url = TrimAscii(raw_url);
+    if (url.empty()) return std::nullopt;
+    if (std::any_of(url.begin(), url.end(), [](unsigned char ch) {
+            return ch < 0x20 || ch == 0x7f;
+        })) {
+        return std::nullopt;
+    }
     const size_t scheme_sep = url.find("://");
     if (scheme_sep == std::string::npos || scheme_sep == 0) return std::nullopt;
 
@@ -876,6 +896,9 @@ std::optional<AutoUpdateUrl> ParseAutoUpdateUrl(std::string_view raw_url)
         const size_t close = authority.find(']');
         if (close == std::string::npos) return std::nullopt;
         host = authority.substr(1, close - 1);
+        // RFC 3986 IP-literals are IPv6 (must contain ':'), not DNS names in brackets.
+        if (host.find(':') == std::string::npos) return std::nullopt;
+        if (!std::all_of(host.begin(), host.end(), Ipv6LiteralCharAllowed)) return std::nullopt;
         if (close + 1 < authority.size()) {
             if (authority[close + 1] != ':') return std::nullopt;
             port = authority.substr(close + 2);
@@ -1245,7 +1268,7 @@ std::unique_ptr<AutoUpdateManager> MakeAutoUpdateManager(const ArgsManager& args
     config.release_pubkey_algo = args.GetArg("-autoupdatepubkeyalgo", std::string{DEFAULT_AUTOUPDATE_RELEASE_PUBKEY_ALGO});
     auto verifier = MakeAutoUpdateSignatureVerifier(config.release_pubkey_algo);
     if (!verifier) {
-        LogPrintf("Auto-update disabled: unknown release signature scheme \"%s\" (expected ml-dsa-44, slh-dsa-128s, or secp256k1)\n",
+        LogPrintf("Auto-update disabled: unknown release signature scheme \"%s\" (expected ml-dsa-44 or slh-dsa-128s)\n",
                   config.release_pubkey_algo);
         return nullptr;
     }
@@ -1277,10 +1300,6 @@ std::unique_ptr<AutoUpdateSignatureVerifier> MakeAutoUpdateSignatureVerifier(std
     if (const auto pq_algo = AutoUpdatePQAlgoFromName(algo)) {
         return std::make_unique<PQAutoUpdateSignatureVerifier>(*pq_algo);
     }
-    const std::string lower = ToLowerAscii(std::string{algo});
-    if (lower == "secp256k1" || lower == "ecdsa") {
-        return std::make_unique<Secp256k1AutoUpdateSignatureVerifier>();
-    }
     return nullptr;
 }
 
@@ -1288,10 +1307,6 @@ std::optional<size_t> AutoUpdateReleasePubkeyHexLength(std::string_view algo)
 {
     if (const auto pq_algo = AutoUpdatePQAlgoFromName(algo)) {
         return GetPQPubKeySize(*pq_algo) * 2;
-    }
-    const std::string lower = ToLowerAscii(std::string{algo});
-    if (lower == "secp256k1" || lower == "ecdsa") {
-        return size_t{CPubKey::COMPRESSED_SIZE} * 2;
     }
     return std::nullopt;
 }

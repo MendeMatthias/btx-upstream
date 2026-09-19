@@ -157,6 +157,69 @@ static void SetOwnerOnlyPermissions(const fs::path& path, const bool is_director
 #endif
 }
 
+static void EnsureSafeRpcFilesystemPath(const std::string& dest, const char* what)
+{
+    if (dest.empty()) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("%s must not be empty", what));
+    }
+    for (const unsigned char c : dest) {
+        if (c < 0x20 || c == 0x7f) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("%s must not contain control characters", what));
+        }
+    }
+    const fs::path path = fs::u8path(dest);
+    for (const auto& component : path) {
+        if (component == "..") {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("%s must not contain parent-directory components", what));
+        }
+    }
+}
+
+class ExclusiveTextFile
+{
+    FILE* m_fp{nullptr};
+
+public:
+    explicit ExclusiveTextFile(const fs::path& path)
+    {
+        m_fp = fsbridge::fopen(path, "wbx");
+    }
+    ExclusiveTextFile(const ExclusiveTextFile&) = delete;
+    ExclusiveTextFile& operator=(const ExclusiveTextFile&) = delete;
+    ~ExclusiveTextFile()
+    {
+        close();
+    }
+    bool is_open() const { return m_fp != nullptr; }
+    ExclusiveTextFile& operator<<(const std::string& s)
+    {
+        if (m_fp && !s.empty()) {
+            if (std::fwrite(s.data(), 1, s.size(), m_fp) != s.size()) {
+                std::fclose(m_fp);
+                m_fp = nullptr;
+            }
+        }
+        return *this;
+    }
+    ExclusiveTextFile& operator<<(const char* s)
+    {
+        if (m_fp && s != nullptr) {
+            if (std::fputs(s, m_fp) == EOF) {
+                std::fclose(m_fp);
+                m_fp = nullptr;
+            }
+        }
+        return *this;
+    }
+    void close()
+    {
+        if (m_fp) {
+            std::fclose(m_fp);
+            m_fp = nullptr;
+        }
+    }
+};
+
 static void EnsureFreshDirectory(const fs::path& path)
 {
     if (fs::exists(path)) {
@@ -1706,7 +1769,9 @@ RPCHelpMan exportwalletbundle()
 
     wallet.BlockUntilSyncedToCurrentChain();
 
+    EnsureSafeRpcFilesystemPath(request.params[0].get_str(), "exportwalletbundle destination");
     const fs::path bundle_path = fs::u8path(request.params[0].get_str());
+    EnsureFreshFileDestination(bundle_path);
     const std::optional<std::string> wallet_passphrase = request.params[1].isNull() ? std::nullopt : std::optional<std::string>{request.params[1].get_str()};
     const int64_t birthday = request.params[2].isNull() ?
         std::max<int64_t>(1, wallet.GetOldestKeyPoolTime().value_or(1)) :
@@ -2381,6 +2446,9 @@ RPCHelpMan dumpprivkey()
     if (RefusePrivateSign(*pwallet, refuse_err)) {
         throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
     }
+    if (pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Private keys are disabled for this wallet");
+    }
 
     const LegacyScriptPubKeyMan& spk_man = EnsureConstLegacyScriptPubKeyMan(*pwallet);
 
@@ -2409,7 +2477,7 @@ RPCHelpMan dumpprivkey()
 RPCHelpMan dumpmasterprivkey()
 {
     return RPCHelpMan{"dumpmasterprivkey",
-                "Reveals the current master private key.\n",
+                "Reveals the current HD master private key. Requires an unlocked wallet.\n",
                 {},
                 RPCResult{
                     RPCResult::Type::STR, "key", "The HD master private key"
@@ -2426,6 +2494,9 @@ RPCHelpMan dumpmasterprivkey()
     bilingual_str refuse_err;
     if (RefusePrivateSign(*pwallet, refuse_err)) {
         throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+    }
+    if (pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Private keys are disabled for this wallet");
     }
 
     LegacyScriptPubKeyMan& spk_man = EnsureLegacyScriptPubKeyMan(*wallet);
@@ -2462,7 +2533,7 @@ RPCHelpMan dumpwallet()
                 "only backing up the seed itself, and must be backed up too (e.g. ensure you back up the whole dumpfile).\n"
                 "Note: This command is only compatible with legacy wallets.\n",
                 {
-                    {"filename", RPCArg::Type::STR, RPCArg::Optional::NO, "The filename with path (absolute path recommended)"},
+                    {"filename", RPCArg::Type::STR, RPCArg::Optional::NO, "The filename with path (absolute path recommended). Created exclusively; the path must not already exist."},
                 },
                 RPCResult{
                     RPCResult::Type::OBJ, "", "",
@@ -2485,6 +2556,9 @@ RPCHelpMan dumpwallet()
     if (RefusePrivateSign(*pwallet, dump_refuse)) {
         throw JSONRPCError(RPC_WALLET_ERROR, dump_refuse.original);
     }
+    if (pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: Private keys are disabled for this wallet");
+    }
 
     const CWallet& wallet = *pwallet;
     const LegacyScriptPubKeyMan& spk_man = EnsureConstLegacyScriptPubKeyMan(wallet);
@@ -2497,7 +2571,9 @@ RPCHelpMan dumpwallet()
 
     EnsureWalletIsUnlocked(wallet);
 
-    fs::path filepath = fs::u8path(request.params[0].get_str());
+    const std::string dest = request.params[0].get_str();
+    EnsureSafeRpcFilesystemPath(dest, "dumpwallet destination");
+    fs::path filepath = fs::u8path(dest);
     filepath = fs::absolute(filepath);
 
     /* Prevent arbitrary files from being overwritten. There have been reports
@@ -2509,8 +2585,7 @@ RPCHelpMan dumpwallet()
         throw JSONRPCError(RPC_INVALID_PARAMETER, filepath.utf8string() + " already exists. If you are sure this is what you want, move it out of the way first");
     }
 
-    std::ofstream file;
-    file.open(filepath);
+    ExclusiveTextFile file{filepath};
     if (!file.is_open())
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Cannot open wallet dump file");
 
@@ -2603,7 +2678,11 @@ RPCHelpMan dumpwallet()
     }
     file << "\n";
     file << "# End of dump\n";
+    if (!file.is_open()) {
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to write wallet dump file");
+    }
     file.close();
+    SetOwnerOnlyPermissions(filepath, /*is_directory=*/false);
 
     UniValue reply(UniValue::VOBJ);
     reply.pushKV("filename", filepath.utf8string());
@@ -3852,6 +3931,7 @@ RPCHelpMan restorewalletbundle()
 
     WalletContext& context = EnsureWalletContext(request.context);
     const std::string wallet_name = request.params[0].get_str();
+    EnsureSafeRpcFilesystemPath(request.params[1].get_str(), "restorewalletbundle bundle_file");
     BtxWalletBundle bundle = ReadBtxWalletBundleFile(fs::u8path(request.params[1].get_str()));
     const std::optional<bool> load_on_start = request.params[2].isNull()
         ? std::nullopt
@@ -3902,9 +3982,10 @@ RPCHelpMan restorewalletbundle()
 RPCHelpMan backupwallet()
 {
     return RPCHelpMan{"backupwallet",
-                "\nSafely copies the current wallet file to the specified destination, which can either be a directory or a path with a filename.\n",
+                "\nSafely copies the current wallet file to the specified destination, which can either be a directory or a path with a filename.\n"
+                "Does not overwrite an existing destination file.\n",
                 {
-                    {"destination", RPCArg::Type::STR, RPCArg::Optional::NO, "The destination directory or file"},
+                    {"destination", RPCArg::Type::STR, RPCArg::Optional::NO, "The destination directory or file. An existing file is refused; an existing directory receives a new wallet file inside it."},
                 },
                 RPCResult{RPCResult::Type::NONE, "", ""},
                 RPCExamples{
@@ -3925,6 +4006,11 @@ RPCHelpMan backupwallet()
     LOCK(pwallet->cs_wallet);
 
     std::string strDest = request.params[0].get_str();
+    EnsureSafeRpcFilesystemPath(strDest, "backupwallet destination");
+    const fs::path dest_path = fs::u8path(strDest);
+    if (fs::exists(dest_path) && !fs::is_directory(dest_path)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, dest_path.utf8string() + " already exists. If you are sure this is what you want, move it out of the way first");
+    }
     if (!pwallet->BackupWallet(strDest)) {
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: Wallet backup failed!");
     }
@@ -3978,6 +4064,7 @@ RPCHelpMan backupwalletbundle()
     const std::shared_ptr<CWallet> wallet = GetWalletForJSONRPCRequest(request);
     if (!wallet) return UniValue::VNULL;
 
+    EnsureSafeRpcFilesystemPath(request.params[0].get_str(), "backupwalletbundle destination");
     const fs::path bundle_dir = fs::u8path(request.params[0].get_str());
     const std::optional<std::string> wallet_passphrase = request.params[1].isNull()
         ? std::nullopt
@@ -4053,6 +4140,7 @@ RPCHelpMan backupwalletbundlearchive()
     const std::shared_ptr<CWallet> wallet = GetWalletForJSONRPCRequest(request);
     if (!wallet) return UniValue::VNULL;
 
+    EnsureSafeRpcFilesystemPath(request.params[0].get_str(), "backupwalletbundlearchive destination");
     const fs::path archive_path = fs::u8path(request.params[0].get_str());
     const std::string archive_passphrase = request.params[1].get_str();
     const std::optional<std::string> wallet_passphrase = request.params[2].isNull()
@@ -4152,6 +4240,7 @@ RPCHelpMan restorewalletbundlearchive()
     EnsureNotWalletRestricted(request);
 
     WalletContext& context = EnsureWalletContext(request.context);
+    EnsureSafeRpcFilesystemPath(request.params[1].get_str(), "restorewalletbundlearchive archive_file");
     const fs::path archive_file = fs::u8path(request.params[1].get_str());
     const std::string archive_passphrase = request.params[2].get_str();
     const std::string wallet_name = request.params[0].get_str();

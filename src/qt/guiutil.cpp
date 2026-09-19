@@ -189,7 +189,7 @@ static std::string DummyAddress(const CChainParams &params)
     std::string addr;
     switch (params.GetChainType()) {
     case ChainType::MAIN:
-        addr = "bc1p35yvjel7srp783ztf8v6jdra7dhfzk5jaun8xz2qp6ws7z80n4tq2jku9f";
+        addr = "btx1p35yvjel7srp783ztf8v6jdra7dhfzk5jaun8xz2qp6ws7z80n4tq2jku9f";
         break;
     case ChainType::SIGNET:
     case ChainType::TESTNET:
@@ -218,7 +218,7 @@ void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent)
     widget->setFont(fixedPitchFont());
     // We don't want translators to use own addresses in translations
     // and this is the only place, where this address is supplied.
-    widget->setPlaceholderText(QObject::tr("Enter a Bitcoin address (e.g. %1)").arg(
+    widget->setPlaceholderText(QObject::tr("Enter a BTX address (e.g. %1)").arg(
         QString::fromStdString(DummyAddress(Params()))));
     widget->setValidator(new BitcoinAddressEntryValidator(parent));
     widget->setCheckValidator(new BitcoinAddressCheckValidator(parent));
@@ -256,7 +256,7 @@ qint64 URIParseAmount(std::string amount_str, bool * const ok)
     if (exponent > 0) {
         amount_str.append(exponent, '0');
     } else if (exponent < 0) {
-        // Sub-satoshi amount? Truncate
+        // Sub-atom amount? Truncate
         amount_str = amount_str.substr(0, amount_str.size() + exponent);
     }
     return QString::fromStdString(amount_str).toLongLong(ok, is_hex ? 0x10 : 10);
@@ -264,12 +264,15 @@ qint64 URIParseAmount(std::string amount_str, bool * const ok)
 
 bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
 {
-    // Prefer btx:. Accept bitcoin: only so existing payment strings still parse
-    // in-app; the OS handler registers btx: exclusively and does not claim bitcoin:.
+    // BTX payments are btx:<addr> BIP21 only. bitcoin: is not a BTX URI.
+    // btx:// is a model resource (V11-URI-13), never a payment destination.
     if (!uri.isValid()) return false;
     const QString scheme = uri.scheme();
-    if (scheme.compare(QLatin1String("btx"), Qt::CaseInsensitive) != 0 &&
-        scheme.compare(QLatin1String("bitcoin"), Qt::CaseInsensitive) != 0) {
+    if (scheme.compare(QLatin1String("btx"), Qt::CaseInsensitive) != 0) {
+        return false;
+    }
+    // Hierarchical scheme://… (host/authority) is not BIP21.
+    if (!uri.host().isEmpty() || !uri.authority().isEmpty()) {
         return false;
     }
 
@@ -325,6 +328,12 @@ bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
 
 bool parseBitcoinURI(QString uri, SendCoinsRecipient *out)
 {
+    uri = uri.trimmed();
+    // Model identity is btx://… . Bitcoin URIs are not supported.
+    if (uri.startsWith(QLatin1String("btx://"), Qt::CaseInsensitive) ||
+        uri.startsWith(QLatin1String("bitcoin:"), Qt::CaseInsensitive)) {
+        return false;
+    }
     QUrl uriInstance(uri);
     return parseBitcoinURI(uriInstance, out);
 }
@@ -575,7 +584,7 @@ bool openBitcoinConf()
 
     configFile.close();
 
-    /* Open bitcoin.conf with the associated application */
+    /* Open btx.conf with the associated application */
     bool res = QDesktopServices::openUrl(QUrl::fromLocalFile(PathToQString(pathConfig)));
 #ifdef Q_OS_MACOS
     // Workaround for macOS-specific behavior; see #15409.

@@ -3368,13 +3368,14 @@ SigningResult CWallet::SignMessage(const MessageSignatureFormat format, const st
 
             std::map<int, bilingual_str> errors;
             if (SignTransaction(to_sign, coins, SIGHASH_ALL, errors)) {
-                MessageSignatureFormat output_format{format};
+                // P2MR BIP-322 signatures are witness-only. A scriptSig is the
+                // classical P2PKH path and must not be emitted.
                 if (!to_sign.vin[0].scriptSig.empty() || to_sign.vin[0].scriptWitness.IsNull()) {
-                    output_format = MessageSignatureFormat::FULL;
+                    return SigningResult::SIGNING_FAILED;
                 }
 
                 DataStream stream;
-                if (output_format == MessageSignatureFormat::SIMPLE) {
+                if (format == MessageSignatureFormat::SIMPLE) {
                     stream << to_sign.vin[0].scriptWitness.stack;
                 } else {
                     stream << TX_WITH_WITNESS(to_sign);

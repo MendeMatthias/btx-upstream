@@ -47,7 +47,8 @@ bool ForbiddenAuthorityKey(const std::string& k)
            low == "trusted_builder" || low == "publisher_as_builder" ||
            low == "publisher_authorizes_executable" || low == "executable_path" || low == "ld_preload" ||
            low == "author_is_trust_root" || low == "package_author_trust" ||
-           low == "accept_publisher_cache" || low == "executable_cache_ok";
+           low == "accept_publisher_cache" || low == "executable_cache_ok" ||
+           low == "installer_key" || low == "installer_url" || low == "installer_sha384";
 }
 
 bool AtomsExactlyZero(const UniValue& v)

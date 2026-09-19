@@ -2145,10 +2145,14 @@ if(BUILD_CLI)
   target_link_libraries(btx-cli
     core_interface
     bitcoin_cli
-    bitcoin_common
     libevent::core
     libevent::extra
   )
+  if(UNIX AND NOT APPLE)
+    target_link_btx_linux_archive_group(btx-cli ${BTX_BASE_ARCHIVES})
+  else()
+    target_link_libraries(btx-cli bitcoin_common bitcoin_shielded)
+  endif()
   install_binary_component(btx-cli HAS_MANPAGE)
   add_legacy_binary_alias(btx-cli bitcoin-cli)
   add_legacy_target_alias(bitcoin-cli btx-cli)

@@ -196,14 +196,20 @@ bool SpendForbidden(const UniValue& o, UniValue& result, std::string& err_code, 
     return false;
 }
 
-int64_t ClientSecurityRank(const std::string& s)
+bool ParseClientSecurityRank(const std::string& s, int64_t& rank)
 {
+    rank = 0;
+    if (s.empty()) return false;
     const auto pos = s.find("client_min=");
     if (pos != std::string::npos) {
-        return static_cast<int64_t>(std::strtoll(s.c_str() + pos + 11, nullptr, 10));
+        const char* p = s.c_str() + pos + 11;
+        if (*p < '0' || *p > '9') return false;
+        rank = static_cast<int64_t>(std::strtoll(p, nullptr, 10));
+        return true;
     }
     std::string t = s;
     if (!t.empty() && (t[0] == 'v' || t[0] == 'V')) t.erase(0, 1);
+    if (t.empty()) return false;
     int64_t parts[3] = {0, 0, 0};
     int n = 0;
     std::string cur;
@@ -225,13 +231,18 @@ int64_t ClientSecurityRank(const std::string& s)
     }
     flush();
     if (dotted && n > 0) {
-        return parts[0] * 1000000 + parts[1] * 1000 + parts[2];
+        rank = parts[0] * 1000000 + parts[1] * 1000 + parts[2];
+        return true;
     }
     if (!t.empty() && t.find_first_not_of("0123456789") == std::string::npos) {
-        return static_cast<int64_t>(std::strtoll(t.c_str(), nullptr, 10));
+        rank = static_cast<int64_t>(std::strtoll(t.c_str(), nullptr, 10));
+        return true;
     }
-    if (n == 1) return parts[0];
-    return 0;
+    if (n == 1) {
+        rank = parts[0];
+        return true;
+    }
+    return false;
 }
 
 std::vector<unsigned char> CpuFixtureBytes()
@@ -318,8 +329,14 @@ bool HelperDownFail(bool helper_alive, std::string& err_code, std::string& err)
 bool SoftwareTrustFloor(const std::string& current_client, const std::string& rollback_client, std::string& err_code,
                         std::string& err)
 {
-    const int64_t cur = ClientSecurityRank(current_client);
-    const int64_t rb = ClientSecurityRank(rollback_client);
+    int64_t cur = 0;
+    int64_t rb = 0;
+    // Unparseable or empty current/rollback is not rank 0. Treating it as 0
+    // let any named version pass as an "upgrade" from an unknown floor.
+    if (!ParseClientSecurityRank(current_client, cur) || !ParseClientSecurityRank(rollback_client, rb)) {
+        return Fail(err_code, err, "SOFTWARE_TRUST_REQUIRED",
+                    "model rollback must not lower accepted client security version");
+    }
     if (rb < cur) {
         return Fail(err_code, err, "SOFTWARE_TRUST_REQUIRED",
                     "model rollback must not lower accepted client security version");

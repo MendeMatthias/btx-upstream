@@ -43,6 +43,8 @@ struct HcpConfig {
     std::string audience{"https://exchange.example/btx/hcp/v1"};
     std::string mcp_audience{"https://exchange.example/mcp"};
     std::string genesis_hash{"0000000000000000000000000000000000000000000000000000000000000000"};
+    // All-zero genesis is the lab/REGTEST default. It must not be treated as a
+    // mainnet pin; finance/custody callers have to set a real hash.
     std::string environment{"REGTEST"};
     std::set<std::string> enabled_profiles{HCP_PROFILE_DISCOVERY, HCP_PROFILE_HANDOFF};
     bool finance_enabled{false};
