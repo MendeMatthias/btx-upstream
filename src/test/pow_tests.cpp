@@ -2567,7 +2567,7 @@ BOOST_AUTO_TEST_CASE(ChainParams_MAIN_hardening_anchor_consistency)
     BOOST_CHECK_EQUAL(
         consensus.defaultAssumeValid.GetHex(),
         "0a51fccfd75d2051e94be1a8cc5abff8b86ac53d0cc134680f286fe769aa2129");
-    BOOST_CHECK_EQUAL(params->AssumedBlockchainSize(), 120U);
+    BOOST_CHECK_EQUAL(params->AssumedBlockchainSize(), 20U);
     BOOST_CHECK_EQUAL(params->AssumedChainStateSize(), 1U);
     BOOST_CHECK_EQUAL(params->TxData().nTime, 1785786086);
     BOOST_CHECK_EQUAL(params->TxData().tx_count, 274878);

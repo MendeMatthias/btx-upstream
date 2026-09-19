@@ -17703,6 +17703,11 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         m_attested_assumeutxo = *attested_au;
         LogPrintf("[snapshot] activated attested-fast-forward snapshot at height %d (%s)\n",
                   attested_au->height, base_blockhash.ToString());
+    } else {
+        // Total assignment: a compiled-pin snapshot must not inherit an
+        // override left by a previous attested snapshot that this process
+        // already discarded.
+        m_attested_assumeutxo.reset();
     }
 
     // BTX cannot make the snapshot active until its shielded appendix and
@@ -18288,6 +18293,7 @@ void ChainstateManager::ResetChainstates()
     m_ibd_chainstate.reset();
     m_snapshot_chainstate.reset();
     m_active_chainstate = nullptr;
+    m_attested_assumeutxo.reset();
     m_shielded_nullifiers.reset();
     shielded::ShieldedMerkleTree::ResetCommitmentIndexStore();
     shielded::registry::ShieldedAccountRegistryState::ResetPayloadStore();
@@ -22410,6 +22416,7 @@ bool ChainstateManager::DeleteSnapshotChainstate()
     m_active_chainstate = m_ibd_chainstate.get();
     m_active_chainstate->m_mempool = m_snapshot_chainstate->m_mempool;
     m_snapshot_chainstate.reset();
+    m_attested_assumeutxo.reset();
     return true;
 }
 

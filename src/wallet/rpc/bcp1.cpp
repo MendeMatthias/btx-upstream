@@ -339,7 +339,7 @@ void AttachWalletP2MR(const CWallet& wallet, bcp1::Package& pkg)
             bcp1::P2MRSpend spend;
             spend.leaf_script = *leaf;
             spend.control_block = *control;
-            spend.leaf_version = static_cast<uint8_t>(spend.control_block[0] & P2MR_LEAF_MASK);
+            spend.leaf_version = spend.control_block[0];
             in.p2mr = std::move(spend);
             if (!ml_pub.empty()) {
                 in.pubkey = ml_pub;

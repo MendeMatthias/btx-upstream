@@ -692,6 +692,15 @@ BOOST_AUTO_TEST_CASE(p2mr_metadata_weight_estimator_is_fail_closed_and_covers_po
     BOOST_CHECK(!CalculateMaximumP2MRInputWeight(
         maximum_fixture.script_pubkey, wrong_version));
 
+    FlatSigningProvider odd_version{maximum_fixture.provider};
+    auto& odd_version_spend = odd_version.p2mr_spends.begin()->second;
+    std::vector<unsigned char> odd_version_control{*odd_version_spend.scripts.begin()->second.begin()};
+    odd_version_spend.scripts.clear();
+    odd_version_control[0] = 0xc3;
+    odd_version_spend.scripts[multisig_script].insert(odd_version_control);
+    BOOST_CHECK(!CalculateMaximumP2MRInputWeight(
+        maximum_fixture.script_pubkey, odd_version));
+
     FlatSigningProvider wrong_commitment{maximum_fixture.provider};
     auto& wrong_commitment_spend = wrong_commitment.p2mr_spends.begin()->second;
     std::vector<unsigned char> bad_commitment_control{*wrong_commitment_spend.scripts.begin()->second.begin()};

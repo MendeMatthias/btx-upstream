@@ -7,12 +7,16 @@
 #include <clientversion.h>
 #include <crypto/hex_base.h>
 #include <crypto/sha256.h>
+#include <init.h>
+#include <node/interface_ui.h>
 #include <pqkey.h>
 #include <test/util/setup_common.h>
 #include <tinyformat.h>
 #include <uint256.h>
 #include <util/strencodings.h>
+#include <util/translation.h>
 
+#include <boost/signals2/connection.hpp>
 #include <boost/test/unit_test.hpp>
 
 #include <cstdlib>
@@ -166,6 +170,46 @@ struct Harness {
     }
 };
 
+//! Capture the message text passed to the last InitError() so a startup
+//! refusal can be asserted on its reason, not merely on the false return.
+class InitErrorCapture
+{
+public:
+    InitErrorCapture()
+        : m_connection{uiInterface.ThreadSafeMessageBox_connect(
+              [this](const bilingual_str& message, const std::string&,
+                     unsigned int style) {
+                  if ((style & CClientUIInterface::MSG_ERROR) ==
+                      CClientUIInterface::MSG_ERROR) {
+                      m_last_error = message.original;
+                  }
+                  return true; // Handled: keep the message off the test log.
+              })}
+    {
+    }
+    const std::string& LastError() const { return m_last_error; }
+
+private:
+    std::string m_last_error;
+    boost::signals2::scoped_connection m_connection;
+};
+
+bool AutoUpdateInitAccepted(const fs::path& datadir,
+                            const std::string& pubkey,
+                            const std::string& algo,
+                            std::string& error)
+{
+    ArgsManager args;
+    args.ForceSetArg("-datadir", fs::PathToString(datadir));
+    args.ForceSetArg("-autoupdate", "1");
+    args.ForceSetArg("-autoupdatepubkey", pubkey);
+    args.ForceSetArg("-autoupdatepubkeyalgo", algo);
+    InitErrorCapture capture;
+    const bool ok{AppInitParameterInteraction(args)};
+    error = capture.LastError();
+    return ok;
+}
+
 } // namespace
 
 BOOST_FIXTURE_TEST_SUITE(autoupdate_tests, BasicTestingSetup)
@@ -177,6 +221,33 @@ BOOST_AUTO_TEST_CASE(url_origin_matching_is_strict)
     BOOST_CHECK(!node::AutoUpdateUrlMatchesTrustedOrigin("https://evil.example/version.txt", "https://btx.dev", false));
     BOOST_CHECK(!node::AutoUpdateUrlMatchesTrustedOrigin("https://btx.dev.evil.example/version.txt", "https://btx.dev", false));
     BOOST_CHECK(node::AutoUpdateUrlMatchesTrustedOrigin("http://127.0.0.1:8080/version.txt", "http://127.0.0.1:8080", true));
+}
+
+BOOST_AUTO_TEST_CASE(inert_pubkey_skips_classical_algo_at_init)
+{
+    std::string error;
+
+    // Leftover -autoupdatepubkeyalgo=secp256k1 with documented inert pubkey=0
+    // (or empty) must not refuse start. Auto-update stays off.
+    BOOST_CHECK(AutoUpdateInitAccepted(m_path_root, "0", "secp256k1", error));
+    BOOST_CHECK(error.empty());
+    BOOST_CHECK(AutoUpdateInitAccepted(m_path_root, "", "secp256k1", error));
+    BOOST_CHECK(error.empty());
+
+    ArgsManager inert_args;
+    inert_args.ForceSetArg("-autoupdate", "1");
+    inert_args.ForceSetArg("-autoupdatepubkey", "0");
+    inert_args.ForceSetArg("-autoupdatepubkeyalgo", "secp256k1");
+    BOOST_CHECK(node::MakeAutoUpdateManager(inert_args, ChainType::MAIN) == nullptr);
+
+    // A live release key still InitError's unknown/classical schemes. secp256k1
+    // is not re-enabled as a verifier.
+    BOOST_CHECK(!AutoUpdateInitAccepted(m_path_root,
+                                        std::string{node::DEFAULT_AUTOUPDATE_RELEASE_PUBKEY},
+                                        "secp256k1", error));
+    BOOST_CHECK(error.find("-autoupdatepubkeyalgo must be ml-dsa-44 or slh-dsa-128s.") !=
+                std::string::npos);
+    BOOST_CHECK(node::MakeAutoUpdateSignatureVerifier("secp256k1") == nullptr);
 }
 
 BOOST_AUTO_TEST_CASE(version_comparison_uses_client_version)

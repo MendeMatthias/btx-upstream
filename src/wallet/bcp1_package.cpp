@@ -637,12 +637,12 @@ bool ValidateStructure(const Package& pkg, std::string& error)
             error = ERR_INVALID_P2MR;
             return false;
         }
-        if ((in.p2mr->control_block[0] & P2MR_LEAF_MASK) != P2MR_LEAF_VERSION) {
+        if (in.p2mr->control_block[0] != P2MR_LEAF_VERSION) {
             error = ERR_INVALID_P2MR;
             return false;
         }
         const uint256 leaf_hash =
-            ComputeP2MRLeafHash(in.p2mr->control_block[0] & P2MR_LEAF_MASK, in.p2mr->leaf_script);
+            ComputeP2MRLeafHash(in.p2mr->control_block[0], in.p2mr->leaf_script);
         if (!VerifyP2MRCommitment(in.p2mr->control_block, program, leaf_hash)) {
             error = ERR_INVALID_P2MR;
             return false;

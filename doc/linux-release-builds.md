@@ -85,17 +85,33 @@ while the installed driver reports CUDA driver API `13.2`.
 
 ## Hardware support
 
+Read the **published** fatbin, not the Guix recipe. `contrib/guix/libexec/build.sh`
+still lists a wide CUDA 12 arch set (`sm_80`…`sm_121` plus PTX for
+`compute_80`, `compute_100`, and `compute_120`). That recipe is **not** how the
+published native `cuda12` tarballs were produced (issue 186). `cuobjdump` on the
+shipped `libexec/btxd.real` is the compatibility boundary.
+
 | Build flavor | Supported hardware |
 |---|---|
 | CPU-only | x86_64 Linux hosts supported by the normal release build. No NVIDIA GPU or NVIDIA driver is required. |
-| CUDA 12 | NVIDIA GPUs with compute capability 8.0 or newer, when the build contains a matching binary image or usable PTX. The Guix CUDA 12 build currently embeds `sm_80`, `sm_86`, `sm_89`, `sm_90`, `sm_100`, `sm_101`, `sm_103`, `sm_120`, and `sm_121`, plus PTX for `compute_80`, `compute_100`, and `compute_120`. Use this archive for Ampere, Ada, Hopper, and the currently targeted Blackwell families; this includes RTX 4090-class `sm_89` hardware. |
-| CUDA 13 | NVIDIA GPUs covered by the CUDA 13 release target set in the Guix build. The Guix CUDA 13 build currently embeds `sm_100`, `sm_103`, `sm_110`, `sm_120`, and `sm_121`, plus PTX for `compute_100` and `compute_120`. This archive is intended for the targeted Blackwell-era GPUs. It does not include Ampere/Ada/Hopper images such as `sm_80`, `sm_86`, `sm_89`, or `sm_90`; use the CUDA 12 archive for those GPUs. |
+| CUDA 12 (published native archive) | **Blackwell only.** The v0.34.8-rc3 and v0.34.5 `*-x86_64-linux-gnu-cuda12.tar.gz` archives embed SASS for `sm_100a`, `sm_120`, and `sm_120a`, and **PTX for `sm_120` only**. Toolkit CUDA 12.9 (`cuda_12.9.r12.9`); `libcublasLt.so.12` is bundled next to `btxd`. They are **not** `sm_80` / `sm_86` / `sm_89` / `sm_90`. Ampere, Ada, Hopper, and RTX 4090-class `sm_89` operators must **not** use this tarball. An RTX 3090 (`sm_86`) starts DEGRADED (`no_rc_self_qualified_device_backend`) even when `btx-matmul-backend-info` reports `cuda_runtime` ready. |
+| CUDA 13 | Blackwell-era GPUs covered by a **published** CUDA 13 fatbin when one exists for the tag. The Guix CUDA 13 recipe currently lists `sm_100`, `sm_103`, `sm_110`, `sm_120`, and `sm_121`, plus PTX for `compute_100` and `compute_120`. v0.34.8-rc3 did **not** publish a `cuda13` tarball. This flavor also has no Ampere/Ada/Hopper/`sm_90` images; do **not** send those operators to the CUDA 12 archive either. |
+
+Hopper `sm_90` (H100/H200): **no published fatbin**. Source-build with CUDA
+**12.9 or newer** and `-DBTX_CUDA_ARCHITECTURES=90`. The published `cuda12`
+tarball does not contain `sm_90`.
+
+Ampere/Ada (`sm_80`/`86`/`89`, including RTX 3090/4090): there is no matching
+image in any published CUDA archive. A source build that includes those arches
+needs CUDA 12.9+ (see the toolkit note below). That is **not** a published
+ExactReplay admission path: issue 131 closed with the canonical LT IMMA layout
+declined for those devices.
 
 The BTX CUDA runtime probe rejects devices below compute capability 8.0, but
 the embedded CUDA image list is still the final build-time compatibility
 boundary. If a GPU is visible but no kernel image is available for it, the CUDA
 backend can fail when a mining kernel is launched even if basic device probing
-succeeds.
+succeeds. `cuda_runtime.reason=ready` is not RC self-qualification.
 
 Run these checks on the target host:
 
@@ -124,21 +140,49 @@ driver that supports their GPU and the selected CUDA runtime line.
 ## Selecting an archive
 
 Use the CPU archive when the host has no NVIDIA GPU, when the installed driver
-cannot be upgraded, or when reproducible CPU-only operation is preferred.
+cannot be upgraded, when reproducible CPU-only operation is preferred, or when
+the GPU is Ampere/Ada/Hopper (including RTX 3090/4090 and H100/H200) and you
+are consuming a **published** binary — those cards have no matching image in
+the published CUDA tarballs.
 
-Use the CUDA 12 archive for currently deployed Ampere/Ada/Hopper systems and
-for any Blackwell systems that need CUDA 12.9 compatibility. This is the
-expected archive for RTX 4090 testing.
+Use the published CUDA 12 archive only on Blackwell GPUs that match its fatbin
+(`sm_100a` / `sm_120` / `sm_120a`) and that need the CUDA 12.9 runtime. Do
+**not** use it for Ampere, Ada, Hopper, or RTX 4090 testing.
 
-Use the CUDA 13 archive for systems that have a CUDA 13-capable driver and one
-of the CUDA 13 target architectures listed above.
+Use a CUDA 13 archive only when the tag actually publishes one and the host
+has a CUDA 13-capable driver plus a GPU in **that** archive's embedded image
+list. v0.34.8-rc3 did not publish `cuda13`.
 
-The fast-start installer can select these platform ids explicitly:
+### Installer vs prerelease tags
+
+`contrib/faststart/btx-agent-setup.py` selects a platform archive from
+`btx-release-manifest.json` and verifies it against `SHA256SUMS` and
+`SHA256SUMS.asc`. That path is for **signed final releases** that publish
+those files. GitHub prerelease / rc tags (including `v0.34.8-rc3`) currently
+ship the tarball and an unsigned `SHA256SUMS` only:
+`--release-tag v0.34.8-rc3` 404s fetching `btx-release-manifest.json`. For rc
+tags, download the archive from the GitHub release page and unpack it. See
+[btx-download-and-go.md](btx-download-and-go.md).
+
+On a signed final that does publish the manifest, the installer can select
+these platform ids explicitly:
 
 ```bash
 python3 contrib/faststart/btx-agent-setup.py --platform linux-x86_64-cuda12 ...
 python3 contrib/faststart/btx-agent-setup.py --platform linux-x86_64-cuda13 ...
 ```
+
+`--platform linux-x86_64-cuda12` still means the Blackwell native archive
+above, not Ampere/Ada/Hopper.
+
+## Source-build toolkit floor (issue 131)
+
+CUDA **12.8 and earlier**: `cicc` SIGSEGV compiling
+`src/cuda/matmul_v4_rc_rowleaf_gpu.cu` for `sm_80` / `sm_86` / `sm_89` /
+`sm_90` (deterministic, including `-O0`). Use **CUDA 12.9 or newer** for
+those architectures. `sm_120` compiles on 12.8. CUDA 12.9 and 13.x compile
+`sm_80`/`86`/`89`/`90`. The Guix recipe pins CUDA 12.9.1, which is past this
+floor.
 
 ## Historical note: the v0.34.6 `cuda12` asset (issue 155)
 

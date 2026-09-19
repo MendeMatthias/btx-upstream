@@ -1475,12 +1475,16 @@ bool AppInitParameterInteraction(const ArgsManager& args)
         }
         const std::string release_pubkey = args.GetArg("-autoupdatepubkey", std::string{node::DEFAULT_AUTOUPDATE_RELEASE_PUBKEY});
         const std::string release_pubkey_algo = args.GetArg("-autoupdatepubkeyalgo", std::string{node::DEFAULT_AUTOUPDATE_RELEASE_PUBKEY_ALGO});
-        const auto release_pubkey_hex_len = node::AutoUpdateReleasePubkeyHexLength(release_pubkey_algo);
-        if (!release_pubkey_hex_len) {
-            return InitError(_("-autoupdatepubkeyalgo must be ml-dsa-44 or slh-dsa-128s."));
-        }
-        if (!release_pubkey.empty() && release_pubkey != "0" && (release_pubkey.size() != *release_pubkey_hex_len || !IsHex(release_pubkey))) {
-            return InitError(strprintf(_("-autoupdatepubkey must be a %s public key hex string (%d hex characters), or 0 to make auto-update inert."), release_pubkey_algo, *release_pubkey_hex_len));
+        // Empty/"0" makes auto-update inert. Skip the scheme restriction so a leftover
+        // -autoupdatepubkeyalgo=secp256k1 cannot block start when the key is already off.
+        if (!release_pubkey.empty() && release_pubkey != "0") {
+            const auto release_pubkey_hex_len = node::AutoUpdateReleasePubkeyHexLength(release_pubkey_algo);
+            if (!release_pubkey_hex_len) {
+                return InitError(_("-autoupdatepubkeyalgo must be ml-dsa-44 or slh-dsa-128s."));
+            }
+            if (release_pubkey.size() != *release_pubkey_hex_len || !IsHex(release_pubkey)) {
+                return InitError(strprintf(_("-autoupdatepubkey must be a %s public key hex string (%d hex characters), or 0 to make auto-update inert."), release_pubkey_algo, *release_pubkey_hex_len));
+            }
         }
         if (args.GetArg("-autoupdatepython", "python3").empty()) {
             return InitError(_("-autoupdatepython must not be empty."));

@@ -4693,6 +4693,9 @@ int PeerManagerImpl::ReclaimStaleInFlightBlockRequests(std::chrono::microseconds
                 signed_frontier_catch_up &&
                 PeerIsSignedFrontierBodySource(nodeid, *state) &&
                 preferred_sources <= 1};
+            // Same sole-source pause sentinel as ExpireOverdue / SendMessages:
+            // pass 1 when this hash has no alternative (never pause). Other
+            // peers downloading different hashes are not an alternative here.
             if (!keep_only_source &&
                 node::matmul_trusted::CatchUpMayPauseOnSlowDelivery(
                     far_behind, /*keep_catchup_source=*/false,
@@ -4869,7 +4872,11 @@ int PeerManagerImpl::ExpireOverdueBlockDownloads(std::chrono::microseconds now)
         // Cold-start never has has_served_block; requiring it left the silent
         // first GETDATA owner unpaused so it re-won the slot (issue #163
         // follow-on / peerman silent-failover tests). Disconnect still uses
-        // the proven-delivery has_alternative_source above.
+        // the proven-delivery has_alternative_source / only_eligible_source
+        // above. Issue #184: never-pause-only-source is per HASH. Passing
+        // max(peers_downloading_before, 1) paused the sole source of this
+        // block whenever unrelated peers were downloading other hashes
+        // (up to 10 minutes). Keep max() only on the alternative-source arm.
         const CBlockIndex* const overdue_index{
             m_chainman.m_blockman.LookupBlockIndex(item.hash)};
         const bool advertised_takeover{
@@ -4877,8 +4884,9 @@ int PeerManagerImpl::ExpireOverdueBlockDownloads(std::chrono::microseconds now)
                 item.nodeid, overdue_index, now,
                 /*require_served_block=*/false)};
         const int eligible_sources_for_pause{
-            std::max(peers_downloading_before,
-                     (item.has_alternative_source || advertised_takeover) ? 2 : 1)};
+            (item.has_alternative_source || advertised_takeover)
+                ? std::max(2, peers_downloading_before)
+                : 1};
         const bool may_pause{node::matmul_trusted::CatchUpMayPauseOnSlowDelivery(
             far_behind, keep_catchup_source, last_gpu_or_frontier_source,
             eligible_sources_for_pause)};
@@ -10595,10 +10603,16 @@ void PeerManagerImpl::UpdatePeerStateForReceivedHeaders(CNode& pfrom, Peer& peer
     // See ChainSyncTimeoutState.
     if (!pfrom.fDisconnect && pfrom.IsFullOutboundConn() && nodestate->pindexBestKnownBlock != nullptr) {
         // WP-8 site 2: protection slots are granted on TRUST-ADJUSTED work
-        // (== nChainWork pre-fork). This site is not self-healing (a forged
-        // header chain never has to produce a body), so a Sybil must no longer
-        // be able to capture the limited protection slots with fabricated work.
-        if (m_outbound_peers_with_protect_from_disconnect < MAX_OUTBOUND_PEERS_TO_PROTECT_FROM_DISCONNECT && TrustAdjustedWork(*nodestate->pindexBestKnownBlock) >= m_chainman.ActiveChain().Tip()->nChainWork && !nodestate->m_chain_sync.m_protect) {
+        // (equal to nChainWork only pre-fork). Post-fork a live default tip
+        // carries an authenticated-work deficit far larger than the 6-block
+        // allowance, so TrustAdjustedWork(*tip) is not tip->nChainWork.
+        // Compare adjusted vs adjusted: comparing the peer to raw nChainWork
+        // granted zero protection slots and armed every outbound with the
+        // 20-minute chain-sync timeout (issue #190). This site is not
+        // self-healing (a forged header chain never has to produce a body),
+        // so a Sybil must still not capture the limited slots with
+        // fabricated claimed work.
+        if (m_outbound_peers_with_protect_from_disconnect < MAX_OUTBOUND_PEERS_TO_PROTECT_FROM_DISCONNECT && TrustAdjustedWork(*nodestate->pindexBestKnownBlock) >= TrustAdjustedWork(*m_chainman.ActiveChain().Tip()) && !nodestate->m_chain_sync.m_protect) {
             LogDebug(BCLog::NET, "Protecting outbound peer=%d from eviction\n", pfrom.GetId());
             nodestate->m_chain_sync.m_protect = true;
             ++m_outbound_peers_with_protect_from_disconnect;
@@ -12420,6 +12434,7 @@ void PeerManagerImpl::MaybeStartMatMulRCHeaderVerification(
     bool active_tip_validation{false};
     bool skip_exactreplay_gpu{false};
     std::optional<int64_t> parent_mtp;
+    uint256 followed_tip_child_hash;
     {
         LOCK(cs_main);
         const CBlockIndex* active_tip{m_chainman.ActiveTip()};
@@ -12439,6 +12454,10 @@ void PeerManagerImpl::MaybeStartMatMulRCHeaderVerification(
             return;
         }
         authenticated_tip_child = parent == active_tip;
+        if (const CBlockIndex* const followed_child{
+                FollowedDirectTipChild(m_chainman)}) {
+            followed_tip_child_hash = followed_child->GetBlockHash();
+        }
         const CBlockIndex* peer_best{
             State(node.GetId()) != nullptr
                 ? State(node.GetId())->pindexBestKnownBlock
@@ -12485,9 +12504,23 @@ void PeerManagerImpl::MaybeStartMatMulRCHeaderVerification(
     } while (!m_matmul_rc_speculative_pending.compare_exchange_weak(
         pending, pending + 1, std::memory_order_relaxed));
 
-    if (!ReserveMatMulRCVerificationSlot(
+    // Issue #163: CanStartCompeting shares the idle cap=1 slot, so a
+    // non-tip-child header must not Reserve while the followed tip-child
+    // body is retained/deferred. Tip-child headers still take the progress
+    // lane. Competing-lane admission is unchanged when no followed child is
+    // held (same skip as AdmitMatMulBlockVerification).
+    const bool followed_tip_child_held{
+        !followed_tip_child_hash.IsNull() &&
+        followed_tip_child_hash != header.GetHash() &&
+        (m_matmul_block_lifecycle.HasRetainedBody(followed_tip_child_hash) ||
+         IsMatMulRCBodyDeferred(followed_tip_child_hash))};
+    bool reserved{false};
+    if (!followed_tip_child_held || authenticated_tip_child) {
+        reserved = ReserveMatMulRCVerificationSlot(
             m_matmul_rc_pending_verifications, params, index.nHeight, work,
-            authenticated_tip_child)) {
+            authenticated_tip_child);
+    }
+    if (!reserved) {
         m_matmul_rc_speculative_pending.fetch_sub(
             1, std::memory_order_relaxed);
         // Cap one may be occupied by a false direct-tip header. A second
@@ -14226,11 +14259,54 @@ void PeerManagerImpl::ProcessBlock(CNode& node, const std::shared_ptr<const CBlo
                 const bool rc = cons.IsMatMulRCFamilyActive(encdr->height);
                 const uint32_t work = rc ? MatMulRCWorkUnits(cons, encdr->height)
                                         : MatMulEncDrWorkUnits(cons, encdr->height);
-                const bool reserved = rc
-                    ? ReserveMatMulRCVerificationSlot(m_matmul_rc_pending_verifications, cons,
-                                                      encdr->height, work)
-                    : ReserveMatMulVerificationSlot(m_matmul_pending_verifications, cons,
-                                                    encdr->height, work);
+                bool reserved{false};
+                if (rc) {
+                    // Same #163 skip as AdmitMatMulBlockVerification: a
+                    // non-tip-child RC body must not consume cap=1 while the
+                    // followed tip-child is retained/deferred. Do not skip
+                    // when the followed child is not held — competing-lane
+                    // admission (CanStartCompeting sharing the idle slot)
+                    // stays intact.
+                    bool direct_authenticated_tip_child{false};
+                    bool acquisition_covered{false};
+                    uint256 followed_tip_child_hash;
+                    {
+                        LOCK(cs_main);
+                        const CBlockIndex* const active_tip{m_chainman.ActiveTip()};
+                        const CBlockIndex* const covered_index{
+                            m_chainman.m_blockman.LookupBlockIndex(hash)};
+                        acquisition_covered =
+                            covered_index != nullptr &&
+                            m_chainman.AcquisitionEscapeCoversBlock(covered_index) &&
+                            AcquiredBodyParentConnectable(m_chainman, covered_index);
+                        direct_authenticated_tip_child =
+                            active_tip != nullptr &&
+                            block->hashPrevBlock == active_tip->GetBlockHash();
+                        if (const CBlockIndex* const followed_child{
+                                FollowedDirectTipChild(m_chainman)}) {
+                            followed_tip_child_hash = followed_child->GetBlockHash();
+                        }
+                    }
+                    const bool followed_tip_child_held{
+                        !followed_tip_child_hash.IsNull() &&
+                        followed_tip_child_hash != hash &&
+                        (m_matmul_block_lifecycle.HasRetainedBody(
+                             followed_tip_child_hash) ||
+                         IsMatMulRCBodyDeferred(followed_tip_child_hash))};
+                    const bool progress_lane{
+                        direct_authenticated_tip_child ||
+                        (acquisition_covered && !followed_tip_child_held)};
+                    if (!followed_tip_child_held ||
+                        direct_authenticated_tip_child) {
+                        reserved = ReserveMatMulRCVerificationSlot(
+                            m_matmul_rc_pending_verifications, cons,
+                            encdr->height, work, progress_lane);
+                    }
+                } else {
+                    reserved = ReserveMatMulVerificationSlot(
+                        m_matmul_pending_verifications, cons,
+                        encdr->height, work);
+                }
                 if (reserved) {
                     matmul_slot.emplace(
                         rc ? m_matmul_rc_pending_verifications
@@ -15506,6 +15582,8 @@ bool PeerManagerImpl::AdmitMatMulBlockVerification(
     // shares the idle slot (reserved=0 when cap==work_units), so an island
     // body would still steal the job. Skip Reserve entirely for non-tip-child
     // hashes while the followed child is held; they RETAIN and wait.
+    // Same skip: MaybeStartMatMulRCHeaderVerification and the ProcessBlock
+    // NOT_PRECHECKED self-reserve.
     const bool followed_tip_child_held{
         !followed_tip_child_hash.IsNull() &&
         followed_tip_child_hash != block_hash &&
@@ -21062,18 +21140,24 @@ void PeerManagerImpl::ConsiderEviction(CNode& pto, Peer& peer, std::chrono::seco
         // unless it's invalid, in which case we should find that out and
         // disconnect from them elsewhere).
         // WP-8 site 3: both chain-sync eviction comparisons run on
-        // TRUST-ADJUSTED work for the peer's best-known block (== nChainWork
-        // pre-fork), so a forged high-work announcement can no longer suppress
-        // eviction. m_work_header is our own past tip — fully validated, its
-        // trust-adjusted work IS its nChainWork — so its side stays raw.
-        if (state.pindexBestKnownBlock != nullptr && TrustAdjustedWork(*state.pindexBestKnownBlock) >= m_chainman.ActiveChain().Tip()->nChainWork) {
+        // TRUST-ADJUSTED work for the peer's best-known block AND for our
+        // tip / m_work_header. Pre-fork the two metrics are identical.
+        // Post-fork they are not: a live default tip's authenticated-work
+        // deficit exceeds the 6-block allowance, so TrustAdjustedWork(*tip)
+        // is not tip->nChainWork (and m_work_header is a past ActiveChain
+        // tip with the same deficit). Comparing the peer to raw nChainWork
+        // made the "has as much work as our tip" test unsatisfiable, so
+        // every outbound armed the 20-minute chain-sync timeout (issue #190).
+        // A forged high-work announcement still cannot suppress eviction:
+        // the peer side remains trust-adjusted, not claimed nChainWork.
+        if (state.pindexBestKnownBlock != nullptr && TrustAdjustedWork(*state.pindexBestKnownBlock) >= TrustAdjustedWork(*m_chainman.ActiveChain().Tip())) {
             // The outbound peer has sent us a block with at least as much work as our current tip, so reset the timeout if it was set
             if (state.m_chain_sync.m_timeout != 0s) {
                 state.m_chain_sync.m_timeout = 0s;
                 state.m_chain_sync.m_work_header = nullptr;
                 state.m_chain_sync.m_sent_getheaders = false;
             }
-        } else if (state.m_chain_sync.m_timeout == 0s || (state.m_chain_sync.m_work_header != nullptr && state.pindexBestKnownBlock != nullptr && TrustAdjustedWork(*state.pindexBestKnownBlock) >= state.m_chain_sync.m_work_header->nChainWork)) {
+        } else if (state.m_chain_sync.m_timeout == 0s || (state.m_chain_sync.m_work_header != nullptr && state.pindexBestKnownBlock != nullptr && TrustAdjustedWork(*state.pindexBestKnownBlock) >= TrustAdjustedWork(*state.m_chain_sync.m_work_header))) {
             // At this point we know that the outbound peer has either never sent us a block/header or they have, but its tip is behind ours
             // AND
             // we are noticing this for the first time (m_timeout is 0)
@@ -22462,14 +22546,16 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                         far_behind_download, persistent_timeout,
                         pto->IsManualConn() || state.m_noban,
                         keep_catchup_source, only_eligible_source)};
+                // Issue #184: never-pause-only-source is per HASH. Keep max()
+                // only when another peer can actually serve this block.
+                // Disconnect still uses only_eligible_source (unchanged).
                 const bool may_pause{
                     node::matmul_trusted::CatchUpMayPauseOnSlowDelivery(
                         far_behind_download, keep_catchup_source,
                         last_gpu_or_frontier_source,
-                        std::max(peers_downloading_before,
-                                 (has_alternative_source || advertised_takeover)
-                                     ? 2
-                                     : 1))};
+                        (has_alternative_source || advertised_takeover)
+                            ? std::max(2, peers_downloading_before)
+                            : 1)};
                 if (!may_disconnect) {
                     if (may_pause) {
                         state.m_block_download_paused_until =

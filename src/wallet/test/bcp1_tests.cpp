@@ -939,6 +939,12 @@ BOOST_AUTO_TEST_CASE(structure_rejects_duplicate_noncanonical_p2mr_wrong_change)
 
         pkg = PackageFromSpend(spend);
         BOOST_REQUIRE(pkg.inputs[0].p2mr.has_value());
+        pkg.inputs[0].p2mr->control_block[0] = 0xc3;
+        BOOST_CHECK(!bcp1::ValidateStructure(pkg, err));
+        BOOST_CHECK_EQUAL(err, bcp1::ERR_INVALID_P2MR);
+
+        pkg = PackageFromSpend(spend);
+        BOOST_REQUIRE(pkg.inputs[0].p2mr.has_value());
         const auto bogus_ctrl =
             ParseHex("c2ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         BOOST_REQUIRE_EQUAL(bogus_ctrl.size(), 33U);

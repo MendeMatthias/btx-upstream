@@ -3,7 +3,7 @@
   "expect": "reject",
   "profile": "BTX_EXCHANGE_PROFILE_V1",
   "base": "unsigned-package.json",
-  "note": "control[0] & P2MR_LEAF_MASK must be P2MR_LEAF_VERSION (194 / 0xc2). VerifyP2MRCommitment must bind the control block to the 32-byte witness v2 program. Native tests fill the committed leaf/program from derivation.json, then apply one of these mutations.",
+  "note": "control[0] must equal P2MR_LEAF_VERSION (194 / 0xc2) exactly. Masking with P2MR_LEAF_MASK (0xfe) would accept 0xc3 as 0xc2 (wtxid malleability). VerifyP2MRCommitment must bind the control block to the 32-byte witness v2 program. Native tests fill the committed leaf/program from derivation.json, then apply one of these mutations.",
   "cases": [
     {
       "mutation": "wrong_leaf_version",
@@ -11,6 +11,13 @@
       "wrong_leaf_version_hex": "c0",
       "wrong_control_block": "c0",
       "note": "0xc0 is TAPROOT_LEAF_TAPSCRIPT, not P2MR_LEAF_VERSION. Interpreter returns SCRIPT_ERR_P2MR_WRONG_LEAF_VERSION."
+    },
+    {
+      "mutation": "wrong_leaf_version_odd_bit",
+      "wrong_leaf_version": 195,
+      "wrong_leaf_version_hex": "c3",
+      "wrong_control_block": "c3",
+      "note": "0xc3 is P2MR_LEAF_VERSION with the unused odd bit set. Exact comparison rejects it (SCRIPT_ERR_P2MR_WRONG_LEAF_VERSION); a masked check would validate it as 0xc2."
     },
     {
       "mutation": "control_block_not_committed",

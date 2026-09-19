@@ -1186,8 +1186,13 @@ private:
     std::unique_ptr<Chainstate> m_snapshot_chainstate GUARDED_BY(::cs_main);
 
     //! Operator-quorum AssumeutxoData for an attested-fast-forward snapshot.
-    //! When set, it replaces chainparams pins for load-time hash checks and
-    //! for MaybeCompleteSnapshotValidation after restart.
+    //! Load-time hash checks use the ActivateSnapshot /
+    //! PopulateAndValidateSnapshot parameter, not this member. This member is
+    //! the completion-time pin (MaybeCompleteSnapshotValidation) and the
+    //! restart-restore copy (DetectSnapshotChainstate -> LoadBlockIndex). Its
+    //! lifetime is the snapshot chainstate: DeleteSnapshotChainstate and
+    //! ResetChainstates clear it so a later compiled-pin load cannot inherit
+    //! a stale override.
     std::optional<AssumeutxoData> m_attested_assumeutxo GUARDED_BY(::cs_main);
 
     //! Points to either the ibd or snapshot chainstate; indicates our
@@ -2127,6 +2132,22 @@ public:
     //! Remove the snapshot-based chainstate and all on-disk artifacts.
     //! Used when reindex{-chainstate} is called during snapshot use.
     [[nodiscard]] bool DeleteSnapshotChainstate() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    //! Test-only access to the attested assumeutxo override. Lifetime is the
+    //! snapshot chainstate; production load-time checks use the ActivateSnapshot
+    //! parameter instead.
+    void SetAttestedAssumeutxoForTest(std::optional<AssumeutxoData> data)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+    {
+        AssertLockHeld(::cs_main);
+        m_attested_assumeutxo = std::move(data);
+    }
+    [[nodiscard]] const std::optional<AssumeutxoData>& GetAttestedAssumeutxoForTest() const
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+    {
+        AssertLockHeld(::cs_main);
+        return m_attested_assumeutxo;
+    }
 
     //! Switch the active chainstate to one based on a UTXO snapshot that was loaded
     //! previously.

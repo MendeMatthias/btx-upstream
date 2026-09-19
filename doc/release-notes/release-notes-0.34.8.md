@@ -77,8 +77,8 @@ present, ships the sibling helpers `btx-modeld`, `btx-modelcheck`,
 | Platform id | Archive | How it was produced | Honest status |
 |---|---|---|---|
 | `linux-x86_64` | `btx-0.34.8-dev-x86_64-linux-gnu.tar.gz` | GCC 13 Release, CPU MatMul | Packaged and `verify_release_btxd` PASS |
-| `linux-x86_64-cuda13` | `btx-0.34.8-dev-x86_64-linux-gnu-cuda13.tar.gz` | CUDA toolkit 13, `BTX_CUDA_ARCHITECTURES=120`, static cudart + bundled `libcublasLt` `$ORIGIN` | Compile+package when the CUDA tree links; **GPU golden / nvidia-smi runtime is NOT_RUN** (driver/NVML mismatch on the compile host; this archive is not a production-signer replace) |
-| `linux-x86_64-cuda12` | — | No CUDA 12 toolkit on the build hosts | **HONEST skip** |
+| `linux-x86_64-cuda13` | `btx-0.34.8-dev-x86_64-linux-gnu-cuda13.tar.gz` | CUDA toolkit 13, `BTX_CUDA_ARCHITECTURES=120`, static cudart + bundled `libcublasLt` `$ORIGIN` | Compile+package when the CUDA tree links; **GPU golden / nvidia-smi runtime is NOT_RUN** (driver/NVML mismatch on the compile host; this archive is not a production-signer replace). v0.34.8-rc3 GitHub did **not** publish a `cuda13` tarball. |
+| `linux-x86_64-cuda12` | `btx-0.34.8-rc3-x86_64-linux-gnu-cuda12.tar.gz` (GitHub prerelease; v0.34.5 cuda12 is the same arch set) | Native CUDA 12.9 packaging (static cudart + bundled `libcublasLt.so.12` `$ORIGIN`). Fatbin: **`sm_100a`, `sm_120`, `sm_120a` SASS and `sm_120` PTX only**. **Not** produced by the Guix cuda12 recipe (that recipe still lists `sm_80`…`sm_121`). | Published **Blackwell** native archive. **Not** Ampere/Ada/Hopper (`sm_80`/`86`/`89`) and **not** Hopper `sm_90` (H100/H200). An RTX 3090 starts DEGRADED (`no_rc_self_qualified_device_backend`). **GPU golden / nvidia-smi runtime is NOT_RUN** on the compile host. |
 | `macos-arm64` / `macos-arm64-metal` | `btx-0.34.8-dev-arm64-apple-darwin.zip` (or `.tar.gz`) | Apple clang, `-DBTX_ENABLE_METAL=ON`, precompiled `*.metallib` | Compile+package on Apple silicon; Metal **hardware** goldens remain NOT_RUN unless a later lab row says PASS |
 | `linux-arm64` | — | No aarch64 Linux host in this pre-merge | **HONEST skip** |
 | ROCm / `BTX_ENABLE_HIP` | — | `hipcc` exists on one Linux host, but `rocminfo` fails (`HSA_STATUS_ERROR`, deprecated doorbell — NVIDIA device, not a usable AMD agent). No gfx* image was compiled. | **HONEST skip** |
@@ -170,7 +170,15 @@ MinIO docker, LAN stampede, R10 MiniWallet path, native CR12 suites.
   row is the proof instead)
 - `e2e-swarm-live.sh` 45-byte fixture (WITH_GAP); sibling multipiece is
   the multi-piece proof
-- linux-arm64 archive; CUDA 12 archive; ROCm/HIP archive
+- linux-arm64 archive; ROCm/HIP archive
+- Guix cuda12 fatbin (`sm_80`…`sm_121`) — the published v0.34.8-rc3 `cuda12`
+  tarball is a native Blackwell image (`sm_100a`/`sm_120`/`sm_120a`), not that
+  recipe
+- Ampere/Ada/Hopper ExactReplay on published CUDA archives (no matching
+  SASS/PTX; issue 131 closed: canonical LT IMMA layout declined)
+- Hopper `sm_90` published fatbin (source-build with CUDA >= 12.9 and
+  `-DBTX_CUDA_ARCHITECTURES=90`)
+- CUDA 13 GitHub asset on v0.34.8-rc3 (not published)
 - Production signer upgrade (explicitly out of this PR)
 
 ## Reviewer map

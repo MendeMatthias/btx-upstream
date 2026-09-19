@@ -29,6 +29,7 @@
 #include <util/strencodings.h>
 #include <util/translation.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <limits>
@@ -2236,6 +2237,29 @@ BOOST_AUTO_TEST_CASE(above_frontier_and_parked_branch_do_not_admit)
     BOOST_CHECK(CatchUpMayPauseOnSlowDelivery(false, true, false));
     BOOST_CHECK(!CatchUpMayPauseOnSlowDelivery(
         false, false, false, /*peers_downloading_before=*/1));
+    // Issue #184: CatchUpMayPauseOnSlowDelivery never-pauses when the
+    // eligible-source count is 1. Call sites must pass 1 when THIS hash has
+    // no alternative, even if m_peers_downloading_from >= 2 (those peers may
+    // be downloading other blocks). The rc3 formula
+    // max(peers_downloading_before, alt?2:1) passed 3 and paused the sole
+    // source for up to 10 minutes. Jpp's shape:
+    // (has_alternative || advertised_takeover) ? max(2, peers) : 1
+    BOOST_CHECK_EQUAL(
+        /*no alternative, 3 downloaders of other hashes*/ (
+            false ? std::max(2, 3) : 1),
+        1);
+    BOOST_CHECK_EQUAL(
+        /*alternative present, 3 downloaders*/ (true ? std::max(2, 3) : 1),
+        3);
+    BOOST_CHECK_EQUAL(
+        /*alternative present, 1 downloader*/ (true ? std::max(2, 1) : 1),
+        2);
+    BOOST_CHECK(!CatchUpMayPauseOnSlowDelivery(
+        false, false, false, /*sole source of this hash*/ 1));
+    BOOST_CHECK(CatchUpMayPauseOnSlowDelivery(
+        false, false, false, /*alternative present*/ 3));
+    BOOST_CHECK(CatchUpMayPauseOnSlowDelivery(
+        false, false, false, /*alternative present, max(2,1)*/ 2));
     BOOST_CHECK(!CatchUpMayDisconnectOnSlowDelivery(
         /*far_behind=*/true, /*persistent=*/true, /*manual_or_noban=*/false,
         /*keep_catchup_source=*/false, /*only_eligible_source=*/false));
