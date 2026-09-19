@@ -1,9 +1,9 @@
 # BTX Download-and-Go Guide
 
-> **Current line:** **v0.34.8-rc2** (prerelease). See
+> **Current line:** **v0.34.8-rc3** (prerelease). See
 > [0.34.8 release notes](release-notes/release-notes-0.34.8.md) and
 > [release notes](release-notes.md). The GitHub tag that resolves is
-> [`v0.34.8-rc2`](https://github.com/btxchain/btx/releases/tag/v0.34.8-rc2);
+> [`v0.34.8-rc3`](https://github.com/btxchain/btx/releases/tag/v0.34.8-rc3);
 > `refs/tags/v0.34.7` is not published — do not pass `--release-tag v0.34.7`.
 > Historical 0.34.5 convergence notes:
 > [release-notes-0.34.5.md](release-notes/release-notes-0.34.5.md).
@@ -47,13 +47,13 @@ export GH_TOKEN="$(<github.key)"  # only needed for private GitHub releases
 
 python3 contrib/faststart/btx-agent-setup.py \
   --repo btxchain/btx \
-  --release-tag v0.34.8-rc2 \
+  --release-tag v0.34.8-rc3 \
   --preset miner \
   --datadir="$HOME/.btx"
 ```
 
-The GitHub tag `v0.34.8-rc2` is the live prerelease. `v0.34.7` is not a
-published tag. Historical `v0.34.8-rc1` remains on GitHub and is superseded.
+The GitHub tag `v0.34.8-rc3` is the live prerelease. `v0.34.7` is not a
+published tag. Historical `v0.34.8-rc2` and `v0.34.8-rc1` remain on GitHub and are superseded.
 
 Add `--start-mining` when the same command should also provision the mining
 wallet/address and start the bundled live-mining supervisor after the verified
@@ -62,7 +62,7 @@ fast-start bootstrap succeeds:
 ```bash
 python3 contrib/faststart/btx-agent-setup.py \
   --repo btxchain/btx \
-  --release-tag v0.34.8-rc2 \
+  --release-tag v0.34.8-rc3 \
   --preset miner \
   --datadir="$HOME/.btx" \
   --start-mining
@@ -102,7 +102,7 @@ progress on stderr and prints a clean JSON summary on stdout:
 ```bash
 SETUP_JSON="$(python3 contrib/faststart/btx-agent-setup.py \
   --repo btxchain/btx \
-  --release-tag v0.34.8-rc2 \
+  --release-tag v0.34.8-rc3 \
   --preset miner \
   --datadir="$HOME/.btx" \
   --json)"
