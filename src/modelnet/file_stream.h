@@ -24,6 +24,36 @@ namespace modelnet {
 /** Negotiated model-plane capability: sequential source-file bootstrap, not random piece GET. */
 inline constexpr const char* FULL_FILE_STREAM_V1 = "FULL_FILE_STREAM_V1";
 
+/**
+ * Client shortcut gate (RetrieveFreeFromPeer): files larger than this use piece HTTP.
+ * FULL_FILE_STREAM_V1 GET responses are capped at this advertised size, not MAX_RPC_BODY.
+ */
+inline constexpr uint64_t FULL_FILE_STREAM_MAX_BYTES = 64ull << 20;
+
+/** Must match PQ1_HTTP_HEADER_CAP so SslReadHttp can finish headers before the body. */
+inline constexpr size_t FULL_FILE_STREAM_HTTP_HEADER_SLACK = 64 * 1024;
+
+/**
+ * Upper bound passed to SslReadHttp for GET /files/{artifact}/{index} before
+ * Content-Length is known. SslReadHttp then stops at the advertised length.
+ * RPC JSON stays at MAX_RPC_BODY; piece HTTP stays at MAX_PIECE_HTTP.
+ */
+inline constexpr size_t FULL_FILE_STREAM_HTTP_READ_CAP =
+    FULL_FILE_STREAM_HTTP_HEADER_SLACK + static_cast<size_t>(FULL_FILE_STREAM_MAX_BYTES);
+
+/** Native GET /files/{artifact}/{index} (not /pieces/, not RPC). */
+bool IsFullFileStreamGet(const std::string& method, const std::string& path);
+
+/**
+ * Fail-closed body cap for a FULL_FILE_STREAM_V1 GET response.
+ * Missing or > FULL_FILE_STREAM_MAX_BYTES Content-Length is refused (no silent truncate).
+ * On success, read_cap is header slack + advertised Content-Length.
+ */
+bool FullFileStreamHttpBodyCap(bool have_content_length, uint64_t content_length, size_t& read_cap, std::string& err);
+
+/** Parse Content-Length from a response and apply FullFileStreamHttpBodyCap. */
+bool FullFileStreamAcceptContentLength(const std::string& raw_http, uint64_t& content_length, std::string& err);
+
 struct FileStreamCaps {
     bool random_piece_access{false};
     bool sequential_file_stream{false};

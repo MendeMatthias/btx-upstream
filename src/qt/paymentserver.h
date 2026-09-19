@@ -51,6 +51,7 @@ class QUrl;
 QT_END_NAMESPACE
 
 extern const QString BTX_IPC_PREFIX;
+// COORDINATOR LOCK: do not re-export BITCOIN_IPC_PREFIX. bitcoin: is not a BTX URI.
 
 class PaymentServer : public QObject
 {

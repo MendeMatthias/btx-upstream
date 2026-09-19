@@ -185,4 +185,38 @@ BOOST_AUTO_TEST_CASE(cr11_getid_capital_export_program_product)
     BOOST_CHECK_EQUAL(cr11_test::ObjType(r), modelnet::HCP_TYPE_PRODUCT_OFFER);
 }
 
+BOOST_AUTO_TEST_CASE(cr11_getid_program_and_rule_are_account_scoped)
+{
+    auto e = cr11_test::Lab();
+    const auto tok_a = cr11_test::Tok(*e);
+    e->PutAccount("account-b", 777);
+    const std::string ver = "pkce-verifier-account-b-getid";
+    const std::string ch = e->LabCreatePkceChallenge(ver);
+    const std::string code =
+        e->LabAuthorize("account-b", "client-demo", "https://app.example/cb", "state-b", ch, cr11_test::Scopes());
+    UniValue tok;
+    std::string err;
+    BOOST_REQUIRE(e->LabToken(code, ver, "https://app.example/cb", e->LabJkt(), "", tok, err));
+    const std::string tok_b = tok["access_token"].get_str();
+
+    UniValue prog(UniValue::VOBJ);
+    prog.pushKV("program_id", "prog-owned-a");
+    auto created = e->Handle(hcp_test::AuthReq(*e, "POST", "/capital/programs", tok_a, &prog));
+    BOOST_REQUIRE_EQUAL(created.status, 201);
+
+    auto foreign = e->Handle(hcp_test::AuthReq(*e, "GET", "/capital/programs/prog-owned-a", tok_b));
+    BOOST_CHECK_EQUAL(foreign.status, 404);
+
+    auto owner = e->Handle(hcp_test::AuthReq(*e, "GET", "/capital/programs/prog-owned-a", tok_a));
+    BOOST_REQUIRE_EQUAL(owner.status, 200);
+
+    auto rule = e->Handle(hcp_test::AuthReq(*e, "POST", "/capital/approval-rules", tok_a));
+    BOOST_REQUIRE_EQUAL(rule.status, 201);
+    const std::string rid = cr11_test::Json(rule)["body"]["rule_id"].get_str();
+    auto foreign_rule = e->Handle(hcp_test::AuthReq(*e, "GET", "/capital/approval-rules/" + rid, tok_b));
+    BOOST_CHECK_EQUAL(foreign_rule.status, 404);
+    auto owner_rule = e->Handle(hcp_test::AuthReq(*e, "GET", "/capital/approval-rules/" + rid, tok_a));
+    BOOST_REQUIRE_EQUAL(owner_rule.status, 200);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -98,6 +98,13 @@ bool HcpVerify(const HcpEnvelope& env, Span<const unsigned char> pk, std::string
 bool HcpRejectForbiddenFields(const UniValue& body, std::string& err);
 bool HcpEnvelopeFromBytes(Span<const unsigned char> raw, HcpEnvelope& out, std::string& err);
 bool HcpIsPublicReadPath(const std::string& method, const std::string& path);
+//! True only for a 96-char lowercase hex SHA-384 that is not a repeated-nibble
+//! placeholder (96 x 'a' / 96 x 'b' and the like). Signed extension metadata
+//! must not authenticate filler strings as contract hashes.
+bool HcpSha384DigestUsable(const std::string& hex);
+//! Write schema_digest / operations_digest when both are usable and distinct;
+//! otherwise null the fields and mark negotiation unavailable.
+void HcpApplyNegotiatedDigests(UniValue& body, const std::string& schema_digest, const std::string& operations_digest);
 
 int64_t Cr11Capacity(int64_t available, int64_t protected_atoms, int64_t remaining_authority);
 bool Cr11ReportingFloorAtoms(const std::string& required_quote, const std::string& price_quote_per_coin, int exponent,

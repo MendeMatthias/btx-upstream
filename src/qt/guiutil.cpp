@@ -264,8 +264,11 @@ qint64 URIParseAmount(std::string amount_str, bool * const ok)
 
 bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
 {
-    // BTX payments are btx:<addr> BIP21 only. bitcoin: is not a BTX URI.
-    // btx:// is a model resource (V11-URI-13), never a payment destination.
+    // COORDINATOR LOCK: bitcoin: / bitcoin:// MUST return false.
+    // Do not restore leftover Bitcoin Core BIP21 parse. Do not export
+    // BITCOIN_IPC_PREFIX. Payment is btx:<addr> only. btx:// is a model
+    // resource (V11-URI-13), never a payment destination.
+    // Tests: src/qt/test/uritests.cpp (QVERIFY(!parse) for bitcoin:).
     if (!uri.isValid()) return false;
     const QString scheme = uri.scheme();
     if (scheme.compare(QLatin1String("btx"), Qt::CaseInsensitive) != 0) {

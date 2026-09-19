@@ -742,6 +742,57 @@ BOOST_AUTO_TEST_CASE(native_file_stream_headers_omit_body_for_large_files)
     BOOST_REQUIRE(hdr_end != std::string::npos);
     BOOST_CHECK_EQUAL(wire.size(), hdr_end + 4);
     // SCALE huge: headers only. Writing a 400GiB body is NOT_RUN (disk).
+    // Client shortcut fail-closes: advertised length exceeds FULL_FILE_STREAM_MAX_BYTES.
+    uint64_t clen = 0;
+    std::string err;
+    BOOST_CHECK(!modelnet::FullFileStreamAcceptContentLength(wire, clen, err));
+    BOOST_CHECK(err.find("too large") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(full_file_stream_http_body_cap_is_content_length_not_rpc)
+{
+    using namespace modelnet;
+    BOOST_CHECK(IsFullFileStreamGet("GET", std::string(MODEL_HTTP_ROOT) + "files/" + std::string(96, 'a') + "/0"));
+    BOOST_CHECK(!IsFullFileStreamGet("POST", std::string(MODEL_HTTP_ROOT) + "hello"));
+    BOOST_CHECK(!IsFullFileStreamGet("GET", std::string(MODEL_HTTP_ROOT) + "hello"));
+    BOOST_CHECK(!IsFullFileStreamGet("GET", std::string(MODEL_HTTP_ROOT) + "transfers/x/pieces/0"));
+    BOOST_CHECK_EQUAL(FULL_FILE_STREAM_MAX_BYTES, 64ull << 20);
+    BOOST_CHECK_EQUAL(FULL_FILE_STREAM_HTTP_READ_CAP,
+                      FULL_FILE_STREAM_HTTP_HEADER_SLACK + static_cast<size_t>(FULL_FILE_STREAM_MAX_BYTES));
+    BOOST_CHECK_GT(FULL_FILE_STREAM_HTTP_READ_CAP, static_cast<size_t>(256 * 1024 + 8192));
+
+    auto hdr = [](const std::string& cl) {
+        return "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: " + cl +
+               "\r\nX-BTX-Capability: " + std::string(FULL_FILE_STREAM_V1) + "\r\n\r\n";
+    };
+
+    size_t cap = 0;
+    std::string err;
+    BOOST_REQUIRE(FullFileStreamHttpBodyCap(true, 256ull * 1024ull + 1ull, cap, err));
+    BOOST_CHECK_EQUAL(cap, FULL_FILE_STREAM_HTTP_HEADER_SLACK + 256u * 1024u + 1u);
+    BOOST_REQUIRE(FullFileStreamHttpBodyCap(true, FULL_FILE_STREAM_MAX_BYTES, cap, err));
+    BOOST_CHECK_EQUAL(cap, FULL_FILE_STREAM_HTTP_READ_CAP);
+    BOOST_CHECK(!FullFileStreamHttpBodyCap(true, FULL_FILE_STREAM_MAX_BYTES + 1, cap, err));
+    BOOST_CHECK(err.find("too large") != std::string::npos);
+    BOOST_CHECK(!FullFileStreamHttpBodyCap(false, 0, cap, err));
+    BOOST_CHECK(err.find("Content-Length") != std::string::npos);
+
+    uint64_t clen = 0;
+    BOOST_REQUIRE(FullFileStreamAcceptContentLength(hdr("262145"), clen, err));
+    BOOST_CHECK_EQUAL(clen, 262145ull);
+    BOOST_REQUIRE(FullFileStreamAcceptContentLength(hdr("67108864"), clen, err));
+    BOOST_CHECK_EQUAL(clen, 64ull << 20);
+    BOOST_REQUIRE(FullFileStreamAcceptContentLength(hdr("0"), clen, err));
+    BOOST_CHECK_EQUAL(clen, 0ull);
+    BOOST_CHECK(!FullFileStreamAcceptContentLength(hdr("67108865"), clen, err));
+    BOOST_CHECK(err.find("too large") != std::string::npos);
+    BOOST_CHECK(!FullFileStreamAcceptContentLength(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nX-BTX-Capability: " +
+            std::string(FULL_FILE_STREAM_V1) + "\r\n\r\n",
+        clen, err));
+    BOOST_CHECK(err.find("missing Content-Length") != std::string::npos);
+    BOOST_CHECK(!FullFileStreamAcceptContentLength("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n", clen, err));
+    BOOST_CHECK_EQUAL(err, "truncated http");
 }
 
 BOOST_AUTO_TEST_CASE(setcloudstorage_rejects_link_local_flag_and_secret_shaped_ref)

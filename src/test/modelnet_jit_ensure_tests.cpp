@@ -23,6 +23,7 @@
 
 #include <modelnet/capability.h>
 #include <modelnet/catalog.h>
+#include <modelnet/file_stream.h>
 #include <modelnet/hello_caps.h>
 #include <modelnet/helper.h>
 #include <modelnet/transfer_session.h>
@@ -502,6 +503,13 @@ BOOST_AUTO_TEST_CASE(hello_capability_objects_name_min_max)
     BOOST_CHECK(modelnet::HelloHasCapability(hello, "SUBPIECE_V1"));
     BOOST_CHECK(modelnet::HelloHasCapability(hello, "AGENT_HANDOFF_V1"));
     BOOST_CHECK(!modelnet::HelloHasCapability(hello, "NOT_A_CAPABILITY"));
+    BOOST_CHECK(modelnet::IsFullFileStreamGet("GET", "/btx-model/2/files/aa/0"));
+    BOOST_CHECK(!modelnet::IsFullFileStreamGet("POST", "/btx-model/2/hello"));
+    size_t stream_cap = 0;
+    std::string caperr;
+    BOOST_REQUIRE(modelnet::FullFileStreamHttpBodyCap(true, 256 * 1024 + 1, stream_cap, caperr));
+    BOOST_CHECK_GT(stream_cap, static_cast<size_t>(256 * 1024 + 8192));
+    BOOST_CHECK(!modelnet::FullFileStreamHttpBodyCap(false, 1024, stream_cap, caperr));
 
     UniValue strings(UniValue::VARR);
     strings.push_back(std::string("SUBPIECE_V1"));

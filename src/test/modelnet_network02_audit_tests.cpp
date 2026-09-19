@@ -175,6 +175,11 @@ BOOST_AUTO_TEST_CASE(hello_capability_array_includes_network02)
     hello.pushKV("capabilities", caps);
     BOOST_CHECK(modelnet::HelloHasCapability(hello, modelnet::FULL_FILE_STREAM_V1));
     BOOST_CHECK(modelnet::HelloHasCapability(hello, modelnet::SUBPIECE_V1));
+    size_t stream_cap = 0;
+    std::string caperr;
+    BOOST_REQUIRE(modelnet::FullFileStreamHttpBodyCap(true, 1024 * 1024, stream_cap, caperr));
+    BOOST_CHECK_EQUAL(stream_cap, modelnet::FULL_FILE_STREAM_HTTP_HEADER_SLACK + 1024u * 1024u);
+    BOOST_CHECK(!modelnet::FullFileStreamHttpBodyCap(true, modelnet::FULL_FILE_STREAM_MAX_BYTES + 1, stream_cap, caperr));
 }
 
 BOOST_AUTO_TEST_CASE(helper_rpc_import_package_erasure_torrent_origin)

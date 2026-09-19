@@ -13,8 +13,9 @@
 //   * Idempotency-Key handling must authenticate first, scope keys to the
 //     account and operation, and return the original outcome on replay.
 //   * A monetary aggregate matches valuations to eligible positions and sums
-//     them. Unpriced or FX-mismatched books stay UNAVAILABLE with a null value.
-//     Known zero and vacuously empty portfolios remain COMPLETE "0".
+//     them. Unpriced, FX-mismatched, or never-accumulated books stay
+//     UNAVAILABLE with a null value. A known zero (matched valuations that
+//     sum to "0") remains COMPLETE "0".
 //   * Extension schema_digest / operations_digest are SHA-384 of the published
 //     schema and operations files (or negotiation is marked unavailable).
 //   * Bindings start PROPOSED until owner_consent (create body or /consent).
@@ -278,6 +279,9 @@ BOOST_AUTO_TEST_CASE(cr12_pr157_aggregate_is_account_scoped)
     auto body = cr12_test::Body(r);
     BOOST_CHECK_EQUAL(body["metric_results"][0]["eligible_count"].getInt<int64_t>(), 0);
     BOOST_CHECK_EQUAL(body["position_refs"].size(), 0U);
+    BOOST_CHECK(body["metric_results"][0]["status"].get_str() != "COMPLETE");
+    BOOST_CHECK(body["metric_results"][0]["complete"].isFalse());
+    BOOST_CHECK(body["metric_results"][0]["value"].isNull());
 }
 
 BOOST_AUTO_TEST_CASE(cr12_pr157_extension_digests_not_placeholders)
@@ -298,19 +302,29 @@ BOOST_AUTO_TEST_CASE(cr12_pr157_extension_digests_not_placeholders)
                         "schema_digest must be a computed digest or negotiation must be marked unavailable");
     BOOST_CHECK_MESSAGE(ops != std::string(96, 'b'),
                         "operations_digest must be a computed digest or negotiation must be marked unavailable");
-
-    const bool negotiated = body.exists("negotiated") && body["negotiated"].isTrue();
-    BOOST_CHECK(negotiated);
     BOOST_CHECK(!LooksLikeFillerDigest(schema));
     BOOST_CHECK(!LooksLikeFillerDigest(ops));
-    BOOST_CHECK(IsHex(schema));
-    BOOST_CHECK(IsHex(ops));
-    BOOST_CHECK_EQUAL(schema.size(), 96U);
-    BOOST_CHECK_EQUAL(ops.size(), 96U);
-    BOOST_CHECK(schema != ops);
+    BOOST_CHECK(!modelnet::HcpSha384DigestUsable(std::string(96, 'a')));
+    BOOST_CHECK(!modelnet::HcpSha384DigestUsable(std::string(96, 'b')));
+
+    const bool negotiated = body.exists("negotiated") && body["negotiated"].isTrue();
+    if (negotiated) {
+        BOOST_CHECK(IsHex(schema));
+        BOOST_CHECK(IsHex(ops));
+        BOOST_CHECK_EQUAL(schema.size(), 96U);
+        BOOST_CHECK_EQUAL(ops.size(), 96U);
+        BOOST_CHECK(schema != ops);
+        BOOST_CHECK(modelnet::HcpSha384DigestUsable(schema));
+        BOOST_CHECK(modelnet::HcpSha384DigestUsable(ops));
+    } else {
+        BOOST_CHECK(schema.empty());
+        BOOST_CHECK(ops.empty());
+        BOOST_CHECK(body.exists("digests_available") && body["digests_available"].isFalse());
+        BOOST_CHECK(body.exists("negotiation_unavailable_reason"));
+    }
 
 #ifdef MODELNET_CRL12_SCHEMA_PATH
-    {
+    if (negotiated) {
         std::ifstream in(MODELNET_CRL12_SCHEMA_PATH, std::ios::binary);
         BOOST_REQUIRE(in.good());
         const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -322,7 +336,7 @@ BOOST_AUTO_TEST_CASE(cr12_pr157_extension_digests_not_placeholders)
     }
 #endif
 #ifdef MODELNET_CRL12_OPERATIONS_PATH
-    {
+    if (negotiated) {
         std::ifstream in(MODELNET_CRL12_OPERATIONS_PATH, std::ios::binary);
         BOOST_REQUIRE(in.good());
         const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -333,6 +347,23 @@ BOOST_AUTO_TEST_CASE(cr12_pr157_extension_digests_not_placeholders)
         BOOST_CHECK_EQUAL(ops, HexStr(Span<const unsigned char>{d, sizeof(d)}));
     }
 #endif
+}
+
+BOOST_AUTO_TEST_CASE(cr12_pr157_aggregate_empty_book_not_fake_complete_zero)
+{
+    auto e = cr12_test::Lab();
+    const auto tok = cr12_test::Tok(*e);
+    UniValue projection(UniValue::VOBJ);
+    projection.pushKV("metric_kind", "AUM");
+    auto r = e->Handle(PostJson(*e, "/institutional/projections", tok, projection));
+    BOOST_REQUIRE_EQUAL(r.status, 201);
+    auto body = cr12_test::Body(r);
+    BOOST_REQUIRE_EQUAL(body["metric_results"].size(), 1U);
+    BOOST_CHECK_EQUAL(body["metric_results"][0]["eligible_count"].getInt<int64_t>(), 0);
+    BOOST_CHECK_EQUAL(body["metric_results"][0]["status"].get_str(), "UNAVAILABLE");
+    BOOST_CHECK(body["metric_results"][0]["complete"].isFalse());
+    BOOST_CHECK(body["metric_results"][0]["value"].isNull());
+    BOOST_CHECK(body["status"].get_str() != "COMPLETE");
 }
 
 BOOST_AUTO_TEST_CASE(cr12_pr157_binding_lifecycle_is_explicit)

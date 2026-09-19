@@ -32,6 +32,7 @@
 #include <node/matmul_block_lifecycle.h>
 #include <node/matmul_rc_admission.h>
 #include <node/matmul_trusted_attestations.h>
+#include <node/matmul_verified_fork_parent.h>
 #include <node/discovery_relay.h>
 #include <node/header_sync.h>
 #include <node/matmul_verify_worker.h>
@@ -193,6 +194,8 @@ static constexpr auto MATMUL_ATTESTATION_TOKEN_REFILL{
 static constexpr auto MATMUL_ATTESTATION_HISTORICAL_TOKEN_REFILL{
     node::matmul_trusted::GETMMATTEST_HISTORICAL_TOKEN_REFILL};
 static constexpr auto MATMUL_ATTESTATION_SOURCE_BUDGET_TTL{10min};
+//! Peer-success / authority-hint expiry only. In-flight GETMMATTEST
+//! occupancy uses node::matmul_trusted::GetMmAttestRequestTtl (#154).
 static constexpr auto MATMUL_ATTESTATION_REQUEST_TTL{60s};
 static constexpr size_t MATMUL_ATTESTATION_OUTSTANDING_MAX{1024};
 //! Phase-1 tip-child headers are cheap on public profiles. Bound their
@@ -3694,6 +3697,90 @@ void PeerManagerImpl::AutoFetchStuckTipRoot()
             err ? " -- " : "", err ? err->c_str() : "");
 }
 
+//! Issue #146: one-shot wake of the retained next hole after its parent
+//! was ExactReplay-verified off the active chain. Isolated from RB-16
+//! wanted / #163 progress-lane mutation. Lifecycle mutex is taken only
+//! after cs_main is dropped.
+static void MaybeWakeRetainedChildForVerifiedForkParent(
+    ChainstateManager& chainman,
+    node::MatMulBlockLifecycle& lifecycle,
+    const uint256& wanted_parent)
+{
+    uint256 wake_hash{};
+    {
+        LOCK(cs_main);
+        if (chainman.GetMatMulValidationMode() !=
+                kernel::MatMulValidationMode::CONSENSUS ||
+            node::matmul_trusted::IsTrustedMirror()) {
+            return;
+        }
+        const CBlockIndex* const tip{chainman.ActiveTip()};
+        const CBlockIndex* const best{chainman.m_best_header};
+        if (tip == nullptr || best == nullptr) return;
+        if (!(best->nChainWork > tip->nChainWork)) return;
+        if (best->GetAncestor(tip->nHeight) == tip) return;
+        if ((best->nStatus & BLOCK_FAILED_MASK) != 0) return;
+        if (chainman.IsOnParkedReorgBranch(best)) return;
+        const CBlockIndex* const fork{chainman.ActiveChain().FindFork(best)};
+        if (fork == nullptr || chainman.IsOnParkedReorgBranch(fork)) return;
+
+        const CBlockIndex* next{nullptr};
+        for (const CBlockIndex* walk{best};
+             walk != nullptr && walk != fork && walk->nHeight > fork->nHeight;
+             walk = walk->pprev) {
+            if ((walk->nStatus & BLOCK_FAILED_MASK) != 0) continue;
+            if ((walk->nStatus & BLOCK_EXACT_REPLAY_VERIFIED) != 0) continue;
+            if (!lifecycle.HasRetainedBody(walk->GetBlockHash())) continue;
+            next = walk;
+        }
+        if (next == nullptr || next->pprev == nullptr) return;
+        if (next->pprev->GetBlockHash() != wanted_parent) return;
+        if (chainman.ActiveChain().Contains(next->pprev)) return;
+
+        std::vector<node::AncestorPrefixStep> steps;
+        steps.reserve(16);
+        for (const CBlockIndex* walk{next->pprev}; walk != nullptr;
+             walk = walk->pprev) {
+            const bool on_active{chainman.ActiveChain().Contains(walk)};
+            steps.push_back(node::AncestorPrefixStep{
+                .on_active_chain = on_active,
+                .have_data = (walk->nStatus & BLOCK_HAVE_DATA) != 0,
+                .exact_replay =
+                    (walk->nStatus & BLOCK_EXACT_REPLAY_VERIFIED) != 0,
+                .failed = (walk->nStatus & BLOCK_FAILED_MASK) != 0,
+            });
+            if (on_active) break;
+            if (steps.size() > 4096) break;
+        }
+        const node::VerifiedForkParentWakeView view{
+            .consensus_mode = true,
+            .strictly_heavier_competing = true,
+            .next_needed_is_priority = true,
+            .parent_off_active_chain = true,
+            .ancestor_prefix_ready = node::AncestorPrefixExactReplayReady(
+                steps.data(), steps.size()),
+            .best_header_failed = false,
+            .branch_parked = false,
+            .processed_root_parked = false,
+        };
+        if (!node::ShouldWakeRetainedChildForVerifiedForkParent(view)) {
+            return;
+        }
+        wake_hash = next->GetBlockHash();
+    }
+    if (wake_hash.IsNull()) return;
+    if (lifecycle.WakeRetryOnce(
+            wake_hash,
+            node::MatMulBlockLifecycle::RetryWakeReason::VERIFIED_FORK_PARENT)) {
+        (void)lifecycle.PinRetainedProgress(wake_hash);
+        LogInfo("Waking retained child %s: parent ExactReplay-verified off "
+                "the active chain (VERIFIED_FORK_PARENT)\n",
+                wake_hash.ToString());
+    } else {
+        (void)lifecycle.PinRetainedProgress(wake_hash);
+    }
+}
+
 void PeerManagerImpl::RetryMatMulDeferredBodies()
 {
     AssertLockNotHeld(cs_main);
@@ -4002,6 +4089,8 @@ void PeerManagerImpl::RetryMatMulDeferredBodies()
             }
         }
     }
+    MaybeWakeRetainedChildForVerifiedForkParent(
+        m_chainman, m_matmul_block_lifecycle, wanted);
     const bool idle_catchup{
         m_matmul_pending_verifications.load(std::memory_order_relaxed) == 0 &&
         m_matmul_rc_pending_verifications.load(std::memory_order_relaxed) == 0};
@@ -11959,8 +12048,28 @@ void PeerManagerImpl::RequestMatMulTrustedAttestations(
 
         auto existing{m_matmul_attestation_requested.find(hash)};
         if (existing != m_matmul_attestation_requested.end()) {
-            if (now - existing->second.requested_at <=
-                MATMUL_ATTESTATION_REQUEST_TTL) {
+            // Occupancy only. Peer-success / authority-hint expiry above
+            // stays at MATMUL_ATTESTATION_REQUEST_TTL (60s). Do not flip
+            // signed_frontier_catch_up: PreferGetMmAttestPeer(catch_up=1)
+            // would skip the #154 consensus peers.
+            const int headers_ahead{
+                (tip != nullptr && m_chainman.m_best_header != nullptr &&
+                 m_chainman.m_best_header->nHeight > tip->nHeight &&
+                 m_chainman.m_best_header->GetAncestor(tip->nHeight) == tip)
+                    ? (m_chainman.m_best_header->nHeight - tip->nHeight)
+                    : 0};
+            const bool body_local{
+                followed_body_awaiting ||
+                (index != nullptr &&
+                 (index->nStatus & BLOCK_HAVE_DATA) != 0) ||
+                m_matmul_block_lifecycle.HasRetainedBody(hash)};
+            const auto request_ttl{node::matmul_trusted::GetMmAttestRequestTtl(
+                m_chainman.GetMatMulValidationMode() ==
+                    kernel::MatMulValidationMode::CONSENSUS,
+                node::matmul_trusted::IsTrustedMirror(),
+                headers_ahead,
+                body_local)};
+            if (now - existing->second.requested_at <= request_ttl) {
                 return; // still in flight
             }
             // TTL expired without quorum: if preferred peers were asked and
@@ -19161,23 +19270,58 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
     if (msg_type == NetMsgType::SENDMODELS || msg_type == NetMsgType::GETMDPEERS ||
         msg_type == NetMsgType::MDPEERS) {
 #ifdef ENABLE_MODELNET
-        if (vRecv.size() > 4096) {
+        // #172 consumer: drain on every model-hint return so MAX_HINTS=64
+        // cannot pin for process lifetime. Fail-closed on malformed.
+        // Never auto-spend. Never connect (no signer-special either).
+        struct ConsumePublicHintsOnReturn {
+            NodeId peer_id;
+            ~ConsumePublicHintsOnReturn()
+            {
+                while (auto consumed = modelnet::GetModelBridge().TryDequeueHint()) {
+                    std::string herr;
+                    if (!modelnet::PublicHintWellFormed(consumed->hint, consumed->from_addr, herr)) {
+                        LogDebug(BCLog::MODELNET,
+                                 "dropped malformed model hint from peer=%d: %s\n",
+                                 peer_id, herr);
+                        continue;
+                    }
+                    LogDebug(BCLog::MODELNET,
+                             "consumed public model hint from peer=%d src=%s (hint only; not connecting, not spending)\n",
+                             peer_id, consumed->from_addr);
+                }
+            }
+        } consume_hints{pfrom.GetId()};
+
+        // #173 fail-closed-but-not-eclipse: oversized (>4 KiB) is abuse
+        // (Misbehave). A future MODEL_PROTOCOL_VERSION that changes byte
+        // length must not accumulate Misbehaving against upgraded peers —
+        // version mismatch is ignore/log. Same-version garbage (wrong size
+        // or unparseable fields) is Misbehave. GETMDPEERS has no version
+        // field, so a size change is IGNORE; same 17-byte layout with a
+        // bad count is Misbehave.
+        if (vRecv.size() > modelnet::MAX_MDPEERS_BYTES) {
             Misbehaving(*peer, "model hint oversized");
             return;
         }
+        std::vector<unsigned char> bytes(vRecv.size());
+        if (vRecv.size()) {
+            std::memcpy(bytes.data(), vRecv.data(), vRecv.size());
+        }
         if (msg_type == NetMsgType::SENDMODELS) {
-            if (vRecv.size() != modelnet::SENDMODELS_BYTES) {
-                Misbehaving(*peer, "sendmodels size");
+            const auto disp = modelnet::ClassifySendModelsWire(bytes);
+            if (disp == modelnet::HintWireDisposition::IGNORE) {
+                LogDebug(BCLog::MODELNET, "sendmodels ignored from peer=%d (version mismatch)\n",
+                         pfrom.GetId());
+                return;
+            }
+            if (disp == modelnet::HintWireDisposition::MISBEHAVE) {
+                Misbehaving(*peer, "sendmodels garbage");
                 return;
             }
             modelnet::SendModels msg;
             std::string err;
-            std::vector<unsigned char> bytes(vRecv.size());
-            if (vRecv.size()) {
-                std::memcpy(bytes.data(), vRecv.data(), vRecv.size());
-            }
             if (!modelnet::ParseSendModels(bytes, msg, err)) {
-                LogDebug(BCLog::MODELNET, "sendmodels ignored from peer=%d: %s\n", pfrom.GetId(), err);
+                Misbehaving(*peer, "sendmodels garbage");
                 return;
             }
             LogDebug(BCLog::MODELNET, "sendmodels v%u roles=%u from peer=%d (hint only)\n",
@@ -19185,16 +19329,20 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             return;
         }
         if (msg_type == NetMsgType::GETMDPEERS) {
-            if (vRecv.size() != 17) {
-                Misbehaving(*peer, "getmdpeers size");
+            const auto disp = modelnet::ClassifyGetMdPeersWire(bytes);
+            if (disp == modelnet::HintWireDisposition::IGNORE) {
+                LogDebug(BCLog::MODELNET, "getmdpeers ignored from peer=%d (size/layout)\n",
+                         pfrom.GetId());
+                return;
+            }
+            if (disp == modelnet::HintWireDisposition::MISBEHAVE) {
+                Misbehaving(*peer, "getmdpeers garbage");
                 return;
             }
             modelnet::GetMdPeers req;
             std::string err;
-            std::vector<unsigned char> bytes(vRecv.size());
-            if (vRecv.size()) std::memcpy(bytes.data(), vRecv.data(), vRecv.size());
             if (!modelnet::ParseGetMdPeers(bytes, req, err)) {
-                LogDebug(BCLog::MODELNET, "getmdpeers ignored from peer=%d: %s\n", pfrom.GetId(), err);
+                Misbehaving(*peer, "getmdpeers garbage");
                 return;
             }
             // CPU helper answers over PQ1. Monetary P2P does not serialize
@@ -19202,10 +19350,42 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             return;
         }
         if (msg_type == NetMsgType::MDPEERS) {
-            modelnet::BoundedModelHint hint;
-            hint.from_addr = pfrom.addr.ToStringAddrPort();
-            if (!modelnet::GetModelBridge().TryEnqueuePublicHint(std::move(hint))) {
-                LogDebug(BCLog::MODELNET, "dropping model hint from peer=%d (queue full)\n", pfrom.GetId());
+            const auto disp = modelnet::ClassifyMdPeersWire(bytes);
+            if (disp == modelnet::HintWireDisposition::IGNORE) {
+                LogDebug(BCLog::MODELNET, "mdpeers ignored from peer=%d (version mismatch)\n",
+                         pfrom.GetId());
+                return;
+            }
+            if (disp == modelnet::HintWireDisposition::MISBEHAVE) {
+                Misbehaving(*peer, "mdpeers garbage");
+                return;
+            }
+            std::vector<modelnet::PublicEndpointHint> parsed;
+            std::string err;
+            if (!modelnet::ParseMdPeers(bytes, parsed, err)) {
+                Misbehaving(*peer, "mdpeers garbage");
+                return;
+            }
+            auto& bridge = modelnet::GetModelBridge();
+            const std::string from = pfrom.addr.ToStringAddrPort();
+            if (parsed.empty()) {
+                modelnet::BoundedModelHint hint;
+                hint.from_addr = from;
+                if (!bridge.TryEnqueuePublicHint(std::move(hint))) {
+                    LogDebug(BCLog::MODELNET, "dropping model hint from peer=%d (queue full or malformed)\n",
+                             pfrom.GetId());
+                }
+            } else {
+                for (auto& ep : parsed) {
+                    modelnet::BoundedModelHint hint;
+                    hint.from_addr = from;
+                    hint.hint = std::move(ep);
+                    if (!bridge.TryEnqueuePublicHint(std::move(hint))) {
+                        LogDebug(BCLog::MODELNET, "dropping model hint from peer=%d (queue full or malformed)\n",
+                                 pfrom.GetId());
+                        break;
+                    }
+                }
             }
             return;
         }

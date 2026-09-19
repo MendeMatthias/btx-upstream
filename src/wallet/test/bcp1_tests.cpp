@@ -5,6 +5,7 @@
 #include <addresstype.h>
 #include <chainparams.h>
 #include <coins.h>
+#include <common/args.h>
 #include <core_io.h>
 #include <key_io.h>
 #include <policy/policy.h>
@@ -51,6 +52,7 @@
 namespace wallet {
 RPCHelpMan dumpprivkey();
 RPCHelpMan signrawtransactionwithwallet();
+RPCHelpMan signmessage();
 
 namespace {
 
@@ -745,12 +747,40 @@ BOOST_AUTO_TEST_CASE(watchonly_refuses_dumpprivkey_and_wallet_sign)
         }
     }
 
+    {
+        UniValue params(UniValue::VARR);
+        params.push_back(address);
+        params.push_back("bcp1 watch-only must not sign messages in-process");
+        JSONRPCRequest req = WalletRpc(context, params);
+        bool threw{false};
+        bool saw_bcp1_refusal{false};
+        try {
+            const UniValue signed_msg = signmessage().HandleRequest(req);
+            BOOST_FAIL("signmessage must not succeed on a BCP/1 watch-only wallet, got " + signed_msg.write());
+        } catch (const UniValue& rpc_err) {
+            threw = true;
+            saw_bcp1_refusal = rpc_err.write().find("BCP/1 exchange watch-only") != std::string::npos;
+        }
+        BOOST_CHECK(threw);
+        BOOST_CHECK_MESSAGE(saw_bcp1_refusal,
+                            "signmessage must refuse with the BCP/1 private-sign message, not a generic key error");
+    }
+
     RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
 }
 
 BOOST_AUTO_TEST_CASE(importdepositpool_watchonly)
 {
     auto wallet = MakeWatchOnlyDescriptorWallet(*this, "bcp1-pool");
+    BOOST_CHECK(!WalletHasDepositMaterial(*wallet));
+    {
+        const Bcp1Readiness empty = EvaluateBcp1Readiness(*wallet, gArgs);
+        BOOST_CHECK(empty.descriptors_ok);
+        BOOST_CHECK(empty.watchonly_ok);
+        BOOST_CHECK(!empty.deposits_ok);
+        BOOST_CHECK(!empty.signer_ok);
+        BOOST_CHECK(!empty.Ready());
+    }
     const auto seed = MasterSeedFromDerivation();
     const UniValue spec = ReadBcp1Json("deposit-pool.json");
     BOOST_REQUIRE(spec["entries"].isArray());
@@ -776,6 +806,17 @@ BOOST_AUTO_TEST_CASE(importdepositpool_watchonly)
 
     bilingual_str err;
     BOOST_REQUIRE_MESSAGE(ImportDepositPool(*wallet, pool, err), err.original);
+    BOOST_CHECK(WalletHasDepositMaterial(*wallet));
+    {
+        const Bcp1Readiness ready = EvaluateBcp1Readiness(*wallet, gArgs);
+        BOOST_CHECK(ready.descriptors_ok);
+        BOOST_CHECK(ready.watchonly_ok);
+        BOOST_CHECK(ready.deposits_ok);
+        BOOST_CHECK(!ready.signer_ok);
+        BOOST_CHECK(!ready.pkcs11_live);
+        BOOST_CHECK(!ready.kmip_live);
+        BOOST_CHECK_EQUAL(ready.Ready(), ready.synced_ok);
+    }
 
     WalletContext context;
     context.args = &m_args;
@@ -993,6 +1034,19 @@ BOOST_AUTO_TEST_CASE(kmip_and_pkcs11_fail_closed)
     BOOST_REQUIRE(pkcs);
     BOOST_CHECK_EQUAL(pkcs->Backend(), "pkcs11");
     BOOST_CHECK(!pkcs->GetPublicKey("m/87h/1h/0h/0/0", PQAlgorithm::ML_DSA_44, pubkey, err));
+
+    auto wallet = MakeWatchOnlyDescriptorWallet(*this, "bcp1-readiness-stubs");
+    const Bcp1Readiness eval = EvaluateBcp1Readiness(*wallet, gArgs);
+    BOOST_CHECK(!eval.pkcs11_live);
+    BOOST_CHECK(!eval.kmip_live);
+    BOOST_CHECK(!eval.https_live);
+    BOOST_CHECK(!eval.signer_ok);
+    BOOST_CHECK(!eval.Ready());
+    const UniValue health = CommandSignerHealthReport(gArgs);
+    BOOST_CHECK_EQUAL(health["pkcs11_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(health["kmip_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(health["https_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(health["available"].get_bool(), false);
 }
 
 BOOST_AUTO_TEST_CASE(deposit_events_json_and_zmq_map)

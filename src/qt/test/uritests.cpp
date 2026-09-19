@@ -106,13 +106,20 @@ void URITests::uriTests()
     QVERIFY(rv.amount == 10000000000LL);
     QVERIFY(rv.label == QString("%3F"));
 
-    // BTX does not parse Bitcoin payment URIs.
+    // COORDINATOR LOCK: leftover Bitcoin URIs must fail. Do not flip these to QVERIFY(parse).
     uri.setUrl(QString("bitcoin:%1?amount=0.001").arg(addr));
     QVERIFY(!GUIUtil::parseBitcoinURI(uri, &rv));
     QVERIFY(!GUIUtil::parseBitcoinURI(QString("bitcoin:%1?label=Legacy").arg(addr), &rv));
+    QVERIFY(!GUIUtil::parseBitcoinURI(QString("BITCOIN:%1?amount=1").arg(addr), &rv));
     QVERIFY(!GUIUtil::parseBitcoinURI(QString("bitcoin://%1").arg(addr), &rv));
     uri.setUrl(QString("bitcoin://%1?label=Example").arg(addr));
     QVERIFY(!GUIUtil::parseBitcoinURI(uri, &rv));
+    SendCoinsRecipient formatted;
+    formatted.address = addr;
+    formatted.amount = 100000;
+    const QString payment_uri = GUIUtil::formatBitcoinURI(formatted);
+    QVERIFY(payment_uri.startsWith(QStringLiteral("btx:")));
+    QVERIFY(!payment_uri.contains(QStringLiteral("bitcoin:"), Qt::CaseInsensitive));
 
     // V11-URI-13: btx:// is a model resource, never a payment URI.
     const QString model_uri(

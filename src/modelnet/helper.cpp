@@ -1032,15 +1032,26 @@ struct Pq1Session {
         }
         wire += "Content-Length: " + std::to_string(req.body.size()) + "\r\nConnection: keep-alive\r\n\r\n";
         wire += req.body;
-        const int wto = req.path.find("/pieces/") != std::string::npos ? PQ1_TRANSFER_MS : io_ms;
+        const bool piece_http = req.path.find("/pieces/") != std::string::npos;
+        const bool file_stream_get = IsFullFileStreamGet(req.method, req.path);
+        const int wto = (piece_http || file_stream_get) ? PQ1_TRANSFER_MS : io_ms;
         if (!SslWriteAll(ssl, fd, wire, wto, stop, err)) {
             if (err.empty()) err = "write failed";
             Close();
             return false;
         }
-        const size_t cap = req.path.find("/pieces/") != std::string::npos ? MAX_PIECE_HTTP : MAX_RPC_BODY + 8192;
+        const size_t cap = piece_http ? MAX_PIECE_HTTP
+                         : (file_stream_get ? FULL_FILE_STREAM_HTTP_READ_CAP : MAX_RPC_BODY + 8192);
         std::string rerr;
         const std::string raw = SslReadHttp(ssl, fd, cap, wto, stop, &rerr);
+        if (file_stream_get) {
+            uint64_t clen = 0;
+            if (!FullFileStreamAcceptContentLength(raw, clen, err)) {
+                if (err == "truncated http" && !rerr.empty()) err = rerr;
+                Close();
+                return false;
+            }
+        }
         if (!ParseHttpResponse(raw, resp, err)) {
             if (err.empty() || err == "truncated http") {
                 if (!rerr.empty()) err = rerr;

@@ -179,9 +179,10 @@ BOOST_AUTO_TEST_CASE(cr12_metric_08)
     UniValue p(UniValue::VOBJ);
     p.pushKV("metric_kind", "AUM");
     auto r = e->Handle(hcp_test::AuthReq(*e, "POST", "/institutional/projections", tok, &p));
-    BOOST_CHECK(cr12_test::Body(r)["metric_results"][0]["complete"].isTrue());
+    BOOST_CHECK(cr12_test::Body(r)["metric_results"][0]["complete"].isFalse());
     BOOST_CHECK_EQUAL(cr12_test::Body(r)["metric_results"][0]["eligible_count"].getInt<int64_t>(), 0);
-    BOOST_CHECK_EQUAL(cr12_test::Body(r)["metric_results"][0]["value"].get_str(), "0");
+    BOOST_CHECK(cr12_test::Body(r)["metric_results"][0]["value"].isNull());
+    BOOST_CHECK_EQUAL(cr12_test::Body(r)["metric_results"][0]["status"].get_str(), "UNAVAILABLE");
 }
 
 BOOST_AUTO_TEST_CASE(cr12_metric_09)

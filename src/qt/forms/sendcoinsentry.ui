@@ -50,7 +50,7 @@
      <item>
       <widget class="QValidatedLineEdit" name="payTo">
        <property name="toolTip">
-        <string>The BTX address to send the payment to</string>
+        <string>The BTX P2MR address to send the payment to</string>
        </property>
       </widget>
      </item>

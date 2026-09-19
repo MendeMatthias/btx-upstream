@@ -18,6 +18,7 @@
 #include <qt/sendcoinsentry.h>
 
 #include <chainparams.h>
+#include <addresstype.h>
 #include <interfaces/node.h>
 #include <key_io.h>
 #include <node/interface_ui.h>
@@ -448,7 +449,7 @@ void SendCoinsDialog::presentPSBT(PartiallySignedTransaction& psbtx)
         QString filename = GUIUtil::getSaveFileName(this,
             tr("Save Transaction Data"), fileNameSuggestion,
             //: Expanded name of the binary PSBT file format. See: BIP 174.
-            tr("Partially Signed Transaction (Binary)") + QLatin1String(" (*.psbt)"), &selectedFilter);
+            tr("Partially Signed BTX Transaction (Binary)") + QLatin1String(" (*.psbt)"), &selectedFilter);
         if (filename.isEmpty()) {
             return;
         }
@@ -837,7 +838,7 @@ void SendCoinsDialog::processSendCoinsReturn(const WalletModel::SendCoinsReturn 
     switch(sendCoinsReturn.status)
     {
     case WalletModel::InvalidAddress:
-        msgParams.first = tr("The recipient address is not valid. Please recheck.");
+        msgParams.first = tr("The recipient address is not a valid P2MR address. BTX sends only to post-quantum P2MR addresses.");
         break;
     case WalletModel::InvalidAmount:
         msgParams.first = tr("The amount to pay must be larger than 0.");
@@ -1097,7 +1098,11 @@ void SendCoinsDialog::coinControlChangeEdited(const QString& text)
         {
             ui->labelCoinControlChangeLabel->setText(tr("Warning: Invalid BTX address"));
         }
-        else // Valid address
+        else if (!std::holds_alternative<WitnessV2P2MR>(dest))
+        {
+            ui->labelCoinControlChangeLabel->setText(tr("Warning: Change must be a P2MR address. BTX does not send change to legacy, bech32, or taproot addresses."));
+        }
+        else // Valid P2MR address
         {
             if (!model->wallet().isSpendable(dest)) {
                 ui->labelCoinControlChangeLabel->setText(tr("Warning: Unknown change address"));

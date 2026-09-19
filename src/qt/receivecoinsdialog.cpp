@@ -102,6 +102,7 @@ void ReceiveCoinsDialog::setModel(WalletModel *_model)
             if (model->wallet().getDefaultAddressType() == type) ui->addressType->setCurrentIndex(index);
         };
         add_address_type(OutputType::P2MR);
+        ui->addressType->setToolTip(tr("BTX issues post-quantum P2MR addresses only. Legacy, bech32, and taproot types are not offered."));
 
         connect(_model->getOptionsModel(), &OptionsModel::addresstypeChanged, [this](const OutputType type) {
             const int index = ui->addressType->findData((int) type);

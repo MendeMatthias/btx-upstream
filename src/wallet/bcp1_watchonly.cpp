@@ -7,6 +7,7 @@
 #include <wallet/bcp1_watchonly.h>
 
 #include <addresstype.h>
+#include <chainparams.h>
 #include <common/args.h>
 #include <key.h>
 #include <key_io.h>
@@ -14,6 +15,7 @@
 #include <pqkey.h>
 #include <script/descriptor.h>
 #include <script/interpreter.h>
+#include <script/script.h>
 #include <script/signingprovider.h>
 #include <tinyformat.h>
 #include <univalue.h>
@@ -22,11 +24,14 @@
 #include <util/translation.h>
 #include <wallet/bcp1_package.h>
 #include <wallet/scriptpubkeyman.h>
+#include <wallet/signer_provider.h>
 #include <wallet/wallet.h>
 #include <wallet/walletutil.h>
 
+#include <algorithm>
 #include <limits>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace wallet {
@@ -341,6 +346,45 @@ bool ItemToDescriptorAndLabel(const UniValue& item, size_t index, std::string& d
     return false;
 }
 
+bool ScriptIsP2MR(const CScript& script)
+{
+    int witness_version{-1};
+    std::vector<unsigned char> witness_program;
+    return script.IsWitnessProgram(witness_version, witness_program) &&
+           witness_version == 2 && witness_program.size() == WITNESS_V2_P2MR_SIZE;
+}
+
+bool IsDecimalIndex(const std::string& s)
+{
+    return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char c) { return c >= '0' && c <= '9'; });
+}
+
+/** Structured pool labels only: "bcp1-deposit", "deposit/<i>", "change/<i>", "<account>/deposit/<i>". */
+bool LabelLooksLikePool(const std::string& label)
+{
+    if (label == "bcp1-deposit") return true;
+    const auto slash = label.rfind('/');
+    if (slash == std::string::npos || slash + 1 >= label.size()) return false;
+    if (!IsDecimalIndex(label.substr(slash + 1))) return false;
+    const auto prev = (slash == 0) ? std::string::npos : label.rfind('/', slash - 1);
+    const std::string mid = (prev == std::string::npos) ? label.substr(0, slash) : label.substr(prev + 1, slash - prev - 1);
+    if (mid != "deposit" && mid != "change") return false;
+    if (prev == std::string::npos) return true;
+    return IsDecimalIndex(label.substr(0, prev));
+}
+
+bool IsFailClosedStubBackend(const std::string& backend)
+{
+    return backend == "pkcs11" || backend == "kmip" || backend == "https";
+}
+
+void StampStubNotLive(UniValue& o)
+{
+    o.pushKV("pkcs11_live", false);
+    o.pushKV("kmip_live", false);
+    o.pushKV("https_live", false);
+}
+
 } // namespace
 
 bool ExchangeWatchOnlyNodeEnabled(const ArgsManager& args)
@@ -485,6 +529,85 @@ bool ImportDepositPool(CWallet& wallet, const UniValue& addresses_or_pubkeys, bi
                        "Import pubkey + pubkey_slh (or a public mr(...) descriptor) for withdrawals.");
     }
     return true;
+}
+
+UniValue CommandSignerHealthReport(const ArgsManager& args)
+{
+    UniValue o(UniValue::VOBJ);
+    StampStubNotLive(o);
+    const std::string cmd = args.GetArg("-signer", "");
+    if (cmd.empty()) {
+        o.pushKV("available", false);
+        o.pushKV("ok", false);
+        o.pushKV("backend", "none");
+        return o;
+    }
+    std::string error;
+    auto signer = MakeCommandSigner(cmd, Params().GetChainTypeString(), std::nullopt, error);
+    if (!signer) {
+        o.pushKV("available", false);
+        o.pushKV("ok", false);
+        o.pushKV("error", error.empty() ? "signer unavailable" : error);
+        o.pushKV("backend", "command");
+        return o;
+    }
+    const std::string backend = signer->Backend();
+    UniValue health = signer->Health();
+    if (!health.isObject()) health = UniValue(UniValue::VOBJ);
+    if (IsFailClosedStubBackend(backend)) {
+        health.pushKV("ok", false);
+        health.pushKV("available", false);
+        health.pushKV("backend", backend);
+        if (!health.exists("error")) {
+            health.pushKV("error", backend == "pkcs11" ? SignerProvider::ERR_PKCS11_UNAVAILABLE :
+                                   backend == "kmip" ? SignerProvider::ERR_KMIP_UNAVAILABLE :
+                                   SignerProvider::ERR_HTTPS_UNAVAILABLE);
+        }
+        StampStubNotLive(health);
+        return health;
+    }
+    const bool ok = health.exists("ok") && health["ok"].isBool() && health["ok"].get_bool();
+    const bool command_ok = backend == "command" && ok;
+    health.pushKV("available", command_ok);
+    health.pushKV("ok", command_ok);
+    health.pushKV("backend", backend.empty() ? "command" : backend);
+    StampStubNotLive(health);
+    return health;
+}
+
+bool WalletHasDepositMaterial(const CWallet& wallet)
+{
+    if (!wallet.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) return false;
+    if (WalletContainsPQSeeds(wallet)) return false;
+    LOCK(wallet.cs_wallet);
+    // Address-book hits require a structured pool label AND a P2MR dest.
+    // A bare setlabel on a P2MR receive address must not flip deposits_ok.
+    for (const auto& [dest, entry] : wallet.m_address_book) {
+        if (!std::holds_alternative<WitnessV2P2MR>(dest)) continue;
+        if (LabelLooksLikePool(entry.GetLabel())) return true;
+    }
+    for (ScriptPubKeyMan* man : wallet.GetAllScriptPubKeyMans()) {
+        if (!man) continue;
+        for (const CScript& script : man->GetScriptPubKeys()) {
+            if (ScriptIsP2MR(script)) return true;
+        }
+    }
+    return false;
+}
+
+Bcp1Readiness EvaluateBcp1Readiness(const CWallet& wallet, const ArgsManager& args)
+{
+    Bcp1Readiness r;
+    r.descriptors_ok = wallet.IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS);
+    r.watchonly_ok = wallet.IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS) && !WalletContainsPQSeeds(wallet);
+    r.synced_ok = !wallet.chain().isInitialBlockDownload();
+    r.deposits_ok = WalletHasDepositMaterial(wallet);
+    r.signer_health = CommandSignerHealthReport(args);
+    r.signer_ok = r.signer_health.exists("available") && r.signer_health["available"].isTrue();
+    r.pkcs11_live = false;
+    r.kmip_live = false;
+    r.https_live = false;
+    return r;
 }
 
 } // namespace wallet

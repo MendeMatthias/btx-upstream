@@ -304,6 +304,40 @@ static constexpr double GETMMATTEST_LIVE_REQUEST_BURST{16.0};
 static constexpr double GETMMATTEST_HISTORICAL_REQUEST_BURST{4.0};
 static constexpr auto GETMMATTEST_LIVE_TOKEN_REFILL{std::chrono::seconds{1}};
 static constexpr auto GETMMATTEST_HISTORICAL_TOKEN_REFILL{std::chrono::seconds{4}};
+/** In-flight GETMMATTEST occupancy for tip chatter / competing hashes.
+ *  Peer-success hints in net_processing keep using this 60s window. */
+static constexpr auto GETMMATTEST_REQUEST_TTL{std::chrono::seconds{60}};
+/** Consensus catch-up occupancy when the body is already local and the
+ *  first ask produced no quorum. Measured #154: retry at 60s unblocks
+ *  in a few seconds, so the TTL — not GPU — was the 1-block/min floor.
+ *  Matches MATMUL_ATTESTATION_MISS_BACKOFF_BASE. */
+static constexpr auto GETMMATTEST_CATCHUP_REQUEST_TTL{std::chrono::seconds{5}};
+/** How far headers must lead the active tip before the catch-up TTL
+ *  applies. Same numeric floor as signed-frontier stall_headers_ahead;
+ *  this is NOT signed-frontier catch-up (that flag stays mirror-only). */
+static constexpr int GETMMATTEST_CATCHUP_TTL_HEADERS_AHEAD{2};
+
+/**
+ * Occupancy TTL for one GETMMATTEST hash. Do not use this to flip
+ * IsSignedFrontierCatchUp: that predicate is trusted-mirror-only, and
+ * PreferGetMmAttestPeer(catch_up=1) skips consensus_node peers that
+ * lack ARCHIVE / recent MMATTEST / gpu_attestor — the #154 node (two
+ * consensus peers, catch_up=0) would then ask nobody.
+ *
+ * Peer-success / authority-hint expiry stays at GETMMATTEST_REQUEST_TTL.
+ */
+[[nodiscard]] inline std::chrono::seconds GetMmAttestRequestTtl(
+    bool consensus_mode,
+    bool trusted_mirror,
+    int headers_ahead,
+    bool body_local)
+{
+    if (consensus_mode && !trusted_mirror && body_local &&
+        headers_ahead >= GETMMATTEST_CATCHUP_TTL_HEADERS_AHEAD) {
+        return GETMMATTEST_CATCHUP_REQUEST_TTL;
+    }
+    return GETMMATTEST_REQUEST_TTL;
+}
 
 /** Archives serve historical GETMMATTEST. A local signer does not:
  *  only the live tip window. Height above tip (catch-up suffix) is

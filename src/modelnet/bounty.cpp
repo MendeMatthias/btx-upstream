@@ -114,6 +114,41 @@ std::string StrArg(const UniValue& params, size_t i, const std::string& key = {}
     return {};
 }
 
+bool CanonicalAtomsField(const UniValue& v, int64_t& n, std::string& err)
+{
+    if (v.isStr()) return CanonicalAtoms(v.get_str(), n, err);
+    if (v.isNum()) return CanonicalAtoms(std::to_string(v.getInt<int64_t>()), n, err);
+    err = "amount_atoms";
+    n = 0;
+    return false;
+}
+
+/** floor(atoms * 10000 / total) without overflowing int64 inside MoneyRange. */
+int64_t AtomsToBps(int64_t atoms, int64_t total)
+{
+    if (total <= 0 || atoms <= 0) return 0;
+    if (atoms >= total) return 10000;
+    const unsigned __int128 num =
+        static_cast<unsigned __int128>(static_cast<uint64_t>(atoms)) * 10000u;
+    const int64_t bps =
+        static_cast<int64_t>(num / static_cast<unsigned __int128>(static_cast<uint64_t>(total)));
+    return bps > 10000 ? 10000 : bps;
+}
+
+bool AddMoneyAtoms(int64_t& total, int64_t amount, std::string& err)
+{
+    if (amount < 0 || amount > MAX_MONEY_ATOMS) {
+        err = "MoneyRange";
+        return false;
+    }
+    if (total > MAX_MONEY_ATOMS - amount) {
+        err = "total MoneyRange";
+        return false;
+    }
+    total += amount;
+    return true;
+}
+
 std::string IdemKey(const UniValue& params)
 {
     const UniValue& a = ArgN(params, 0);
@@ -461,10 +496,9 @@ UniValue FundingView(const std::string& target, const std::string& pledged, cons
     UniValue o(UniValue::VOBJ);
     o.pushKV("target_atoms", target);
     o.pushKV("pledged_atoms", pledged);
-    int64_t t = 0, p = 0;
+    int64_t t = 0;
     std::string err;
-    CanonicalAtoms(target, t, err);
-    CanonicalAtoms(pledged, p, err);
+    if (!CanonicalAtoms(target, t, err)) t = 0;
     if (confirmed.isNull()) {
         o.pushKV("confirmed_atoms", UniValue::VNULL);
         o.pushKV("remaining_atoms", UniValue::VNULL);
@@ -474,11 +508,17 @@ UniValue FundingView(const std::string& target, const std::string& pledged, cons
     }
     const std::string cs = confirmed.isStr() ? confirmed.get_str() : std::to_string(confirmed.getInt<int64_t>());
     int64_t c = 0;
-    CanonicalAtoms(cs, c, err);
+    if (!CanonicalAtoms(cs, c, err)) {
+        o.pushKV("confirmed_atoms", UniValue::VNULL);
+        o.pushKV("remaining_atoms", UniValue::VNULL);
+        o.pushKV("funding_progress_known", false);
+        o.pushKV("funded_bps", UniValue::VNULL);
+        return o;
+    }
     o.pushKV("confirmed_atoms", cs);
     o.pushKV("remaining_atoms", std::to_string(std::max<int64_t>(0, t - c)));
     o.pushKV("funding_progress_known", true);
-    o.pushKV("funded_bps", t > 0 ? std::min<int64_t>(10000, c * 10000 / t) : 0);
+    o.pushKV("funded_bps", AtomsToBps(c, t));
     return o;
 }
 
@@ -490,7 +530,11 @@ bool EligibleBps(const std::string& principal, const std::string& frozen_total, 
         err = "eligibility range";
         return false;
     }
-    return p * 10000 >= t * min_bps;
+    const unsigned __int128 lhs =
+        static_cast<unsigned __int128>(static_cast<uint64_t>(p)) * 10000u;
+    const unsigned __int128 rhs = static_cast<unsigned __int128>(static_cast<uint64_t>(t)) *
+                                  static_cast<unsigned __int128>(static_cast<uint32_t>(min_bps));
+    return lhs >= rhs;
 }
 
 bool AllocateFeeReserve(const std::vector<int64_t>& reserves, int64_t fee, std::vector<int64_t>& charges,
@@ -551,11 +595,7 @@ int64_t DedupePrincipal(const std::vector<std::pair<std::string, int64_t>>& lots
     }
     int64_t total = 0;
     for (const auto& kv : values) {
-        if (total > MAX_MONEY_ATOMS - kv.second) {
-            err = "total MoneyRange";
-            return -1;
-        }
-        total += kv.second;
+        if (!AddMoneyAtoms(total, kv.second, err)) return -1;
     }
     return total;
 }
@@ -752,7 +792,11 @@ int64_t BountyChainIndex::ConfirmedAtoms(const std::string& bounty_id) const
 {
     int64_t n = 0;
     for (const auto& kv : m_facts) {
-        if (kv.second.bounty_id == bounty_id && !kv.second.spent) n += kv.second.amount_atoms;
+        if (kv.second.bounty_id != bounty_id || kv.second.spent) continue;
+        const int64_t a = kv.second.amount_atoms;
+        if (a < 0 || a > MAX_MONEY_ATOMS) continue;
+        std::string err;
+        if (!AddMoneyAtoms(n, a, err)) return MAX_MONEY_ATOMS;
     }
     return n;
 }
@@ -817,6 +861,8 @@ bool BountyChainIndex::ImportManifest(const UniValue& manifest, std::string& err
         err = "manifest object only, not a host path";
         return false;
     }
+    std::vector<BountyChainFact> facts;
+    std::vector<std::pair<std::string, int64_t>> lots;
     for (const auto& lot : manifest["lots"].getValues()) {
         if (!lot.isObject() || !lot.exists("outpoint")) continue;
         BountyChainFact f;
@@ -824,11 +870,13 @@ bool BountyChainIndex::ImportManifest(const UniValue& manifest, std::string& err
         f.lot_id = lot.exists("lot_id") ? lot["lot_id"].get_str() : "";
         f.bounty_id = manifest.exists("bounty_id") ? manifest["bounty_id"].get_str() : "";
         if (lot.exists("amount_atoms")) {
-            if (lot["amount_atoms"].isStr()) CanonicalAtoms(lot["amount_atoms"].get_str(), f.amount_atoms, err);
-            else f.amount_atoms = lot["amount_atoms"].getInt<int64_t>();
+            if (!CanonicalAtomsField(lot["amount_atoms"], f.amount_atoms, err)) return false;
         }
-        Observe(f);
+        facts.push_back(f);
+        lots.emplace_back(f.outpoint, f.amount_atoms);
     }
+    if (DedupePrincipal(lots, err) < 0) return false;
+    for (const auto& f : facts) Observe(f);
     return true;
 }
 
@@ -972,7 +1020,9 @@ UniValue BountyStore::BountyEntryLocked(const std::string& bounty_id) const
         const UniValue& p = kv.second.body["payload"];
         if (p.exists("bounty_id") && p["bounty_id"].get_str() == bounty_id && p.exists("principal_atoms")) {
             int64_t n = 0;
-            if (CanonicalAtoms(p["principal_atoms"].get_str(), n, err)) psum += n;
+            if (CanonicalAtoms(p["principal_atoms"].get_str(), n, err)) {
+                if (!AddMoneyAtoms(psum, n, err)) psum = MAX_MONEY_ATOMS;
+            }
         }
     }
     pledged = std::to_string(psum);
@@ -1888,12 +1938,23 @@ bool BountyStore::Dispatch(const std::string& method, const UniValue& params, Un
         f.bounty_id = a.exists("bounty_id") ? a["bounty_id"].get_str() : "";
         f.lot_id = a.exists("lot_id") ? a["lot_id"].get_str() : "";
         if (a.exists("amount_atoms")) {
-            if (a["amount_atoms"].isStr()) CanonicalAtoms(a["amount_atoms"].get_str(), f.amount_atoms, err);
-            else f.amount_atoms = a["amount_atoms"].getInt<int64_t>();
+            if (!CanonicalAtomsField(a["amount_atoms"], f.amount_atoms, err))
+                return fail("INVALID_PARAMETER", err.empty() ? "amount_atoms" : err);
         }
         if (a.exists("confirmations")) f.confirmations = a["confirmations"].getInt<int>();
         if (a.exists("height")) f.height = static_cast<uint32_t>(a["height"].getInt<int64_t>());
         if (a.exists("spent")) f.spent = a["spent"].get_bool();
+        if (!f.spent) {
+            int64_t confirmed = m_chain.ConfirmedAtoms(f.bounty_id);
+            if (const BountyChainFact* prev = m_chain.Get(f.outpoint)) {
+                if (prev->bounty_id == f.bounty_id && !prev->spent && prev->amount_atoms >= 0 &&
+                    prev->amount_atoms <= confirmed) {
+                    confirmed -= prev->amount_atoms;
+                }
+            }
+            if (!AddMoneyAtoms(confirmed, f.amount_atoms, err))
+                return fail("INVALID_PARAMETER", err.empty() ? "total MoneyRange" : err);
+        }
         m_chain.Observe(f);
         result = m_chain.Snapshot(f.bounty_id);
         return ok();

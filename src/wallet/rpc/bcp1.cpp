@@ -217,28 +217,24 @@ bool ZmqEnabled()
 #endif
 }
 
-UniValue SignerHealthOrNull()
+UniValue ReadinessCapabilities(const Bcp1Readiness& r)
 {
-    const std::string cmd = gArgs.GetArg("-signer", "");
-    if (cmd.empty()) {
-        UniValue o(UniValue::VOBJ);
-        o.pushKV("available", false);
-        return o;
-    }
-    std::string error;
-    auto signer = MakeCommandSigner(cmd, Params().GetChainTypeString(), std::nullopt, error);
-    if (!signer) {
-        UniValue o(UniValue::VOBJ);
-        o.pushKV("available", false);
-        o.pushKV("error", error);
-        return o;
-    }
-    UniValue health = signer->Health();
-    if (!health.isObject()) health = UniValue(UniValue::VOBJ);
-    const bool ok = !health.exists("ok") || (health["ok"].isBool() && health["ok"].get_bool());
-    health.pushKV("available", ok);
-    health.pushKV("backend", signer->Backend());
-    return health;
+    UniValue caps(UniValue::VOBJ);
+    caps.pushKV("descriptors_ok", r.descriptors_ok);
+    caps.pushKV("watchonly_ok", r.watchonly_ok);
+    caps.pushKV("synced_ok", r.synced_ok);
+    caps.pushKV("deposits_ok", r.deposits_ok);
+    caps.pushKV("signer_ok", r.signer_ok);
+    caps.pushKV("pkcs11_live", r.pkcs11_live);
+    caps.pushKV("kmip_live", r.kmip_live);
+    caps.pushKV("https_live", r.https_live);
+    // Aliases for callers that still use the pre-split names.
+    caps.pushKV("descriptors", r.descriptors_ok);
+    caps.pushKV("disable_private_keys", r.watchonly_ok);
+    caps.pushKV("synced", r.synced_ok);
+    caps.pushKV("deposit_pool", r.deposits_ok);
+    caps.pushKV("signer_available", r.signer_ok);
+    return caps;
 }
 
 std::string PoolLabel(uint32_t account, uint32_t branch, uint32_t index)
@@ -256,18 +252,6 @@ bool LabelMatchesPool(const std::string& label, uint32_t account, uint32_t branc
         if (label == legacy) return true;
     }
     if (account == 0 && branch == bcp1::BRANCH_DEPOSIT && index == 0 && label == "bcp1-deposit") return true;
-    return false;
-}
-
-bool WalletHasDepositMaterial(const CWallet& wallet)
-{
-    LOCK(wallet.cs_wallet);
-    for (const auto& [dest, entry] : wallet.m_address_book) {
-        (void)dest;
-        const std::string label = entry.GetLabel();
-        if (label == "bcp1-deposit") return true;
-        if (label.find("deposit/") != std::string::npos || label.find("change/") != std::string::npos) return true;
-    }
     return false;
 }
 
@@ -667,7 +651,26 @@ RPCHelpMan getexchangereadiness()
             {RPCResult::Type::STR, "network", "Chain type string"},
             {RPCResult::Type::BOOL, "watch_only", "disable_private_keys and/or -exchange-watchonly"},
             {RPCResult::Type::BOOL, "public_child_derivation", "Always false for ML-DSA-44"},
-            {RPCResult::Type::BOOL, "ready", "True only when descriptors, disable_private_keys, not IBD, and a deposit pool or healthy signer exist"},
+            {RPCResult::Type::BOOL, "descriptors_ok", "WALLET_FLAG_DESCRIPTORS"},
+            {RPCResult::Type::BOOL, "watchonly_ok", "disable_private_keys and no embedded PQ seeds"},
+            {RPCResult::Type::BOOL, "synced_ok", "Node is not in initial block download"},
+            {RPCResult::Type::BOOL, "deposits_ok", "Imported P2MR deposit-pool material is present"},
+            {RPCResult::Type::BOOL, "signer_ok", "Healthy command -signer (never PKCS#11/KMIP/HTTPS)"},
+            {RPCResult::Type::BOOL, "pkcs11_live", "Always false: PKCS#11 adapter is an unlinked stub"},
+            {RPCResult::Type::BOOL, "kmip_live", "Always false: KMIP adapter is an unlinked stub"},
+            {RPCResult::Type::BOOL, "https_live", "Always false: HTTPS adapter is an unlinked stub"},
+            {RPCResult::Type::BOOL, "ready", "descriptors_ok && watchonly_ok && synced_ok && (deposits_ok || signer_ok) && !pkcs11_live && !kmip_live && !https_live"},
+            {RPCResult::Type::OBJ, "ready_capabilities", "Split readiness bits", {
+                {RPCResult::Type::BOOL, "descriptors_ok", "WALLET_FLAG_DESCRIPTORS"},
+                {RPCResult::Type::BOOL, "watchonly_ok", "disable_private_keys and no PQ seeds"},
+                {RPCResult::Type::BOOL, "synced_ok", "Not IBD"},
+                {RPCResult::Type::BOOL, "deposits_ok", "Deposit pool material"},
+                {RPCResult::Type::BOOL, "signer_ok", "Healthy command -signer"},
+                {RPCResult::Type::BOOL, "pkcs11_live", "Always false"},
+                {RPCResult::Type::BOOL, "kmip_live", "Always false"},
+                {RPCResult::Type::BOOL, "https_live", "Always false"},
+                {RPCResult::Type::ELISION, "", "aliases and extra bits"},
+            }},
             {RPCResult::Type::ELISION, "", "additional BCP/1 readiness fields"},
         }},
         RPCExamples{HelpExampleCli("getexchangereadiness", "") + HelpExampleRpc("getexchangereadiness", "")},
@@ -707,27 +710,26 @@ RPCHelpMan getexchangereadiness()
             o.pushKV("hcp_required", false);
             o.pushKV("gpu_required", false);
             o.pushKV("automatic_spend_atoms", 0);
-            o.pushKV("can_sign_in_process", !IsBcp1WatchOnly(*pwallet));
-            const UniValue signer = SignerHealthOrNull();
-            const bool signer_available = signer.isObject() && signer.exists("available") && signer["available"].isTrue();
-            const bool has_pool = WalletHasDepositMaterial(*pwallet);
-            const bool descriptors = pwallet->IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS);
-            const bool disable_private_keys = pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS);
-            const bool synced = !pwallet->chain().isInitialBlockDownload();
-            UniValue caps(UniValue::VOBJ);
-            caps.pushKV("descriptors", descriptors);
-            caps.pushKV("disable_private_keys", disable_private_keys);
-            caps.pushKV("synced", synced);
-            caps.pushKV("deposit_pool", has_pool);
-            caps.pushKV("signer_available", signer_available);
+            // In-process signing is a wallet-flag fact, not a BCP/1 profile fact.
+            // A disable_private_keys wallet (with or without -exchange-watchonly)
+            // has no in-process keys; do not report true merely because the
+            // node never opted into BCP/1.
+            o.pushKV("can_sign_in_process", !pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS));
+            const Bcp1Readiness readiness = EvaluateBcp1Readiness(*pwallet, gArgs);
+            o.pushKV("descriptors_ok", readiness.descriptors_ok);
+            o.pushKV("watchonly_ok", readiness.watchonly_ok);
+            o.pushKV("synced_ok", readiness.synced_ok);
+            o.pushKV("deposits_ok", readiness.deposits_ok);
+            o.pushKV("signer_ok", readiness.signer_ok);
+            o.pushKV("pkcs11_live", readiness.pkcs11_live);
+            o.pushKV("kmip_live", readiness.kmip_live);
+            o.pushKV("https_live", readiness.https_live);
+            UniValue caps = ReadinessCapabilities(readiness);
             caps.pushKV("external_signer", pwallet->IsWalletFlagSet(WALLET_FLAG_EXTERNAL_SIGNER));
-            o.pushKV("ready_capabilities", caps);
-            // Empty descriptor wallets are not exchange-ready: they cannot
-            // construct or observe deposits until a pool or signer exists.
-            const bool ready = descriptors && disable_private_keys && synced && (has_pool || signer_available);
-            o.pushKV("ready", ready);
+            o.pushKV("ready_capabilities", std::move(caps));
+            o.pushKV("ready", readiness.Ready());
             o.pushKV("signer_configured", !gArgs.GetArg("-signer", "").empty());
-            o.pushKV("signer", signer);
+            o.pushKV("signer", readiness.signer_health);
             return o;
         },
     };

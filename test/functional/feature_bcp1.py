@@ -612,6 +612,17 @@ class BCP1Test(BitcoinTestFramework):
         dumped = self._dump(ready)
         if "btx_exchange_profile_v1" not in dumped and PROFILE.lower() not in dumped:
             raise AssertionError(f"getexchangereadiness profile: {ready}")
+        caps = ready.get("ready_capabilities") or ready.get("capabilities") or {}
+        if caps.get("pkcs11_live") or caps.get("kmip_live") or caps.get("https_live"):
+            raise AssertionError(f"getexchangereadiness must not claim PKCS#11/KMIP/HTTPS live: {ready}")
+        if ready.get("pkcs11_live") or ready.get("kmip_live") or ready.get("https_live"):
+            raise AssertionError(f"getexchangereadiness top-level stub live flags: {ready}")
+        deposits = bool(caps.get("deposits_ok", caps.get("deposit_pool")))
+        signer_ok = bool(caps.get("signer_ok", caps.get("signer_available")))
+        if ready.get("ready") is True and not (deposits or signer_ok):
+            raise AssertionError(
+                f"empty descriptor wallet must not be ready from descriptors+IBD alone: {ready}"
+            )
 
         # Watch-only deposit pool from pubkeys the software signer owns.
         pool = self._import_signer_deposit_pool(wallet, exchange_node)
@@ -636,6 +647,11 @@ class BCP1Test(BitcoinTestFramework):
         self._no_secrets(ready_after, "getexchangereadiness after pool import")
         if ready_after.get("ready") is not True:
             raise AssertionError(f"watch-only coordinator with a deposit pool must be ready: {ready_after}")
+        after_caps = ready_after.get("ready_capabilities") or ready_after.get("capabilities") or {}
+        if after_caps.get("pkcs11_live") or after_caps.get("kmip_live") or after_caps.get("https_live"):
+            raise AssertionError(f"pool-ready must still not claim PKCS#11/KMIP/HTTPS live: {ready_after}")
+        if after_caps.get("deposits_ok") is not True and after_caps.get("deposit_pool") is not True:
+            raise AssertionError(f"deposit pool must set deposits_ok: {ready_after}")
         self._pass("address generation")
         self._note_importdepositpool_doc_defect(miner_node)
 

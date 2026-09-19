@@ -241,7 +241,7 @@
          <item>
           <widget class="QValueComboBox" name="addressType">
            <property name="toolTip">
-            <string>Choose the default address type to select when receiving coins.</string>
+            <string>P2MR is the only address type BTX issues. Legacy, bech32, and taproot types are not offered.</string>
            </property>
           </widget>
          </item>
@@ -954,8 +954,8 @@
          <item>
           <widget class="QLabel" name="qrFont_preview">
            <property name="text">
-            <string notr="true">1NS17iag9jJgT…
-bc1p2q3rvn3gp…</string>
+            <string notr="true">btx1z35yvjel7sr…
+btx1z2q3rvn3gp…</string>
            </property>
           </widget>
          </item>

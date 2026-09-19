@@ -545,7 +545,11 @@ bool WatchMatchesEvent(const ModelWatch& watch, const ModelEvent& ev)
     case WatchKind::MODEL: {
         const std::string want = watch.model_id;
         if (want.empty()) return false;
-        return ev.model_id == want || ev.object_id == want;
+        if (ev.model_id != want && ev.object_id != want) return false;
+        // Same admission as PUBLISHER / COLLECTION / QUERY. Unsigned remote
+        // search records are LOCAL_OBSERVED and must not match a MODEL watch
+        // (that would queue FREE_ONLY getmodel of an attacker-nominated id).
+        return VerifiedEnough(ev);
     }
     case WatchKind::QUERY:
         if (!VerifiedEnough(ev)) return false;

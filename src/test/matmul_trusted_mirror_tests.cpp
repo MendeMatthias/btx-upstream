@@ -1501,6 +1501,36 @@ BOOST_AUTO_TEST_CASE(above_frontier_and_parked_branch_do_not_admit)
         /*trusted_mirror=*/true, /*configured=*/true,
         /*blocks_behind=*/0, /*followed_ahead=*/36,
         /*stall_headers_ahead=*/2, /*frontier_available=*/true));
+    using node::matmul_trusted::GetMmAttestRequestTtl;
+    using node::matmul_trusted::GETMMATTEST_CATCHUP_REQUEST_TTL;
+    using node::matmul_trusted::GETMMATTEST_REQUEST_TTL;
+    // #154: consensus catch-up with a local body uses the short occupancy
+    // TTL. signed_frontier_catch_up stays false for consensus (above).
+    BOOST_CHECK_EQUAL(
+        GetMmAttestRequestTtl(
+            /*consensus_mode=*/true, /*trusted_mirror=*/false,
+            /*headers_ahead=*/5113, /*body_local=*/true)
+            .count(),
+        GETMMATTEST_CATCHUP_REQUEST_TTL.count());
+    BOOST_CHECK_EQUAL(
+        GetMmAttestRequestTtl(true, false, /*headers_ahead=*/1,
+                              /*body_local=*/true)
+            .count(),
+        GETMMATTEST_REQUEST_TTL.count());
+    BOOST_CHECK_EQUAL(
+        GetMmAttestRequestTtl(true, false, /*headers_ahead=*/40,
+                              /*body_local=*/false)
+            .count(),
+        GETMMATTEST_REQUEST_TTL.count());
+    BOOST_CHECK_EQUAL(
+        GetMmAttestRequestTtl(/*consensus_mode=*/false,
+                              /*trusted_mirror=*/true,
+                              /*headers_ahead=*/40, /*body_local=*/true)
+            .count(),
+        GETMMATTEST_REQUEST_TTL.count());
+    BOOST_CHECK_EQUAL(
+        GetMmAttestRequestTtl(true, false, 0, true).count(),
+        GETMMATTEST_REQUEST_TTL.count());
     using node::matmul_trusted::CappedFollowedCatchUpAhead;
     // Live signer 2026-08-16: 13 unattested HEADER_ONLY children of the
     // attested tip must not look like a 13-block catch-up hole.

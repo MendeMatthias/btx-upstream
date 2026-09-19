@@ -68,6 +68,18 @@ JSON_MODE = False
 CLI_SCHEMA_VERSION = 2
 DEV348_NOTE = "0.34.8-dev; fails closed if helper lacks method"
 
+# First-run URI examples. btx:// is a model resource; BIP21 payment is btx:<P2MR>.
+# bitcoin: is not a BTX payment URI. Placeholders only — this CLI never spends.
+MODEL_URI_EXAMPLE = (
+    "btx://pqwy06q0q7wwzy70aeq45sxnlvq3mr067yt4jzphzvnfn2c4zc24zxz665zdprf0nwgskvqq9cq365u9n8l25"
+)
+PAYMENT_URI_EXAMPLE = "btx:<p2mr-address>"
+PAYMENT_ADDRESS_TYPE = "P2MR"
+FIRST_RUN_URI_NOTE = (
+    "model share is btx://… ; BIP21 payment is btx:<P2MR> on btx-cli; "
+    "bitcoin: is not a BTX payment URI; this CLI never spends and never infers"
+)
+
 CONNECT_TIMEOUT_S = 5.0
 DEFAULT_TIMEOUT_S = 60.0
 # Helper unix RPC wait is 24h; keep it for retrieve.
@@ -113,6 +125,22 @@ Socket (fail closed; never a live packaged helper):
 
   --json                         agent door: versioned JSON on stdout only
                                  (no stderr one_liner / next / copy_text)
+
+First-run examples (no inference, automatic_spend_atoms=0):
+  btx-model doctor
+  btx-model doctor --json            agent door: stdout JSON only
+  btx-model init
+  btx-model host ./model.safetensors
+  btx-model link NAME                btx:// share card, not a payment
+
+URI schemes (do not mix):
+  model resource   btx://<token>     share / get / open; never a payment destination
+  payment BIP21    btx:<p2mr>        wallet plane: btx-cli getnewaddress (P2MR)
+  never            bitcoin:<addr>    not a BTX payment URI
+
+Money stays on btx-cli (legacy alias: bitcoin-cli). This CLI never spends.
+  btx-cli getnewaddress              P2MR receive address
+  btx-cli sendtoaddress <p2mr> 0.1   explicit wallet send; never auto, never bitcoin:
 
 verbs:
   init                           checkmodelsetup (one_liner on stderr if present);
@@ -196,6 +224,7 @@ verbs:
 NAME is resolved locally in this order: btx:// token, model id, alias, local
 search name, local label. Unknown values stay null; nothing is invented.
 No inference. automatic_spend_atoms=0. Scratch helper only.
+Payment URIs are btx:<P2MR> on btx-cli; bitcoin: is not a BTX URI.
 Copy-paste recipes: contrib/modelnet/recipes/*.json
 Filesystem -modelwatch is not a publisher/collection watch (see doc/modelnet/watches.md).
 """
@@ -738,6 +767,30 @@ def _share_preview(sock: str, source: str, where: str) -> dict[str, Any]:
     return result
 
 
+def _first_run_examples() -> dict[str, Any]:
+    """User-visible first-run URI examples. Documentation only; never a spend."""
+    return {
+        "model_uri_example": MODEL_URI_EXAMPLE,
+        "payment_uri_example": PAYMENT_URI_EXAMPLE,
+        "payment_uri_scheme": "btx:",
+        "payment_address_type": PAYMENT_ADDRESS_TYPE,
+        "wallet_cli": "btx-cli",
+        "bitcoin_payment_uri": False,
+        "inference": False,
+        "automatic_spend_atoms": 0,
+        "note": FIRST_RUN_URI_NOTE,
+    }
+
+
+def _attach_first_run(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+    result.setdefault("automatic_spend_atoms", 0)
+    result.setdefault("inference", False)
+    result.setdefault("first_run", _first_run_examples())
+    return result
+
+
 def _print(result: Any, where: str = "") -> None:
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False, sort_keys=False)
     sys.stdout.write("\n")
@@ -773,8 +826,9 @@ def cmd_init(sock: str, args: list[str]) -> None:
             created = True
         doctor = rpc(sock, "checkmodelsetup", [])
     if isinstance(doctor, dict):
+        doctor = _attach_first_run(doctor)
         one = doctor.get("one_liner")
-        if isinstance(one, str) and one.strip():
+        if not JSON_MODE and isinstance(one, str) and one.strip():
             print(one, file=sys.stderr)
     actions = list(doctor.get("next_actions") or []) if isinstance(doctor, dict) else []
     initialized = bool(isinstance(doctor, dict) and doctor.get("identity_ready"))
@@ -787,9 +841,11 @@ def cmd_init(sock: str, args: list[str]) -> None:
             "identity_created": created,
             "socket": sock,
             "doctor": doctor,
+            "first_run": _first_run_examples(),
             "next_actions": actions,
             "automatic_spend_atoms": 0,
-            "note": "local ML-DSA research publisher only; not a wallet key",
+            "inference": False,
+            "note": "local ML-DSA research publisher only; not a wallet key. " + FIRST_RUN_URI_NOTE,
         },
         "init",
     )
@@ -798,7 +854,7 @@ def cmd_init(sock: str, args: list[str]) -> None:
 def cmd_doctor(sock: str, args: list[str]) -> None:
     if args:
         _die("doctor takes no arguments", 2)
-    _print(rpc(sock, "checkmodelsetup", []), "checkmodelsetup")
+    _print(_attach_first_run(rpc(sock, "checkmodelsetup", [])), "checkmodelsetup")
 
 
 def cmd_host(sock: str, args: list[str]) -> None:
@@ -817,11 +873,12 @@ def cmd_host(sock: str, args: list[str]) -> None:
         if small_enough:
             token = _first_btx_token(_read_share_file(path, "host"))
     if token:
-        print(
-            "btx-model: share card, not model weights; previewing the card "
-            "(no hash, no import, no seed)",
-            file=sys.stderr,
-        )
+        if not JSON_MODE:
+            print(
+                "btx-model: share card, not model weights; previewing the card "
+                "(no hash, no import, no seed)",
+                file=sys.stderr,
+            )
         _print(_share_preview(sock, path if os.path.isfile(_resolve_path(path)) else token, "host"), "openmodelshare")
         return
     _refuse_unsafe_path(path)
@@ -1566,7 +1623,7 @@ def cmd_bounty_draft(sock: str, args: list[str]) -> None:
             loaded = _loads_maybe(extra[0])
             params = [loaded] if isinstance(loaded, dict) else extra
         result = rpc(sock, "listbountydrafts", params)
-        if not _next_actions(result, "listbountydrafts"):
+        if not JSON_MODE and not _next_actions(result, "listbountydrafts"):
             print(f"next: {DRAFT_NEXT_HINT}", file=sys.stderr)
         _print(result, "listbountydrafts")
         return
@@ -1574,7 +1631,7 @@ def cmd_bounty_draft(sock: str, args: list[str]) -> None:
         if len(args) < 2:
             _die("bounty-draft --get requires a draft id", 2)
         result = rpc(sock, "getbountydraft", [args[1]])
-        if not _next_actions(result, "getbountydraft"):
+        if not JSON_MODE and not _next_actions(result, "getbountydraft"):
             print(f"next: {DRAFT_NEXT_HINT}", file=sys.stderr)
         _print(result, "getbountydraft")
         return
@@ -1591,7 +1648,7 @@ def cmd_bounty_draft(sock: str, args: list[str]) -> None:
             patch = loaded
         _refuse_spend_options(patch, where)
         result = rpc(sock, "updatebountydraft", [args[1], patch])
-        if not _next_actions(result, "updatebountydraft"):
+        if not JSON_MODE and not _next_actions(result, "updatebountydraft"):
             print(f"next: {DRAFT_NEXT_HINT}", file=sys.stderr)
         _print(result, "updatebountydraft")
         return
@@ -1626,7 +1683,7 @@ def cmd_bounty_draft(sock: str, args: list[str]) -> None:
         result = rpc(sock, "validatebountyterms", [terms])
         if isinstance(result, dict):
             result.update({k: v for k, v in extra.items() if k not in result})
-        if not _next_actions(result, "validatebountyterms"):
+        if not JSON_MODE and not _next_actions(result, "validatebountyterms"):
             print(f"next: {DRAFT_NEXT_HINT}", file=sys.stderr)
         _print(result, "validatebountyterms")
         return
@@ -1653,7 +1710,7 @@ def cmd_bounty_draft(sock: str, args: list[str]) -> None:
     result = rpc(sock, "createbountydraft", [terms])
     if isinstance(result, dict) and result.get("published") is True:
         _die("createbountydraft published a draft; incomplete drafts must stay local")
-    if not _next_actions(result, "createbountydraft"):
+    if not JSON_MODE and not _next_actions(result, "createbountydraft"):
         print(f"next: {DRAFT_NEXT_HINT}", file=sys.stderr)
     _print(result, "createbountydraft")
 

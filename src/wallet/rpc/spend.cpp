@@ -952,10 +952,9 @@ RPCHelpMan fundrawtransaction()
                                             {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The transaction id"},
                                             {"vout", RPCArg::Type::NUM, RPCArg::Optional::NO, "The output index"},
                                             {"weight", RPCArg::Type::NUM, RPCArg::Optional::NO, "The maximum weight for this input, "
-                                                "including the weight of the outpoint and sequence number. "
-                                                "Note that serialized signature sizes are not guaranteed to be consistent, "
-                                                "so the maximum DER signatures size of 73 bytes should be used when considering ECDSA signatures."
-                                                "Remember to convert serialized sizes to weight units when necessary."},
+                                                "including the outpoint and sequence number. "
+                                                "Use the P2MR witness size for the chosen leaf (ML-DSA-44 or SLH-DSA-SHAKE-128s). "
+                                                "On BTX weight equals serialized size (WITNESS_SCALE_FACTOR=1)."},
                                         },
                                     },
                                 },
@@ -1434,9 +1433,8 @@ RPCHelpMan send()
                             {"sequence", RPCArg::Type::NUM, RPCArg::DefaultHint{"depends on the value of the 'replaceable' and 'locktime' arguments"}, "The sequence number"},
                             {"weight", RPCArg::Type::NUM, RPCArg::DefaultHint{"Calculated from wallet and solving data"}, "The maximum weight for this input, "
                                         "including the weight of the outpoint and sequence number. "
-                                        "Note that signature sizes are not guaranteed to be consistent, "
-                                        "so the maximum DER signatures size of 73 bytes should be used when considering ECDSA signatures."
-                                        "Remember to convert serialized sizes to weight units when necessary."},
+                                        "Use the P2MR witness size for the chosen leaf (ML-DSA-44 or SLH-DSA-SHAKE-128s). "
+                                        "On BTX weight equals serialized size (WITNESS_SCALE_FACTOR=1)."},
                           }},
                         },
                     },
@@ -1936,9 +1934,8 @@ RPCHelpMan walletcreatefundedpsbt()
                                     {"sequence", RPCArg::Type::NUM, RPCArg::DefaultHint{"depends on the value of the 'locktime' and 'options.replaceable' arguments"}, "The sequence number"},
                                     {"weight", RPCArg::Type::NUM, RPCArg::DefaultHint{"Calculated from wallet and solving data"}, "The maximum weight for this input, "
                                         "including the weight of the outpoint and sequence number. "
-                                        "Note that signature sizes are not guaranteed to be consistent, "
-                                        "so the maximum DER signatures size of 73 bytes should be used when considering ECDSA signatures."
-                                        "Remember to convert serialized sizes to weight units when necessary."},
+                                        "Use the P2MR witness size for the chosen leaf (ML-DSA-44 or SLH-DSA-SHAKE-128s). "
+                                        "On BTX weight equals serialized size (WITNESS_SCALE_FACTOR=1)."},
                                 },
                             },
                         },

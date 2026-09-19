@@ -492,7 +492,7 @@
           <item>
            <widget class="QCheckBox" name="checkBoxCoinControlChange">
             <property name="toolTip">
-             <string>If this is activated, but the change address is empty or invalid, change will be sent to a newly generated address.</string>
+             <string>If this is activated, but the change address is empty or invalid, change will be sent to a newly generated P2MR address.</string>
             </property>
             <property name="text">
              <string>Custom change address</string>

@@ -188,7 +188,7 @@ BOOST_AUTO_TEST_CASE(watch_match_publisher_collection_model_query)
     ModelEvent unsigned_ev = ev;
     unsigned_ev.verification_state = "UNVERIFIED";
     BOOST_CHECK(!WatchMatchesEvent(pub, unsigned_ev));
-    BOOST_CHECK(WatchMatchesEvent(model, unsigned_ev));
+    BOOST_CHECK(!WatchMatchesEvent(model, unsigned_ev));
 
     ModelEvent coll_ev = MakeSigned("pub-a", "col-1", ModelEventType::COLLECTION_UPDATED);
     coll_ev.collection_id = "col-1";
@@ -198,6 +198,63 @@ BOOST_AUTO_TEST_CASE(watch_match_publisher_collection_model_query)
     ModelEvent llama = MakeSigned("pub-a", "mid-2");
     llama.match.family = "llama";
     BOOST_CHECK(!WatchMatchesEvent(q, llama));
+}
+
+BOOST_AUTO_TEST_CASE(watch_model_requires_verified_enough)
+{
+    using namespace modelnet;
+    const std::string mid = "mid-watch-1";
+    ModelWatch model;
+    model.kind = WatchKind::MODEL;
+    model.model_id = mid;
+    model.action = ActionPolicy::FREE_DOWNLOAD;
+
+    ModelEvent signed_ev = MakeSigned("pub-a", mid);
+    BOOST_CHECK(WatchMatchesEvent(model, signed_ev));
+
+    ModelEvent chain = signed_ev;
+    chain.verification_state = "CHAIN_OBSERVED";
+    BOOST_CHECK(WatchMatchesEvent(model, chain));
+
+    // Unsigned / local-observed remote records matching the watched id (or
+    // claiming a different object_id) must not fire the watch.
+    ModelEvent unverified = signed_ev;
+    unverified.verification_state = "UNVERIFIED";
+    unverified.object_id = "attacker-nominated";
+    BOOST_CHECK(!WatchMatchesEvent(model, unverified));
+
+    ModelEvent local = signed_ev;
+    local.verification_state = "LOCAL_OBSERVED";
+    local.object_id = "attacker-nominated";
+    BOOST_CHECK(!WatchMatchesEvent(model, local));
+
+    ModelSearchRecord rec;
+    rec.model_id.data[0] = 0xaa;
+    rec.signed_ok = false;
+    rec.object_kind = "MODEL";
+    rec.btx_uri = "btx://attacker-nominated";
+    ModelWatch rec_watch;
+    rec_watch.kind = WatchKind::MODEL;
+    rec_watch.model_id = rec.model_id.Hex();
+    rec_watch.action = ActionPolicy::FREE_DOWNLOAD;
+    BOOST_CHECK(!SearchRecordMatchesWatch(rec_watch, rec));
+    rec.signed_ok = true;
+    BOOST_CHECK(SearchRecordMatchesWatch(rec_watch, rec));
+
+    ModelWatchStore store(m_path_root / "watch-model-verified");
+    std::string err;
+    BOOST_REQUIRE(store.PutWatch(model, err));
+    store.NoteEvent(local);
+    BOOST_CHECK(store.PeekActions().empty());
+    store.NoteEvent(signed_ev);
+    const auto acts = store.DrainActions();
+    BOOST_REQUIRE_EQUAL(acts.size(), 1U);
+    BOOST_CHECK_EQUAL(ActionPolicyName(acts[0].action), std::string("FREE_DOWNLOAD"));
+    BOOST_CHECK(!acts[0].spends);
+    BOOST_CHECK_EQUAL(acts[0].object_id, mid);
+    const UniValue j = WatchActionToJson(acts[0]);
+    BOOST_CHECK_EQUAL(j["automatic_spend_atoms"].getInt<int>(), 0);
+    BOOST_CHECK_EQUAL(j["getmodel_mode"].get_str(), "FREE_ONLY");
 }
 
 BOOST_AUTO_TEST_CASE(watch_free_download_queues_not_spend)

@@ -11,8 +11,10 @@
 #include <util/readwritefile.h>
 
 #include <algorithm>
-#include <cstring>
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -67,6 +69,71 @@ bool CopyPiece(ModelStore& from, ModelStore& to, const Digest48& artifact, uint3
 }
 
 } // namespace
+
+bool IsFullFileStreamGet(const std::string& method, const std::string& path)
+{
+    if (method != "GET") return false;
+    if (path.find("/files/") == std::string::npos) return false;
+    if (path.find("/pieces/") != std::string::npos) return false;
+    return true;
+}
+
+bool FullFileStreamHttpBodyCap(bool have_content_length, uint64_t content_length, size_t& read_cap, std::string& err)
+{
+    read_cap = 0;
+    if (!have_content_length) {
+        err = "file stream missing Content-Length";
+        return false;
+    }
+    if (content_length > FULL_FILE_STREAM_MAX_BYTES) {
+        err = "file stream body too large";
+        return false;
+    }
+    read_cap = FULL_FILE_STREAM_HTTP_HEADER_SLACK + static_cast<size_t>(content_length);
+    return true;
+}
+
+bool FullFileStreamAcceptContentLength(const std::string& raw_http, uint64_t& content_length, std::string& err)
+{
+    content_length = 0;
+    const auto pos = raw_http.find("\r\n\r\n");
+    if (pos == std::string::npos) {
+        err = "truncated http";
+        return false;
+    }
+    auto cl = raw_http.find("Content-Length:");
+    if (cl == std::string::npos) cl = raw_http.find("content-length:");
+    if (cl == std::string::npos || cl >= pos) {
+        err = "file stream missing Content-Length";
+        return false;
+    }
+    const char* p = raw_http.c_str() + cl + 15;
+    const char* const hdr_end = raw_http.c_str() + pos;
+    if (p > hdr_end) {
+        err = "file stream missing Content-Length";
+        return false;
+    }
+    while (p < hdr_end && (*p == ' ' || *p == '\t')) ++p;
+    if (p >= hdr_end || *p < '0' || *p > '9') {
+        err = "file stream Content-Length";
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long v = std::strtoull(p, &end, 10);
+    if (errno == ERANGE || end == p || end > hdr_end) {
+        err = "file stream Content-Length";
+        return false;
+    }
+    while (end < hdr_end && (*end == ' ' || *end == '\t')) ++end;
+    if (end < hdr_end && *end != '\r' && *end != '\n') {
+        err = "file stream Content-Length";
+        return false;
+    }
+    content_length = static_cast<uint64_t>(v);
+    size_t read_cap = 0;
+    return FullFileStreamHttpBodyCap(true, content_length, read_cap, err);
+}
 
 UniValue FileStreamCapsJson(const FileStreamCaps& c)
 {

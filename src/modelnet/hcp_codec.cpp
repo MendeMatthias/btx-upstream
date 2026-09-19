@@ -358,6 +358,35 @@ bool HcpIsPublicReadPath(const std::string& method, const std::string& path)
     return path == "/profile" || path.rfind("/packages/", 0) == 0 || path.rfind("/economy/", 0) == 0;
 }
 
+bool HcpSha384DigestUsable(const std::string& hex)
+{
+    if (hex.size() != 96) return false;
+    bool filler = true;
+    const char first = hex[0];
+    for (char c : hex) {
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        if (c != first) filler = false;
+    }
+    return !filler;
+}
+
+void HcpApplyNegotiatedDigests(UniValue& body, const std::string& schema_digest, const std::string& operations_digest)
+{
+    if (HcpSha384DigestUsable(schema_digest) && HcpSha384DigestUsable(operations_digest) &&
+        schema_digest != operations_digest) {
+        body.pushKV("schema_digest", schema_digest);
+        body.pushKV("operations_digest", operations_digest);
+        body.pushKV("digests_available", true);
+        body.pushKV("negotiated", true);
+        return;
+    }
+    body.pushKV("schema_digest", UniValue());
+    body.pushKV("operations_digest", UniValue());
+    body.pushKV("digests_available", false);
+    body.pushKV("negotiated", false);
+    body.pushKV("negotiation_unavailable_reason", "schema_and_operations_digests_not_computed");
+}
+
 HcpConfig HcpWalletlessPreset()
 {
     HcpConfig c;

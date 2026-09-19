@@ -7,11 +7,14 @@
 // 1. walletprocesspsbt(sign=true) keeps refusing in-process private signing on
 //    a BCP/1 watch-only wallet, but must not apply that refusal to a
 //    WALLET_FLAG_EXTERNAL_SIGNER wallet, which has to reach FillPSBT so the
-//    -signer adapter can sign.
-// 2. dumpprivkey / signrawtransactionwithwallet keep refusing on both wallet
-//    shapes: they can only ever use wallet-resident private material.
+//    -signer adapter can sign. Leftover keys on disable_private_keys wallets
+//    without EXTERNAL_SIGNER must not FillPSBT(sign=true) even when BCP/1 is off.
+// 2. dumpprivkey / signrawtransactionwithwallet / signmessage keep refusing on
+//    both wallet shapes: they can only ever use wallet-resident private material.
 // 3. getexchangereadiness() must not advertise `ready` for an empty watch-only
-//    descriptor wallet, and must publish a `capabilities` object.
+//    descriptor wallet (descriptors + !IBD is not enough). ready is
+//    descriptors_ok && watchonly_ok && synced_ok && (deposits_ok || signer_ok)
+//    && !pkcs11_live && !kmip_live && !https_live. PKCS#11/KMIP/HTTPS stay false.
 // 4. deriveexchangeaddress() must reject an index that does not fit uint32 and
 //    must not resolve another account's pool entry.
 // 5. BCP/1 refusal is opt-in: -exchange-watchonly is required. A descriptor
@@ -61,6 +64,7 @@ namespace wallet {
 RPCHelpMan walletprocesspsbt();
 RPCHelpMan dumpprivkey();
 RPCHelpMan signrawtransactionwithwallet();
+RPCHelpMan signmessage();
 
 namespace {
 
@@ -279,6 +283,82 @@ BOOST_AUTO_TEST_CASE(walletprocesspsbt_delegates_for_external_signer)
     RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
 }
 
+BOOST_AUTO_TEST_CASE(walletprocesspsbt_leftover_keys_without_external_signer)
+{
+    // Leftover-key close is independent of -exchange-watchonly: a
+    // disable_private_keys wallet without EXTERNAL_SIGNER must not
+    // FillPSBT(sign=true). sign=false stays the updater path.
+    ScopedExchangeWatchOnlyArg exchange_watchonly{false};
+
+    auto wallet = MakeBcp1WatchOnlyWallet(*this, "bcp1-review-leftover", /*external_signer=*/false);
+    BOOST_CHECK(!CanDelegateExternalPsbtSign(*wallet));
+    BOOST_CHECK(wallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS));
+
+    bilingual_str refuse_err;
+    BOOST_CHECK(!RefusePrivateSign(*wallet, refuse_err));
+
+    WalletContext context;
+    context.args = &m_args;
+    context.chain = m_node.chain.get();
+    AddWallet(context, wallet);
+
+    {
+        UniValue params(UniValue::VARR);
+        params.push_back(UnsignedPsbtBase64());
+        UniValue options(UniValue::VOBJ);
+        options.pushKV("sign", true);
+        params.push_back(options);
+        JSONRPCRequest req = WalletRpc(context, params);
+
+        bool threw{false};
+        bool saw_bcp1_refusal{false};
+        bool saw_disabled{false};
+        try {
+            const UniValue result = walletprocesspsbt().HandleRequest(req);
+            BOOST_TEST_MESSAGE("walletprocesspsbt(sign=true) returned: " + result.write());
+        } catch (const UniValue& rpc_err) {
+            threw = true;
+            const std::string err = rpc_err.write();
+            saw_bcp1_refusal = err.find(BCP1_REFUSAL_MARKER) != std::string::npos;
+            saw_disabled = err.find("Error: Private keys are disabled for this wallet") != std::string::npos;
+        }
+        BOOST_CHECK_MESSAGE(threw, "walletprocesspsbt(sign=true) must not FillPSBT with leftover keys");
+        BOOST_CHECK_MESSAGE(!saw_bcp1_refusal, "leftover-key close must not use the BCP/1 message when the node did not opt in");
+        BOOST_CHECK_MESSAGE(saw_disabled, "leftover-key close must be the disable-private-keys error");
+    }
+
+    {
+        UniValue params(UniValue::VARR);
+        params.push_back(UnsignedPsbtBase64());
+        UniValue options(UniValue::VOBJ);
+        options.pushKV("sign", false);
+        params.push_back(options);
+        JSONRPCRequest req = WalletRpc(context, params);
+
+        bool threw{false};
+        bool saw_bcp1_refusal{false};
+        bool saw_disabled{false};
+        UniValue result;
+        try {
+            result = walletprocesspsbt().HandleRequest(req);
+        } catch (const UniValue& rpc_err) {
+            threw = true;
+            const std::string err = rpc_err.write();
+            saw_bcp1_refusal = err.find(BCP1_REFUSAL_MARKER) != std::string::npos;
+            saw_disabled = err.find("Error: Private keys are disabled for this wallet") != std::string::npos;
+        }
+        BOOST_CHECK_MESSAGE(!saw_bcp1_refusal, "walletprocesspsbt(sign=false) must remain available as the updater path");
+        BOOST_CHECK_MESSAGE(!saw_disabled, "walletprocesspsbt(sign=false) must not hit the leftover-key close");
+        if (!threw) {
+            BOOST_REQUIRE(result.isObject());
+            BOOST_REQUIRE(result.exists("complete"));
+            BOOST_CHECK(!result["complete"].get_bool());
+        }
+    }
+
+    RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
+}
+
 BOOST_AUTO_TEST_CASE(dumpprivkey_and_wallet_sign_still_refuse)
 {
     ScopedExchangeWatchOnlyArg exchange_watchonly{true};
@@ -333,6 +413,25 @@ BOOST_AUTO_TEST_CASE(dumpprivkey_and_wallet_sign_still_refuse)
             }
         }
 
+        {
+            UniValue params(UniValue::VARR);
+            params.push_back(deposit.address);
+            params.push_back("bcp1 watch-only must not sign messages in-process");
+            JSONRPCRequest req = WalletRpc(context, params);
+            bool threw{false};
+            bool saw_bcp1_refusal{false};
+            try {
+                const UniValue signed_msg = signmessage().HandleRequest(req);
+                BOOST_TEST_MESSAGE("signmessage returned: " + signed_msg.write());
+            } catch (const UniValue& rpc_err) {
+                threw = true;
+                saw_bcp1_refusal = rpc_err.write().find(BCP1_REFUSAL_MARKER) != std::string::npos;
+            }
+            BOOST_CHECK_MESSAGE(threw, "signmessage must refuse on a BCP/1 watch-only wallet");
+            BOOST_CHECK_MESSAGE(saw_bcp1_refusal,
+                                "signmessage must refuse with the BCP/1 private-sign message, not a generic key error");
+        }
+
         RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
     }
 }
@@ -382,6 +481,31 @@ BOOST_AUTO_TEST_CASE(exchange_watchonly_refusal_requires_node_opt_in)
                                 "signrawtransactionwithwallet must not report the BCP/1 refusal when -exchange-watchonly is off");
         }
 
+        // signmessage is in-process only. Without BCP/1 it still must not use
+        // leftover keys on a disable_private_keys wallet.
+        {
+            UniValue params(UniValue::VARR);
+            params.push_back("bcrt1qinvalid-placeholder");
+            params.push_back("leftover keys must not sign messages");
+            JSONRPCRequest req = WalletRpc(context, params);
+            bool threw{false};
+            bool saw_bcp1_refusal{false};
+            bool saw_disabled{false};
+            try {
+                const UniValue signed_msg = signmessage().HandleRequest(req);
+                BOOST_TEST_MESSAGE("signmessage returned: " + signed_msg.write());
+            } catch (const UniValue& rpc_err) {
+                threw = true;
+                const std::string err = rpc_err.write();
+                saw_bcp1_refusal = err.find(BCP1_REFUSAL_MARKER) != std::string::npos;
+                saw_disabled = err.find("Error: Private keys are disabled for this wallet") != std::string::npos;
+            }
+            BOOST_CHECK_MESSAGE(threw, "signmessage must refuse leftover keys on a disable_private_keys wallet");
+            BOOST_CHECK_MESSAGE(!saw_bcp1_refusal,
+                                "signmessage must not report the BCP/1 refusal when -exchange-watchonly is off");
+            BOOST_CHECK_MESSAGE(saw_disabled, "signmessage leftover-key close must be the disable-private-keys error");
+        }
+
         RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
     }
 }
@@ -429,6 +553,9 @@ BOOST_AUTO_TEST_CASE(getexchangereadiness_empty_watchonly_is_not_ready)
 
     BOOST_CHECK_EQUAL(result["watch_only"].get_bool(), true);
     BOOST_CHECK_EQUAL(result["ready"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["pkcs11_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["kmip_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["https_live"].get_bool(), false);
     const UniValue* caps = ReadinessCapabilities(result);
     BOOST_REQUIRE_MESSAGE(caps != nullptr, "getexchangereadiness must publish a capabilities object");
     BOOST_REQUIRE(caps->exists("deposit_pool"));
@@ -439,8 +566,125 @@ BOOST_AUTO_TEST_CASE(getexchangereadiness_empty_watchonly_is_not_ready)
     BOOST_CHECK_EQUAL((*caps)["descriptors"].get_bool(), true);
     BOOST_REQUIRE(caps->exists("disable_private_keys"));
     BOOST_CHECK_EQUAL((*caps)["disable_private_keys"].get_bool(), true);
+    BOOST_REQUIRE(caps->exists("descriptors_ok"));
+    BOOST_CHECK_EQUAL((*caps)["descriptors_ok"].get_bool(), true);
+    BOOST_REQUIRE(caps->exists("watchonly_ok"));
+    BOOST_CHECK_EQUAL((*caps)["watchonly_ok"].get_bool(), true);
+    BOOST_REQUIRE(caps->exists("deposits_ok"));
+    BOOST_CHECK_EQUAL((*caps)["deposits_ok"].get_bool(), false);
+    BOOST_REQUIRE(caps->exists("signer_ok"));
+    BOOST_CHECK_EQUAL((*caps)["signer_ok"].get_bool(), false);
+    BOOST_CHECK_EQUAL((*caps)["pkcs11_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL((*caps)["kmip_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL((*caps)["https_live"].get_bool(), false);
     BOOST_CHECK_EQUAL(result["automatic_spend_atoms"].getInt<int64_t>(), 0);
+    BOOST_CHECK_EQUAL(result["can_sign_in_process"].get_bool(), false);
 
+    const Bcp1Readiness eval = EvaluateBcp1Readiness(*wallet, gArgs);
+    BOOST_CHECK(eval.descriptors_ok);
+    BOOST_CHECK(eval.watchonly_ok);
+    BOOST_CHECK(!eval.deposits_ok);
+    BOOST_CHECK(!eval.signer_ok);
+    BOOST_CHECK(!eval.pkcs11_live);
+    BOOST_CHECK(!eval.kmip_live);
+    BOOST_CHECK(!eval.Ready());
+
+    RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
+}
+
+BOOST_AUTO_TEST_CASE(getexchangereadiness_keyed_descriptor_is_not_ready)
+{
+    ScopedExchangeWatchOnlyArg exchange_watchonly{false};
+
+    auto wallet = std::make_shared<CWallet>(m_node.chain.get(), "bcp1-review-keyed-ready", CreateMockableWalletDatabase());
+    {
+        LOCK(wallet->cs_wallet);
+        wallet->SetMinVersion(FEATURE_LATEST);
+        wallet->SetWalletFlag(WALLET_FLAG_DESCRIPTORS);
+        wallet->SetLastBlockProcessed(0, Params().GenesisBlock().GetHash());
+    }
+
+    const Bcp1Readiness eval = EvaluateBcp1Readiness(*wallet, gArgs);
+    BOOST_CHECK(eval.descriptors_ok);
+    BOOST_CHECK(!eval.watchonly_ok);
+    BOOST_CHECK(!eval.deposits_ok);
+    BOOST_CHECK(!eval.signer_ok);
+    BOOST_CHECK(!eval.Ready());
+
+    WalletContext context;
+    context.args = &m_args;
+    context.chain = m_node.chain.get();
+    AddWallet(context, wallet);
+    JSONRPCRequest req = WalletRpc(context);
+    const UniValue result = getexchangereadiness().HandleRequest(req);
+    BOOST_REQUIRE(result.isObject());
+    BOOST_CHECK_EQUAL(result["ready"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["watchonly_ok"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["can_sign_in_process"].get_bool(), true);
+    BOOST_CHECK_EQUAL(result["pkcs11_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["kmip_live"].get_bool(), false);
+    RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
+}
+
+BOOST_AUTO_TEST_CASE(getexchangereadiness_setlabel_p2mr_is_not_deposit_pool)
+{
+    ScopedExchangeWatchOnlyArg exchange_watchonly{true};
+
+    const ReviewDeposit deposit = MakeReviewDeposit();
+    BOOST_REQUIRE_MESSAGE(deposit.IsValid(), "could not derive the BCP/1 review deposit key");
+    const CTxDestination dest = DecodeDestination(deposit.address);
+    BOOST_REQUIRE(std::holds_alternative<WitnessV2P2MR>(dest));
+
+    auto wallet = MakeBcp1WatchOnlyWallet(*this, "bcp1-review-ready-setlabel", /*external_signer=*/false);
+    {
+        LOCK(wallet->cs_wallet);
+        BOOST_REQUIRE(wallet->SetAddressBook(dest, "customer-deposit", AddressPurpose::RECEIVE));
+    }
+    BOOST_CHECK(!WalletHasDepositMaterial(*wallet));
+    const Bcp1Readiness eval = EvaluateBcp1Readiness(*wallet, gArgs);
+    BOOST_CHECK(!eval.deposits_ok);
+    BOOST_CHECK(!eval.Ready());
+}
+
+BOOST_AUTO_TEST_CASE(getexchangereadiness_pool_sets_deposits_ok)
+{
+    ScopedExchangeWatchOnlyArg exchange_watchonly{true};
+
+    const ReviewDeposit deposit = MakeReviewDeposit();
+    BOOST_REQUIRE_MESSAGE(deposit.IsValid(), "could not derive the BCP/1 review deposit key");
+
+    auto wallet = MakeBcp1WatchOnlyWallet(*this, "bcp1-review-ready-pool", /*external_signer=*/false);
+    UniValue entries(UniValue::VARR);
+    UniValue item(UniValue::VOBJ);
+    item.pushKV("index", 0);
+    item.pushKV("address", deposit.address);
+    item.pushKV("pubkey", HexStr(deposit.key.GetPubKey()));
+    entries.push_back(item);
+    bilingual_str import_err;
+    UniValue details;
+    BOOST_REQUIRE_MESSAGE(ImportDepositPool(*wallet, entries, import_err, details), import_err.original);
+
+    const Bcp1Readiness eval = EvaluateBcp1Readiness(*wallet, gArgs);
+    BOOST_CHECK(eval.descriptors_ok);
+    BOOST_CHECK(eval.watchonly_ok);
+    BOOST_CHECK(eval.deposits_ok);
+    BOOST_CHECK(!eval.signer_ok);
+    BOOST_CHECK(!eval.pkcs11_live);
+    BOOST_CHECK(!eval.kmip_live);
+    BOOST_CHECK_EQUAL(eval.Ready(), eval.synced_ok);
+
+    WalletContext context;
+    context.args = &m_args;
+    context.chain = m_node.chain.get();
+    AddWallet(context, wallet);
+    JSONRPCRequest req = WalletRpc(context);
+    const UniValue result = getexchangereadiness().HandleRequest(req);
+    BOOST_REQUIRE(result.isObject());
+    BOOST_CHECK_EQUAL(result["deposits_ok"].get_bool(), true);
+    BOOST_CHECK_EQUAL(result["signer_ok"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["pkcs11_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["kmip_live"].get_bool(), false);
+    BOOST_CHECK_EQUAL(result["ready"].get_bool(), result["synced_ok"].get_bool());
     RemoveWallet(context, wallet, /*load_on_start=*/std::nullopt);
 }
 

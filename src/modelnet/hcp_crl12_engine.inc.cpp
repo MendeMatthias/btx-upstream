@@ -5,6 +5,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
     if (!cfg.cr12_enabled) {
         return Err(403, HCP_ERR_PROFILE_UNSUPPORTED, HCP_EXT_COGNITIVE_RESERVE_V12);
     }
+    cr11.authed_account.clear();
 
     const bool binary_stage = (req.method == "POST" && req.path == "/institutional/imports/chunks");
     std::map<std::string, std::string> cap;
@@ -81,12 +82,15 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
     };
 
     std::string idem_slot;
+    std::string idem_body_hash;
     auto PersistIdem = [&](const HcpHttpResponse& r) {
         if (idem_slot.empty()) return;
+        if (r.status < 200 || r.status >= 300) return;
         UniValue s(UniValue::VOBJ);
         s.pushKV("status", static_cast<int64_t>(r.status));
         s.pushKV("body", r.body);
         s.pushKV("content_type", r.content_type);
+        crl12.idem_hash[idem_slot] = idem_body_hash;
         crl12.idem_replay[idem_slot] = s.write();
     };
 
@@ -135,6 +139,8 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
     auto IdemAfterAuth = [&](const std::string& op) -> HcpHttpResponse {
         HcpHttpResponse proceed;
         proceed.status = 0;
+        // Authenticate first: an empty account must not occupy a key.
+        if (cr11.authed_account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         const std::string ik = Hdr(req, "idempotency-key");
         if (ik.empty()) return proceed;
         const std::string slot = cr11.authed_account + "|" + req.method + "|" + op + "|" + ik;
@@ -155,8 +161,10 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
                 return r;
             }
         }
-        crl12.idem_hash[slot] = h;
+        // Do not occupy the key until a 2xx outcome is persisted. Failed or
+        // unauthenticated attempts must not collide with a later owner.
         idem_slot = slot;
+        idem_body_hash = h;
         return proceed;
     };
 
@@ -229,21 +237,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
         b.pushKV("extension_id", "cognitive-reserve/v1.2");
         b.pushKV("parent_profile_ref", cr11.parent_profile_body_id.empty() ? "hcp-1" : cr11.parent_profile_body_id);
         b.pushKV("base_extension_ref", "cognitive-reserve");
-        const std::string schema_d = Crl12SchemaDigest();
-        const std::string ops_d = Crl12OperationsDigest();
-        const bool have_digests = schema_d.size() == 96 && ops_d.size() == 96 && schema_d != ops_d;
-        if (have_digests) {
-            b.pushKV("schema_digest", schema_d);
-            b.pushKV("operations_digest", ops_d);
-            b.pushKV("digests_available", true);
-            b.pushKV("negotiated", true);
-        } else {
-            b.pushKV("schema_digest", UniValue());
-            b.pushKV("operations_digest", UniValue());
-            b.pushKV("digests_available", false);
-            b.pushKV("negotiated", false);
-            b.pushKV("negotiation_unavailable_reason", "schema_and_operations_digests_not_computed");
-        }
+        HcpApplyNegotiatedDigests(b, Crl12SchemaDigest(), Crl12OperationsDigest());
         UniValue feats(UniValue::VARR);
         feats.push_back("roles");
         feats.push_back("institutional");
@@ -397,6 +391,8 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/layer/bindings/{id}", cap) && req.method == "GET") {
         auto n = Need("bindings:read", false);
         if (n.status >= 400) return n;
+        // Knowing the id is not authorization: object account must equal the
+        // authenticated account. Empty authed account is already 401 from Need().
         auto it = FindOwned(crl12.bindings, cap["id"]);
         if (it == crl12.bindings.end()) return Err(404, "NOT_FOUND", "binding");
         UniValue b = it->second;
@@ -430,8 +426,10 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
         b.pushKV("adapter_id", id);
         b.pushKV("status", Jbool("disabled", false) ? "DISABLED" : (unavailable ? "UNAVAILABLE" : "VALID"));
         b.pushKV("mapping_digest", MappingDigest());
+        const std::string schema_d = Crl12SchemaDigest();
         const std::string ops_d = Crl12OperationsDigest();
-        if (ops_d.size() == 96) b.pushKV("schema_digest", ops_d);
+        if (HcpSha384DigestUsable(schema_d)) b.pushKV("schema_digest", schema_d);
+        if (HcpSha384DigestUsable(ops_d)) b.pushKV("operations_digest", ops_d);
         b.pushKV("account", cr11.authed_account);
         if (Jbool("disabled", false)) return Err(400, HCP_ERR_ADAPTER_DISABLED, id);
         crl12.adapters[id] = b;
@@ -664,7 +662,9 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
         UniValue out(UniValue::VOBJ);
         out.pushKV("accepted", static_cast<int64_t>(staged.size()));
         out.pushKV("watermark_advanced", !staged.empty());
-        return JsonStatus(201, out);
+        auto r = JsonStatus(201, out);
+        PersistIdem(r);
+        return r;
     }
     if (MatchPath(req.path, "/institutional/positions/{id}", cap) && req.method == "GET") {
         auto n = Need("positions:read", false);
@@ -982,9 +982,10 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
             }
         }
         if (eligible_pos.empty() && !any_nonzero_orphan && !unpriced) {
-            o.pushKV("status", "COMPLETE");
-            o.pushKV("complete", true);
-            o.pushKV("value", "0");
+            o.pushKV("status", "UNAVAILABLE");
+            o.pushKV("complete", false);
+            o.pushKV("value", UniValue());
+            o.pushKV("never_accumulated", true);
             return o;
         }
         if (unpriced || !leftover_pos.empty() || matched.empty()) {
@@ -1146,6 +1147,7 @@ HcpHttpResponse HcpEngine::Impl::HandleCrl12Locked(const HcpHttpRequest& req)
     if (MatchPath(req.path, "/institutional/exports/{id}/chunks/{chunk_id}", cap) && req.method == "GET") {
         auto n = Need("exports:read", false);
         if (n.status >= 400) return n;
+        if (FindOwned(crl12.exports, cap["id"]) == crl12.exports.end()) return Err(404, "NOT_FOUND", "export");
         auto it = crl12.export_chunks.find(cap["id"] + "/" + cap["chunk_id"]);
         if (it == crl12.export_chunks.end()) return Err(404, "NOT_FOUND", "chunk");
         HcpHttpResponse r;

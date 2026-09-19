@@ -106,6 +106,7 @@ UniValue ModelWatchToJson(const ModelWatch& w);
 UniValue WatchActionToJson(const QueuedWatchAction& a);
 UniValue SignedChannelToJson(const SignedChannel& ch);
 
+/** Every WatchKind, including MODEL, requires VerifiedEnough (SIGNED_OK or CHAIN_OBSERVED). */
 bool WatchMatchesEvent(const ModelWatch& watch, const ModelEvent& ev);
 bool SearchRecordMatchesWatch(const ModelWatch& watch, const ModelSearchRecord& rec);
 

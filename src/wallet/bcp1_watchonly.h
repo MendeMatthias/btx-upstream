@@ -7,12 +7,55 @@
 
 #include <cstdint>
 
+#include <univalue.h>
+
 class ArgsManager;
-class UniValue;
 struct bilingual_str;
 
 namespace wallet {
 class CWallet;
+
+/**
+ * Split BCP/1 `getexchangereadiness` bits. Aggregate ready is the conjunction:
+ *
+ *   Ready() = descriptors_ok && watchonly_ok && synced_ok
+ *             && (deposits_ok || signer_ok)
+ *             && !pkcs11_live && !kmip_live && !https_live
+ *
+ * An empty descriptor wallet (flags + !IBD only) is never ready: it has
+ * neither deposit-pool material nor a healthy command `-signer`.
+ *
+ * `signer_ok` is the command adapter (`-signer`) only. PKCS#11, KMIP, and
+ * loopback HTTPS classes are fail-closed stubs with no client library linked
+ * and are never reported live. RefusePrivateSign / command `-signer` are
+ * unchanged.
+ */
+struct Bcp1Readiness {
+    bool descriptors_ok{false};
+    bool watchonly_ok{false};
+    bool synced_ok{false};
+    bool deposits_ok{false};
+    bool signer_ok{false};
+    bool pkcs11_live{false};
+    bool kmip_live{false};
+    bool https_live{false};
+    UniValue signer_health{UniValue::VOBJ};
+
+    bool Ready() const
+    {
+        return descriptors_ok && watchonly_ok && synced_ok &&
+               (deposits_ok || signer_ok) &&
+               !pkcs11_live && !kmip_live && !https_live;
+    }
+};
+
+Bcp1Readiness EvaluateBcp1Readiness(const CWallet& wallet, const ArgsManager& args);
+
+/** True when this disable_private_keys wallet has imported P2MR pool scripts. */
+bool WalletHasDepositMaterial(const CWallet& wallet);
+
+/** Command `-signer` Health(). Never instantiates PKCS#11 / KMIP / HTTPS stubs. */
+UniValue CommandSignerHealthReport(const ArgsManager& args);
 
 /**
  * BCP/1 exchange watch-only helpers.

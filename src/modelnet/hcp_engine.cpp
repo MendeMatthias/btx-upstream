@@ -331,7 +331,7 @@ struct HcpEngine::Impl {
         int64_t quote_expires{0};
     };
     std::map<std::string, Intent> intents;
-    std::map<std::string, std::string> client_ops; // client_operation_id -> intent_id
+    std::map<std::string, std::string> client_ops; // account|operation|client_operation_id -> intent_id
     std::map<std::string, HcpEnvelope> quotes;
     std::map<std::string, HcpEnvelope> receipts;
     std::string last_tx_hex;
@@ -1026,8 +1026,11 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
     }
     if (MatchPath(req.path, "/devices/{device_id}/revoke", cap) && req.method == "POST") {
         if (!Auth(req, "devices:enroll", account, acode, false)) return Err(401, acode, acode);
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         auto it = devices.find(cap["device_id"]);
-        if (it == devices.end() || it->second.account != account) return Err(404, "NOT_FOUND", "device");
+        if (it == devices.end() || it->second.account.empty() || it->second.account != account) {
+            return Err(404, "NOT_FOUND", "device");
+        }
         it->second.revoked = true;
         it->second.paired = false;
         UniValue o(UniValue::VOBJ);
@@ -1173,8 +1176,10 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
         int64_t total = 0;
         std::string aerr;
         if (!HcpAmountsOk(amt, total, aerr)) return Err(400, aerr, aerr);
-        if (client_ops.count(cop)) {
-            const std::string existing = client_ops[cop];
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
+        const std::string cop_slot = account + "|POST /finance/intents|" + cop;
+        if (client_ops.count(cop_slot)) {
+            const std::string existing = client_ops[cop_slot];
             auto& itn = intents[existing];
             std::string newp = amt["principal_atoms"].get_str();
             if (itn.env.body["amounts"]["principal_atoms"].get_str() != newp ||
@@ -1262,15 +1267,18 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
             in.quote_expires = exp;
         }
         intents[iid] = in;
-        client_ops[cop] = iid;
+        client_ops[cop_slot] = iid;
         AppendEvent(account, "INTENT_CREATED", cop + "/" + in.action, EncodeHcpEnvelope(env));
         return JsonStatus(201, EncodeHcpEnvelope(env));
     }
 
     if (MatchPath(req.path, "/finance/intents/{intent_id}", cap) && req.method == "GET") {
         if (!Auth(req, "account:read", account, acode, false)) return Err(401, acode, acode);
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         auto it = intents.find(cap["intent_id"]);
-        if (it == intents.end() || it->second.account != account) return Err(404, "NOT_FOUND", "intent");
+        if (it == intents.end() || it->second.account.empty() || it->second.account != account) {
+            return Err(404, "NOT_FOUND", "intent");
+        }
         UniValue o(UniValue::VOBJ);
         o.pushKV("intent_id", cap["intent_id"]);
         o.pushKV("state", it->second.unknown ? HCP_ERR_BROADCAST_UNKNOWN : it->second.state);
@@ -1459,14 +1467,20 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
     }
     if (MatchPath(req.path, "/policies/{policy_id}", cap) && req.method == "GET") {
         if (!Auth(req, "account:read", account, acode, false)) return Err(401, acode, acode);
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         auto it = policies.find(cap["policy_id"]);
-        if (it == policies.end() || it->second.account != account) return Err(404, "NOT_FOUND", "policy");
+        if (it == policies.end() || it->second.account.empty() || it->second.account != account) {
+            return Err(404, "NOT_FOUND", "policy");
+        }
         return JsonStatus(200, it->second.json);
     }
     if (MatchPath(req.path, "/policies/{policy_id}/revoke", cap) && req.method == "POST") {
         if (!Auth(req, "policies:admin", account, acode, true)) return Err(401, acode, acode);
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         auto it = policies.find(cap["policy_id"]);
-        if (it == policies.end() || it->second.account != account) return Err(404, "NOT_FOUND", "policy");
+        if (it == policies.end() || it->second.account.empty() || it->second.account != account) {
+            return Err(404, "NOT_FOUND", "policy");
+        }
         it->second.revoked = true;
         it->second.json.pushKV("revoked", true);
         return JsonStatus(200, it->second.json);
@@ -1484,14 +1498,18 @@ HcpHttpResponse HcpEngine::Impl::HandleLocked(const HcpHttpRequest& req)
     }
     if (MatchPath(req.path, "/subscriptions/{subscription_id}/revoke", cap) && req.method == "POST") {
         if (!Auth(req, "subscriptions:write", account, acode, true)) return Err(401, acode, acode);
+        if (account.empty()) return Err(401, "UNAUTHENTICATED", "account");
         const std::string sid = cap["subscription_id"];
         auto ait = subs_account.find(sid);
         if (ait != subs_account.end() && !ait->second.empty() && ait->second != account) {
             return Err(404, "NOT_FOUND", "subscription");
         }
         // Lab SetSubscriptionRevoked may insert a revoked id with no owner.
-        // Unknown ids are not world-revocable.
+        // Unknown ids are not world-revocable. Empty stored owner is 404.
         if (ait == subs_account.end() && subs_revoked.find(sid) == subs_revoked.end()) {
+            return Err(404, "NOT_FOUND", "subscription");
+        }
+        if (ait != subs_account.end() && ait->second.empty()) {
             return Err(404, "NOT_FOUND", "subscription");
         }
         subs_revoked[sid] = true;

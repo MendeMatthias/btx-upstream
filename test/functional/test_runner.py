@@ -253,6 +253,7 @@ BASE_SCRIPTS = [
     'feature_reindex.py',
     'feature_reindex_readonly.py',
     'wallet_labels.py --descriptors',
+    'wallet_labels_jsonl.py --descriptors',
     'p2p_compactblocks.py',
     'p2p_compactblocks_blocksonly.py',
     'p2p_compactblocks_extratxs.py',

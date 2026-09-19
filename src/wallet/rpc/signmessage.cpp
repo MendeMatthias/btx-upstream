@@ -5,6 +5,7 @@
 #include <common/signmessage.h>
 #include <key_io.h>
 #include <rpc/util.h>
+#include <wallet/bcp1_watchonly.h>
 #include <wallet/rpc/util.h>
 #include <wallet/wallet.h>
 
@@ -38,6 +39,18 @@ RPCHelpMan signmessage()
         {
             const std::shared_ptr<const CWallet> pwallet = GetWalletForJSONRPCRequest(request);
             if (!pwallet) return UniValue::VNULL;
+
+            // In-process only: no FillPSBT / -signer path. BCP/1 watch-only
+            // gets the same policy error as send / signrawtransactionwithwallet
+            // / dump*. Leftover keys on disable_private_keys wallets must not
+            // reach SignMessage either.
+            bilingual_str refuse_err;
+            if (RefusePrivateSign(*pwallet, refuse_err)) {
+                throw JSONRPCError(RPC_WALLET_ERROR, refuse_err.original);
+            }
+            if (pwallet->IsWalletFlagSet(WALLET_FLAG_DISABLE_PRIVATE_KEYS)) {
+                throw JSONRPCError(RPC_WALLET_ERROR, "Error: Private keys are disabled for this wallet");
+            }
 
             LOCK(pwallet->cs_wallet);
 

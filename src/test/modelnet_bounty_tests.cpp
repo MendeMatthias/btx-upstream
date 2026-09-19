@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <limits>
 #include <thread>
 #include <vector>
 
@@ -740,6 +741,21 @@ BOOST_AUTO_TEST_CASE(bounty_fund_chain_eval_agent)
 
     std::string derr;
     BOOST_CHECK_EQUAL(DedupePrincipal({{"aa:0", 10}, {"aa:0", 10}}, derr), 10);
+    derr.clear();
+    BOOST_CHECK_EQUAL(DedupePrincipal({{"aa:0", MAX_MONEY_ATOMS}, {"bb:0", 1}}, derr), -1);
+    BOOST_CHECK(derr.find("MoneyRange") != std::string::npos);
+
+    UniValue wide_bps = FundingView("2100000000000000", "0", UniValue("1000000000000000"));
+    BOOST_CHECK(wide_bps["funding_progress_known"].get_bool());
+    BOOST_CHECK_EQUAL(wide_bps["funded_bps"].getInt<int64_t>(), 4761);
+    BOOST_CHECK(EligibleBps("1000000000000000", "2100000000000000", 4761, err));
+    BOOST_CHECK(!EligibleBps("1000000000000000", "2100000000000000", 4762, err));
+
+    UniValue bad_conf = FundingView("100", "1", UniValue("01"));
+    BOOST_CHECK(!bad_conf["funding_progress_known"].get_bool());
+    BOOST_CHECK(bad_conf["funded_bps"].isNull());
+    UniValue over_conf = FundingView("100", "1", UniValue("21000000000000001"));
+    BOOST_CHECK(!over_conf["funding_progress_known"].get_bool());
 
     BountyChainIndex chain;
     BountyChainFact f;
@@ -757,6 +773,57 @@ BOOST_AUTO_TEST_CASE(bounty_fund_chain_eval_agent)
     UniValue rec = chain.ExportRecovery("b1", {"l1"});
     BOOST_CHECK(rec.exists("lots"));
     BOOST_CHECK(!rec["private_keys"].get_bool());
+
+    BountyChainIndex sat;
+    BountyChainFact big;
+    big.outpoint = "big:0";
+    big.bounty_id = "sum";
+    big.amount_atoms = MAX_MONEY_ATOMS;
+    sat.Observe(big);
+    BountyChainFact big2 = big;
+    big2.outpoint = "big:1";
+    sat.Observe(big2);
+    BOOST_CHECK_EQUAL(sat.ConfirmedAtoms("sum"), MAX_MONEY_ATOMS);
+
+    BountyChainFact junk;
+    junk.outpoint = "junk:0";
+    junk.bounty_id = "junk";
+    junk.amount_atoms = std::numeric_limits<int64_t>::max();
+    BountyChainIndex skip;
+    skip.Observe(junk);
+    BOOST_CHECK_EQUAL(skip.ConfirmedAtoms("junk"), 0);
+
+    UniValue man(UniValue::VOBJ);
+    UniValue lots(UniValue::VARR);
+    UniValue lbad(UniValue::VOBJ);
+    lbad.pushKV("outpoint", "imp:0");
+    lbad.pushKV("amount_atoms", "21000000000000001");
+    lots.push_back(lbad);
+    man.pushKV("bounty_id", "imp");
+    man.pushKV("lots", lots);
+    std::string ierr;
+    BountyChainIndex imported;
+    BOOST_CHECK(!imported.ImportManifest(man, ierr));
+    BOOST_CHECK(imported.Get("imp:0") == nullptr);
+    BOOST_CHECK_EQUAL(imported.ConfirmedAtoms("imp"), 0);
+
+    UniValue man2(UniValue::VOBJ);
+    UniValue lots2(UniValue::VARR);
+    UniValue l1(UniValue::VOBJ);
+    l1.pushKV("outpoint", "imp:1");
+    l1.pushKV("amount_atoms", std::to_string(MAX_MONEY_ATOMS));
+    UniValue l2(UniValue::VOBJ);
+    l2.pushKV("outpoint", "imp:2");
+    l2.pushKV("amount_atoms", "1");
+    lots2.push_back(l1);
+    lots2.push_back(l2);
+    man2.pushKV("bounty_id", "imp");
+    man2.pushKV("lots", lots2);
+    ierr.clear();
+    BOOST_CHECK(!imported.ImportManifest(man2, ierr));
+    BOOST_CHECK(ierr.find("MoneyRange") != std::string::npos);
+    BOOST_CHECK(imported.Get("imp:1") == nullptr);
+    BOOST_CHECK(imported.Get("imp:2") == nullptr);
 
     UniValue spec(UniValue::VOBJ);
     spec.pushKV("profile_id", "EXACT_CHECKS");
@@ -818,6 +885,89 @@ BOOST_AUTO_TEST_CASE(bounty_fund_chain_eval_agent)
     BOOST_CHECK(budget.Used() <= 100);
     budget.Revoke();
     BOOST_CHECK(!budget.Reserve("k5", 10, err));
+}
+
+BOOST_AUTO_TEST_CASE(bounty_observe_amount_atoms_fail_closed)
+{
+    using namespace modelnet;
+    BountyStore store;
+    const fs::path dir = m_path_root / "bounty-observe-amount-atoms-fail-closed";
+    fs::create_directories(dir);
+    store.Bind(dir, ZeroNet());
+    UniValue result;
+    std::string code, err;
+
+    auto observe = [&](const std::string& outpoint, const UniValue& amount, const std::string& bounty_id = "obs") {
+        UniValue params(UniValue::VARR);
+        UniValue o(UniValue::VOBJ);
+        o.pushKV("outpoint", outpoint);
+        o.pushKV("bounty_id", bounty_id);
+        o.pushKV("lot_id", "lot");
+        o.pushKV("amount_atoms", amount);
+        o.pushKV("confirmations", 1);
+        o.pushKV("height", 10);
+        params.push_back(o);
+        result.clear();
+        code.clear();
+        err.clear();
+        return store.Dispatch("observebountychain", params, result, code, err);
+    };
+
+    BOOST_CHECK(!observe("badstr:0", UniValue("01")));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK(!FactsHaveOutpoint(result, "badstr:0"));
+
+    BOOST_CHECK(!observe("neg:0", UniValue(static_cast<int64_t>(-1))));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK(!FactsHaveOutpoint(result, "neg:0"));
+
+    BOOST_CHECK(!observe("overstr:0", UniValue("21000000000000001")));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK(!FactsHaveOutpoint(result, "overstr:0"));
+
+    BOOST_CHECK(!observe("overint:0", UniValue(std::numeric_limits<int64_t>::max())));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK(!FactsHaveOutpoint(result, "overint:0"));
+
+    BOOST_REQUIRE(observe("ok:0", UniValue("100")));
+    BOOST_CHECK(FactsHaveOutpoint(result, "ok:0"));
+    BOOST_CHECK(!FactsHaveOutpoint(result, "badstr:0"));
+    BOOST_CHECK(!FactsHaveOutpoint(result, "neg:0"));
+    BOOST_CHECK(!FactsHaveOutpoint(result, "overstr:0"));
+    BOOST_CHECK(!FactsHaveOutpoint(result, "overint:0"));
+    AssertSpendZeroIfPresent(result);
+
+    BOOST_REQUIRE(observe("okint:0", UniValue(static_cast<int64_t>(50))));
+    BOOST_CHECK(FactsHaveOutpoint(result, "okint:0"));
+
+    BOOST_REQUIRE(observe("max:0", UniValue(std::to_string(MAX_MONEY_ATOMS)), "cap"));
+    BOOST_CHECK(!observe("max:1", UniValue("1"), "cap"));
+    BOOST_CHECK_EQUAL(code, "INVALID_PARAMETER");
+    BOOST_CHECK(err.find("MoneyRange") != std::string::npos);
+    BOOST_REQUIRE(observe("max:0", UniValue(std::to_string(MAX_MONEY_ATOMS)), "cap"));
+    BOOST_CHECK(FactsHaveOutpoint(result, "max:0"));
+    BOOST_CHECK(!FactsHaveOutpoint(result, "max:1"));
+
+    UniValue imp(UniValue::VARR);
+    UniValue man(UniValue::VOBJ);
+    UniValue lots(UniValue::VARR);
+    UniValue lot(UniValue::VOBJ);
+    lot.pushKV("outpoint", "impbad:0");
+    lot.pushKV("amount_atoms", "01");
+    lots.push_back(lot);
+    man.pushKV("bounty_id", "obs");
+    man.pushKV("lots", lots);
+    UniValue wrap(UniValue::VOBJ);
+    wrap.pushKV("manifest", man);
+    imp.push_back(wrap);
+    result.clear();
+    code.clear();
+    err.clear();
+    BOOST_CHECK(!store.Dispatch("importbountyrecovery", imp, result, code, err));
+    BOOST_CHECK_EQUAL(code, "REJECTED");
+    BOOST_REQUIRE(observe("ok:0", UniValue("100")));
+    BOOST_CHECK(!FactsHaveOutpoint(result, "impbad:0"));
+    AssertSpendZeroIfPresent(result);
 }
 
 BOOST_AUTO_TEST_CASE(bounty_search_health_feed_store_rpc)

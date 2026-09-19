@@ -34,7 +34,8 @@
 //!     GetDepositStatusUniValue / ListDepositUtxosUniValue / ListDepositUtxoFilter
 //!   wallet/bcp1_watchonly.h
 //!     ExchangeWatchOnlyActive / RefusePrivateSign / ImportDepositPool
-//!     ExchangeWatchOnlyNodeEnabled
+//!     ExchangeWatchOnlyNodeEnabled / EvaluateBcp1Readiness / Bcp1Readiness::Ready
+//!     WalletHasDepositMaterial / CommandSignerHealthReport
 //!   wallet/signer_provider.h
 //!     MakeCommandSigner / SignerProvider::GetPublicKey / Health
 //!     DerivePublicKey → PUBLIC_CHILD_UNSUPPORTED
@@ -42,6 +43,11 @@
 //! Watch-only: WALLET_FLAG_DISABLE_PRIVATE_KEYS and/or -exchange-watchonly
 //! refuse in-process dump/sign. prepare/finalize only attach external sigs.
 //! None of these RPCs broadcast. automatic_spend_atoms is never invented.
+//!
+//! getexchangereadiness.ready is EvaluateBcp1Readiness(wallet, args).Ready():
+//!   descriptors_ok && watchonly_ok && synced_ok && (deposits_ok || signer_ok)
+//!   && !pkcs11_live && !kmip_live && !https_live
+//! See wallet/bcp1_watchonly.h. PKCS#11 / KMIP / HTTPS are never live.
 
 #include <span.h>
 

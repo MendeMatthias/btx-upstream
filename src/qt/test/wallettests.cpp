@@ -450,8 +450,9 @@ void TestGUIWatchOnly(interfaces::Node& node, TestChain100Setup& test)
     CompareBalance(walletModel, walletModel.wallet().getBalances().watch_only_balance,
                    sendCoinsDialog.findChild<QLabel*>("labelBalance"));
 
-    // Set change address
-    sendCoinsDialog.getCoinControl()->destChange = GetDestinationForKey(test.coinbaseKey.GetPubKey(), OutputType::LEGACY);
+    // Change is a new P2MR address unless the user picks one. Do not pin a
+    // leftover legacy secp change destination.
+    sendCoinsDialog.getCoinControl()->destChange = CNoDestination();
 
     // Time to reject "save" PSBT dialog ('SendCoins' locks the main thread until the dialog receives the event).
     QTimer timer;
