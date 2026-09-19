@@ -288,6 +288,14 @@ public:
         const uint256& block_hash,
         uint64_t keyed_netgroup,
         std::chrono::steady_clock::time_point now);
+    /** True when any netgroup still has an unexpired cooldown for this hash.
+     *  Idle catch-up / convergence must not re-GETDATA or claim "nobody is
+     *  serving this BODY" while Mark() already holds it. Per-peer GETDATA
+     *  skip stays netgroup-keyed (Contains(hash, netgroup)) so an independent
+     *  source remains eligible. */
+    [[nodiscard]] bool ContainsHash(
+        const uint256& block_hash,
+        std::chrono::steady_clock::time_point now);
     /** Erase every peer's cooldown for this hash (admission succeeded or
      *  validation reached a terminal verdict, so no source needs holding off). */
     void Erase(const uint256& block_hash);

@@ -9,8 +9,11 @@ NVIDIA driver and a supported NVIDIA GPU.
 CUDA mining archives are **unrelated** to Native Model Network remote inference:
 there is no inference endpoint in those bundles. When `-DWITH_MODELNET=ON`, the
 `btx-modeld` helper needs a host **OpenSSL 3.5+** with ML-KEM-768 / ML-DSA-44
-(or bundled OpenSSL via `contrib/modelnet/run-modeld.sh`). MatMul CUDA backends
-and PQ1 model transport are separate subsystems.
+(or bundled OpenSSL via `contrib/modelnet/run-modeld.sh`). Ubuntu 22.04/24.04
+source builds cannot apt that; pass `OPENSSL_ROOT_DIR` plus
+`OPENSSL_SSL_LIBRARY`/`OPENSSL_CRYPTO_LIBRARY`, or `-DWITH_MODELNET=OFF` — see
+[build-unix.md](build-unix.md). MatMul CUDA backends and PQ1 model transport
+are separate subsystems.
 
 ## Release asset matrix
 

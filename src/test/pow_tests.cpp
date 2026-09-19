@@ -1576,7 +1576,11 @@ BOOST_AUTO_TEST_CASE(ChainParams_REGTEST_rc_coupled_activation_override_args)
     BOOST_CHECK(consensus.IsMatMulRCCoupledActive(12));
     BOOST_CHECK(consensus.GetMatMulEncodingProfile(12) ==
                 Consensus::MatMulEncodingProfile::ENC_RC_COUPLED);
-    // Live RC/coupled on regtest unthrottles tip-verify budgets.
+    // Live RC/coupled on regtest unthrottles tip-verify budgets to uint32 max
+    // so functional tests are not paced. Issue #163 keeps mainnet
+    // nMatMulRCMaxPendingVerifications{1}; do not treat this unthrottle as a
+    // production cap change. -regtestrcmaxpending=1 still exercises the
+    // single-job progress lane after this default.
     BOOST_CHECK_EQUAL(consensus.nMatMulRCMaxPendingVerifications,
                       std::numeric_limits<uint32_t>::max());
 }
@@ -4278,12 +4282,25 @@ BOOST_AUTO_TEST_CASE(matmul_solve_uses_cuda_batch_defaults_when_backend_is_avail
     }
 
     auto consensus = CreateChainParams(*m_node.args, ChainType::REGTEST)->GetConsensus();
+    // This case measures the v3 CUDA SolveMatMul batch/async-prepare defaults
+    // (ResolveSolveBatchSize). Default regtest activates v4 at 100 and ENC_RC
+    // at 101, so height 61'000 would otherwise dispatch to SolveMatMulV4RC
+    // without parent MTP, leave pipeline stats at Reset defaults (batch_size=1,
+    // async_prepare_enabled=false), and never touch the CUDA batch path. Pin
+    // the same v3-only schedule the Metal sibling tests use.
+    consensus.nMatMulNonceSeedHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulParentMtpSeedHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulV4Height = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulBMX4CHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulDRLTHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulRCHeight = std::numeric_limits<int32_t>::max();
     consensus.fMatMulPOW = true;
     consensus.nMatMulDimension = 512;
     consensus.nMatMulTranscriptBlockSize = 16;
     consensus.nMatMulNoiseRank = 8;
     consensus.nMatMulPreHashEpsilonBits = 0;
     consensus.powLimit = uint256{"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+    BOOST_REQUIRE(!consensus.IsMatMulV4Active(/*height=*/61'000));
 
     CBlockHeader candidate{};
     candidate.nVersion = 4;
@@ -4819,8 +4836,19 @@ BOOST_AUTO_TEST_CASE(cuda_strict_regtest_warning_repro_solves_without_digest_div
     options.matmul_strict = true;
     options.matmul_dgw = true;
     auto consensus = CChainParams::RegTest(options)->GetConsensus();
+    // CChainParams::RegTest() (unlike TestChain100Setup) leaves v4 at 100 and
+    // ENC_RC at 101. Height 1507 then hits SolveMatMulV4 with parent MTP
+    // nullopt and returns solved=false before any v3 CUDA digest is computed.
+    // This repro is the v3 CUDA product-digest vector; pin that machine.
+    consensus.nMatMulNonceSeedHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulParentMtpSeedHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulV4Height = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulBMX4CHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulDRLTHeight = std::numeric_limits<int32_t>::max();
+    consensus.nMatMulRCHeight = std::numeric_limits<int32_t>::max();
     BOOST_REQUIRE(!consensus.fSkipMatMulValidation);
     BOOST_REQUIRE(consensus.IsMatMulProductDigestActive(/*height=*/1507));
+    BOOST_REQUIRE(!consensus.IsMatMulV4Active(/*height=*/1507));
 
     CBlockHeader candidate = MakeStrictRegtestWarningReproHeader();
     uint64_t max_tries{64};

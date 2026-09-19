@@ -1057,14 +1057,28 @@ LTS, or see [doc/linux-release-builds.md](doc/linux-release-builds.md) and
 The commands below are the supported source-build path on Ubuntu 22.04/Debian
 12; they do not make the prebuilt archives load there.
 
+`python3-zmq` is the Python test helper. The C++ library for `-DWITH_ZMQ=ON`
+(the CMake default) is `libzmq3-dev`.
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential cmake pkg-config \
-  libboost-dev libevent-dev libsqlite3-dev python3 python3-zmq
+  libboost-dev libevent-dev libsqlite3-dev \
+  libzmq3-dev libssl-dev python3 python3-zmq
 
-cmake -B build
+cmake -B build -DBUILD_GUI=OFF -DWITH_MODELNET=OFF
 cmake --build build -j$(nproc)
 ```
+
+`WITH_MODELNET=ON` (the CMake default) needs OpenSSL **3.5+** with
+**ML-KEM-768** and **ML-DSA-44**. Ubuntu 22.04 and 24.04 apt ship OpenSSL
+**3.0.x** (`libssl-dev`); that cannot host the helper, and Homebrew
+`openssl@3` is not a Linux prefix. Either build OpenSSL 3.5 into a prefix
+and pass `-DOPENSSL_ROOT_DIR=/path/to/openssl-3.5` together with
+`-DOPENSSL_SSL_LIBRARY=.../libssl.so` and
+`-DOPENSSL_CRYPTO_LIBRARY=.../libcrypto.so` so CMake does not mix 3.5
+headers with the distro 3.0 libs, or keep `-DWITH_MODELNET=OFF` for a
+monetary-only tree. See [doc/build-unix.md](doc/build-unix.md).
 
 ### macOS
 
@@ -1113,7 +1127,7 @@ branch, use the files in `contrib/prebuilt/windows/`.
 |---|---|---|
 | `BUILD_DAEMON` | ON | Build `btxd` |
 | `BUILD_CLI` | ON | Build `btx-cli` |
-| `BUILD_GUI` | OFF | Build `btx-qt` (requires Qt) |
+| `BUILD_GUI` | OFF | Build `btx-qt` (default off). Linux: `qt6-base-dev qt6-tools-dev` and `-DWITH_QT_VERSION=6`. |
 | `BUILD_WALLET_TOOL` | auto | Build `btx-wallet` |
 | `BUILD_TESTS` | ON | Build unit test suite |
 | `BUILD_BENCH` | OFF | Build benchmark binary |

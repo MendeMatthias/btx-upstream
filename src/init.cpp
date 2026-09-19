@@ -649,7 +649,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-modeluploadlimit=<bps>", "Aggregate model upload cap. auto = governor ceiling. 0 = connection ceilings only.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modelwatch=<dir>", "Auto-host GGUF/SafeTensors dropped in this directory (watch-folder analog). Empty = off.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
-    argsman.AddArg("-resourcegovernor=<mode>", "Local resource governor: auto, performance, balanced, eco, manual, or off (default: auto). Never consensus.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-resourcegovernor=<mode>", "Local resource governor: auto, performance, balanced, eco, manual, or off to deny all governed work including mining (default: auto). There is no ungoverned mining mode. Never consensus.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-automining", "When mining is enabled, only run it while the governor reports spare accelerator capacity (default: 0). Does not enable mining by itself except together with -gen or an explicit miner.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-miningmaxintensity=<percent>", "Governor mining intensity cap 0-100 (default: 100).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-backgroundonbattery", "Allow background mining/preservation on battery (default: 0).", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -2858,6 +2858,10 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     {
         node::GovernorMode gm = node::GovernorMode::AUTO;
         (void)node::ParseGovernorMode(args.GetArg("-resourcegovernor", "auto"), gm);
+        if (gm == node::GovernorMode::OFF &&
+            (args.GetBoolArg("-gen", false) || args.GetBoolArg("-automining", false))) {
+            InitWarning(_("-resourcegovernor=off denies all governed work including mining; there is no ungoverned mining mode. Mining requested by -gen or -automining will be deferred."));
+        }
         auto& gov = node::GlobalResourceGovernor();
         gov.SetMode(gm);
         gov.SetAutoSchedule(args.GetBoolArg("-automining", false));

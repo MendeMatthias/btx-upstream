@@ -210,9 +210,24 @@ BOOST_AUTO_TEST_CASE(gov_pol_10_off_prevents_optional_background)
     g.SetMiningConsent(true);
     IdleFor(g, QuietDesktop(), 0, 30);
     g.SetMode(GovernorMode::OFF);
+    // OFF denies mining; it is not an ungoverned mining mode.
     BOOST_CHECK(!g.MiningAllowed());
     BOOST_CHECK(!g.Permit(GovernorJob::MODEL_SEED).allowed);
     BOOST_CHECK(!g.Permit(GovernorJob::PRESERVATION).allowed);
+}
+
+BOOST_AUTO_TEST_CASE(gov_off_denies_mining_not_ungoverned_mode)
+{
+    // -resourcegovernor=off means "permit nothing", including mining, even
+    // with mining consent and an idle GPU. There is no ungoverned mining mode.
+    ResourceGovernor g;
+    g.SetMiningConsent(true);
+    IdleFor(g, QuietDesktop(), 0, 30);
+    BOOST_CHECK(g.MiningAllowed());
+    g.SetMode(GovernorMode::OFF);
+    BOOST_CHECK(!g.MiningAllowed());
+    BOOST_CHECK(!g.Permit(GovernorJob::MINING).allowed);
+    BOOST_CHECK_EQUAL(g.Permit(GovernorJob::MINING).reason, PauseReason::USER_DISABLED);
 }
 
 BOOST_AUTO_TEST_CASE(gov_hys_01_short_spike_does_not_flap)
@@ -662,6 +677,7 @@ BOOST_AUTO_TEST_CASE(gov_mode_parse_and_rpc_shape)
     GovernorMode m;
     BOOST_CHECK(ParseGovernorMode("auto", m) && m == GovernorMode::AUTO);
     BOOST_CHECK(ParseGovernorMode("ECO", m) && m == GovernorMode::ECO);
+    BOOST_CHECK(ParseGovernorMode("off", m) && m == GovernorMode::OFF);
     BOOST_CHECK(!ParseGovernorMode("warp", m));
     ResourceGovernor g;
     g.SetMiningConsent(true);

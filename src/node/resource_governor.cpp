@@ -526,6 +526,8 @@ BackgroundPermit ResourceGovernor::Permit(GovernorJob job) const
 
 bool ResourceGovernor::MiningAllowed() const
 {
+    // OFF denies mining (and all other governed work). It is not an ungoverned
+    // mining mode and must stay false here.
     if (m_unavailable || m_mode == GovernorMode::OFF || !m_mining_consent) return false;
     if (m_user_pause || m_validation || m_foreground_ai) return false;
     if (!m_have_sample) return true; // not armed: do not change existing miner behavior

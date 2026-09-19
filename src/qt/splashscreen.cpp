@@ -75,14 +75,24 @@ SplashScreen::SplashScreen(const NetworkStyle* networkStyle)
     pixPaint.drawPixmap(rectIcon, icon);
 
     // check font size and drawing with
+    // CLIENT_NAME may be one token ("BTX") or two ("Bitcoin Core"). Never
+    // index titleParts[1] unless a second word exists; assertions stay on
+    // in Release.
     QStringList titleParts = titleText.split(' ');
-    assert(titleParts.size() == 2);
+    const bool twoWordTitle = titleParts.size() >= 2;
     pixPaint.setFont(QFont(font, 33*fontFactor));
     QFontMetrics fm = pixPaint.fontMetrics();
-    int titleTextWidth = GUIUtil::TextWidth(fm, titleParts[0]);
-    pixPaint.setFont(QFont(font, 50*fontFactor));
-    fm = pixPaint.fontMetrics();
-    titleTextWidth = qMax(titleTextWidth, GUIUtil::TextWidth(fm, titleParts[1]));
+    int titleTextWidth;
+    if (twoWordTitle) {
+        titleTextWidth = GUIUtil::TextWidth(fm, titleParts[0]);
+        pixPaint.setFont(QFont(font, 50*fontFactor));
+        fm = pixPaint.fontMetrics();
+        titleTextWidth = qMax(titleTextWidth, GUIUtil::TextWidth(fm, titleParts[1]));
+    } else {
+        pixPaint.setFont(QFont(font, 50*fontFactor));
+        fm = pixPaint.fontMetrics();
+        titleTextWidth = GUIUtil::TextWidth(fm, titleText);
+    }
     const int titleTextMaxWidth{nonstatus_centre.x() - 10 - paddingRight};
     if (titleTextWidth > titleTextMaxWidth) {
         fontFactor = fontFactor * titleTextMaxWidth / titleTextWidth;
@@ -91,29 +101,35 @@ SplashScreen::SplashScreen(const NetworkStyle* networkStyle)
 
     // pixPaint.setBackgroundMode(Qt::OpaqueMode);  // TO-DO
     // pixPaint.setBackground(QBrush(QColor(255, 0, 0)));  // TO-DO
-    pixPaint.setFont(QFont(font, 50*fontFactor));
-    fm = pixPaint.fontMetrics();
-    int titleTextWidth2{GUIUtil::TextWidth(fm, titleParts[1]) - 5};
-    if (titleTextWidth != titleTextWidth2) {
-        QFont tweaked_font(font, 50*fontFactor);
-        tweaked_font.setPointSizeF(50.*fontFactor * titleTextWidth / titleTextWidth2);
-        pixPaint.setFont(tweaked_font);
+    if (twoWordTitle) {
+        pixPaint.setFont(QFont(font, 50*fontFactor));
         fm = pixPaint.fontMetrics();
-    }
-    pixPaint.drawText(nonstatus_centre.x() + 3, nonstatus_centre.y(), titleParts[1]);
-    const int titleTextHeight2{fm.ascent()};
+        int titleTextWidth2{GUIUtil::TextWidth(fm, titleParts[1]) - 5};
+        if (titleTextWidth != titleTextWidth2) {
+            QFont tweaked_font(font, 50*fontFactor);
+            tweaked_font.setPointSizeF(50.*fontFactor * titleTextWidth / titleTextWidth2);
+            pixPaint.setFont(tweaked_font);
+            fm = pixPaint.fontMetrics();
+        }
+        pixPaint.drawText(nonstatus_centre.x() + 3, nonstatus_centre.y(), titleParts[1]);
+        const int titleTextHeight2{fm.ascent()};
 
-    pixPaint.setFont(QFont(font, 33*fontFactor));
-    fm = pixPaint.fontMetrics();
-    titleTextWidth2 = GUIUtil::TextWidth(fm, titleParts[0]);
-    if (titleTextWidth != titleTextWidth2) {
-        QFont tweaked_font(font, 33*fontFactor);
-        tweaked_font.setPointSizeF(33.*fontFactor * titleTextWidth / titleTextWidth2);
-        pixPaint.setFont(tweaked_font);
+        pixPaint.setFont(QFont(font, 33*fontFactor));
+        fm = pixPaint.fontMetrics();
+        titleTextWidth2 = GUIUtil::TextWidth(fm, titleParts[0]);
+        if (titleTextWidth != titleTextWidth2) {
+            QFont tweaked_font(font, 33*fontFactor);
+            tweaked_font.setPointSizeF(33.*fontFactor * titleTextWidth / titleTextWidth2);
+            pixPaint.setFont(tweaked_font);
+        }
+        pixPaint.drawText(nonstatus_centre.x() + 5, nonstatus_centre.y() - titleTextHeight2, titleParts[0]);
+        // pixPaint.drawLine(nonstatus_centre.x()+5, nonstatus_centre.y(), nonstatus_centre.x()+5+titleTextWidth, nonstatus_centre.y()); // TO-DO
+        // pixPaint.drawLine(nonstatus_centre.x()+5, nonstatus_centre.y() - titleTextHeight2, nonstatus_centre.x()+5+titleTextWidth, nonstatus_centre.y() - titleTextHeight2); // TO-DO
+    } else {
+        pixPaint.setFont(QFont(font, 50*fontFactor));
+        fm = pixPaint.fontMetrics();
+        pixPaint.drawText(nonstatus_centre.x() + 3, nonstatus_centre.y(), titleText);
     }
-    pixPaint.drawText(nonstatus_centre.x() + 5, nonstatus_centre.y() - titleTextHeight2, titleParts[0]);
-    // pixPaint.drawLine(nonstatus_centre.x()+5, nonstatus_centre.y(), nonstatus_centre.x()+5+titleTextWidth, nonstatus_centre.y()); // TO-DO
-    // pixPaint.drawLine(nonstatus_centre.x()+5, nonstatus_centre.y() - titleTextHeight2, nonstatus_centre.x()+5+titleTextWidth, nonstatus_centre.y() - titleTextHeight2); // TO-DO
 
     pixPaint.setFont(QFont(font, 15*fontFactor));
 

@@ -186,6 +186,23 @@ bool RCDeferredBodyCooldowns::Contains(
     return true;
 }
 
+bool RCDeferredBodyCooldowns::ContainsHash(
+    const uint256& block_hash,
+    std::chrono::steady_clock::time_point now)
+{
+    // Hash-range scan, not a full-store prune: idle catch-up checks one
+    // candidate at a time. Expire only this hash's due keys.
+    for (auto it{m_deadlines.lower_bound(std::make_pair(block_hash, uint64_t{0}))};
+         it != m_deadlines.end() && it->first.first == block_hash;) {
+        if (now >= it->second) {
+            it = m_deadlines.erase(it);
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 void RCDeferredBodyCooldowns::Erase(const uint256& block_hash)
 {
     // Erase across all peers: admission succeeded or validation reached a

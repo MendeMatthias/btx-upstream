@@ -102,15 +102,21 @@ BOOST_AUTO_TEST_CASE(deferred_body_cooldown_is_non_refreshing_and_expires)
 
     BOOST_CHECK(cooldowns.Mark(hash, /*keyed_netgroup=*/1, start));
     BOOST_CHECK(cooldowns.Contains(hash, /*keyed_netgroup=*/1, start + std::chrono::seconds{59}));
+    BOOST_CHECK(cooldowns.ContainsHash(hash, start + std::chrono::seconds{59}));
 
     // A malicious duplicate immediately before expiry cannot extend the
     // process-wide suppression window for an honest source.
     BOOST_CHECK(!cooldowns.Mark(hash, /*keyed_netgroup=*/1, start + std::chrono::seconds{59}));
     BOOST_CHECK(!cooldowns.Contains(hash, /*keyed_netgroup=*/1, start + std::chrono::seconds{60}));
+    BOOST_CHECK(!cooldowns.ContainsHash(hash, start + std::chrono::seconds{60}));
     BOOST_CHECK_EQUAL(cooldowns.Size(start + std::chrono::seconds{60}), 0U);
 
     // Once expired, the same hash may acquire one fresh bounded cooldown.
     BOOST_CHECK(cooldowns.Mark(hash, /*keyed_netgroup=*/1, start + std::chrono::seconds{60}));
+    // Hash-level hold is true for any netgroup; a different netgroup does not
+    // see the per-peer Contains() cooldown (independent source stays eligible).
+    BOOST_CHECK(cooldowns.ContainsHash(hash, start + std::chrono::seconds{60}));
+    BOOST_CHECK(!cooldowns.Contains(hash, /*keyed_netgroup=*/2, start + std::chrono::seconds{60}));
 }
 
 BOOST_AUTO_TEST_CASE(deferred_body_cooldown_is_bounded_and_explicitly_clearable)

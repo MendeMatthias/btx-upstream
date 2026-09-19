@@ -35,6 +35,8 @@
 
 const int BITCOIN_IPC_CONNECT_TIMEOUT = 1000; // milliseconds
 const QString BITCOIN_IPC_PREFIX("bitcoin:");
+const QString BTX_IPC_PREFIX("btx:");
+const QString BTX_MODEL_URI_PREFIX("btx://");
 
 //
 // Create a name that is unique for:
@@ -43,7 +45,7 @@ const QString BITCOIN_IPC_PREFIX("bitcoin:");
 //
 static QString ipcServerName()
 {
-    QString name("BitcoinQt");
+    QString name("BTXQt");
 
     // Append a simple hash of the datadir
     // Note that gArgs.GetDataDirNet() returns a different path
@@ -77,8 +79,8 @@ void PaymentServer::ipcParseCommandLine(int argc, char* argv[])
         QString arg(argv[i]);
         if (arg.startsWith("-")) continue;
 
-        if (arg.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive)) // bitcoin: URI
-        {
+        if (arg.startsWith(BTX_IPC_PREFIX, Qt::CaseInsensitive) ||
+            arg.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive)) {
             savedPaymentRequests.insert(arg);
         }
     }
@@ -127,7 +129,7 @@ PaymentServer::PaymentServer(QObject* parent, bool startLocalServer)
     : QObject(parent)
 {
     // Install global event filter to catch QFileOpenEvents
-    // on Mac: sent when you click bitcoin: links
+    // on Mac: sent when you click btx: (or leftover bitcoin:) links
     // other OSes: helpful when dealing with payment request files
     if (parent)
         parent->installEventFilter(this);
@@ -144,7 +146,7 @@ PaymentServer::PaymentServer(QObject* parent, bool startLocalServer)
         if (!uriServer->listen(name)) {
             // constructor is called early in init, so don't use "Q_EMIT message()" here
             QMessageBox::critical(nullptr, tr("Payment request error"),
-                tr("Cannot start bitcoin: click-to-pay handler"));
+                tr("Cannot start btx: click-to-pay handler"));
         }
         else {
             connect(uriServer, &QLocalServer::newConnection, this, &PaymentServer::handleURIConnection);
@@ -155,7 +157,7 @@ PaymentServer::PaymentServer(QObject* parent, bool startLocalServer)
 PaymentServer::~PaymentServer() = default;
 
 //
-// OSX-specific way of handling bitcoin: URIs
+// OSX-specific way of handling btx: / bitcoin: URIs
 //
 bool PaymentServer::eventFilter(QObject *object, QEvent *event)
 {
@@ -190,8 +192,9 @@ void PaymentServer::handleURIOrFile(const QString& s)
         return;
     }
 
-    // V11-URI-13: a model resource URI must never enter DecodeDestination / Send Coins.
-    if (s.startsWith(QLatin1String("btx:"), Qt::CaseInsensitive) ||
+    // V11-URI-13: model identity is btx://… and must never enter DecodeDestination.
+    // Payment BIP21 is btx:<address> (no //). Do not treat the payment scheme as a model.
+    if (s.startsWith(BTX_MODEL_URI_PREFIX, Qt::CaseInsensitive) ||
         s.contains(QLatin1String("btx://"), Qt::CaseInsensitive)) {
         Q_EMIT receivedModelResource(s);
         return;
@@ -199,10 +202,11 @@ void PaymentServer::handleURIOrFile(const QString& s)
 
     if (s.startsWith("bitcoin://", Qt::CaseInsensitive))
     {
-        Q_EMIT message(tr("URI handling"), tr("'bitcoin://' is not a valid URI. Use 'bitcoin:' instead."),
+        Q_EMIT message(tr("URI handling"), tr("'bitcoin://' is not a valid URI. Use 'btx:' for payments."),
             CClientUIInterface::MSG_ERROR);
     }
-    else if (s.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive)) // bitcoin: URI
+    else if (s.startsWith(BTX_IPC_PREFIX, Qt::CaseInsensitive) ||
+             s.startsWith(BITCOIN_IPC_PREFIX, Qt::CaseInsensitive))
     {
         QUrlQuery uri((QUrl(s)));
         // normal URI
