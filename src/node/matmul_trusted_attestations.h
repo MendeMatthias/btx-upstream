@@ -2591,20 +2591,33 @@ static constexpr auto GPU_RETAIN_ATTESTATION_RETRY{std::chrono::seconds{2}};
            manual || noban;
 }
 
-/** Advertised NODE_NETWORK plus a matching header is not a replacement body
- *  source. Only a peer that has actually delivered a BLOCK/CMPCTBLOCK/
- *  BLOCKTXN counts, so only-source protection is not inverted by header-only
- *  archives. Eligibility (GPU / NODE_NETWORK / manual / noban) still goes
- *  through `may_serve_bodies`; that peer must also have served a body. */
+/** Whether another peer is a replacement GETDATA source for a silent owner.
+ *
+ *  `may_serve_bodies` is the eligibility gate (GPU / NODE_NETWORK / manual /
+ *  noban). During signed-frontier catch-up only a frontier body source counts,
+ *  so a miner who advertised headers cannot look like an alternative to the
+ *  last archive.
+ *
+ *  Disconnect / only-source protection (`require_served_block=true`, the
+ *  default): a header-only NODE_NETWORK advertiser is not enough; the peer
+ *  must have delivered a BLOCK/CMPCTBLOCK/BLOCKTXN. Otherwise we would
+ *  disconnect the only archive that actually serves bodies.
+ *
+ *  Pause / 15s fail-over (`require_served_block=false`): cold-start has no
+ *  delivered bodies yet. A second outbound that advertised the hole and can
+ *  serve must still be enough to pause a silent first GETDATA owner, or the
+ *  same peer re-wins the slot forever (peerman silent-failover tests; issue
+ *  #163 follow-on). */
 [[nodiscard]] inline bool PeerCountsAsAlternativeBodyDownloadSource(
     bool may_serve_bodies,
     bool signed_frontier_catch_up,
     bool signed_frontier_body_source,
-    bool has_served_block)
+    bool has_served_block,
+    bool require_served_block = true)
 {
     if (!may_serve_bodies) return false;
     if (signed_frontier_catch_up && !signed_frontier_body_source) return false;
-    return has_served_block;
+    return !require_served_block || has_served_block;
 }
 
 /** Root-first must not delete a fresh GETDATA because a second peer is

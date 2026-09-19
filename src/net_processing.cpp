@@ -2956,7 +2956,8 @@ private:
      *  proven body source can take over. */
     bool HasAlternativeBlockDownloadSource(
         NodeId excluded_peer, const CBlockIndex* index,
-        std::chrono::microseconds now) const
+        std::chrono::microseconds now,
+        bool require_served_block = true) const
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     /** Release every in-flight request older than BLOCK_INFLIGHT_HARD_RECLAIM_AFTER
@@ -4444,7 +4445,8 @@ std::chrono::microseconds PeerManagerImpl::OldestInFlightRequestAge(std::chrono:
 
 bool PeerManagerImpl::HasAlternativeBlockDownloadSource(
     NodeId excluded_peer, const CBlockIndex* index,
-    std::chrono::microseconds now) const
+    std::chrono::microseconds now,
+    bool require_served_block) const
 {
     AssertLockHeld(cs_main);
     if (index == nullptr) return false;
@@ -4464,7 +4466,8 @@ bool PeerManagerImpl::HasAlternativeBlockDownloadSource(
                     state.m_manual, state.m_noban),
                 IsSignedFrontierBodyCatchUp(),
                 PeerIsSignedFrontierBodySource(nodeid, state),
-                state.m_has_served_block)) {
+                state.m_has_served_block,
+                require_served_block)) {
             continue;
         }
         return true;
@@ -4535,7 +4538,9 @@ int PeerManagerImpl::ReclaimStaleInFlightBlockRequests(std::chrono::microseconds
             stale.push_back({
                 nodeid,
                 entry.pindex->GetBlockHash(),
-                HasAlternativeBlockDownloadSource(nodeid, entry.pindex, now),
+                HasAlternativeBlockDownloadSource(
+                    nodeid, entry.pindex, now,
+                    /*require_served_block=*/false),
             });
             if (!untimestamped) {
                 const auto age = now - requested_at;
@@ -4719,7 +4724,9 @@ int PeerManagerImpl::ExpireOverdueBlockDownloads(std::chrono::microseconds now)
                     nodeid, entry.pindex->GetBlockHash(), entry.pindex->nHeight,
                     static_cast<int>(count_seconds(
                         std::chrono::duration_cast<std::chrono::seconds>(age))),
-                    HasAlternativeBlockDownloadSource(nodeid, entry.pindex, now)};
+                    HasAlternativeBlockDownloadSource(
+                        nodeid, entry.pindex, now,
+                        /*require_served_block=*/true)};
             }
         }
         if (oldest) overdue.push_back(*oldest);
@@ -4745,9 +4752,20 @@ int PeerManagerImpl::ExpireOverdueBlockDownloads(std::chrono::microseconds now)
         const bool only_eligible_source{
             !item.has_alternative_source ||
             (last_gpu_or_frontier_source && capable_frontier_sources <= 1)};
+        // Pause uses advertised body-capable peers, not proven delivery.
+        // Cold-start never has has_served_block; requiring it left the silent
+        // first GETDATA owner unpaused so it re-won the slot (issue #163
+        // follow-on / peerman silent-failover tests). Disconnect still uses
+        // the proven-delivery has_alternative_source above.
+        const CBlockIndex* const overdue_index{
+            m_chainman.m_blockman.LookupBlockIndex(item.hash)};
+        const bool advertised_takeover{
+            HasAlternativeBlockDownloadSource(
+                item.nodeid, overdue_index, now,
+                /*require_served_block=*/false)};
         const int eligible_sources_for_pause{
-            item.has_alternative_source ? std::max(2, peers_downloading_before)
-                                        : 1};
+            std::max(peers_downloading_before,
+                     (item.has_alternative_source || advertised_takeover) ? 2 : 1)};
         const bool may_pause{node::matmul_trusted::CatchUpMayPauseOnSlowDelivery(
             far_behind, keep_catchup_source, last_gpu_or_frontier_source,
             eligible_sources_for_pause)};
@@ -22136,7 +22154,12 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 const uint256 stuck_hash{queuedBlock.pindex->GetBlockHash()};
                 const bool has_alternative_source{
                     HasAlternativeBlockDownloadSource(
-                        pto->GetId(), queuedBlock.pindex, current_time)};
+                        pto->GetId(), queuedBlock.pindex, current_time,
+                        /*require_served_block=*/true)};
+                const bool advertised_takeover{
+                    HasAlternativeBlockDownloadSource(
+                        pto->GetId(), queuedBlock.pindex, current_time,
+                        /*require_served_block=*/false)};
                 const int inflight_secs{
                     static_cast<int>(count_microseconds(current_time - head_requested_at) / 1000000)};
                 // Release the stuck request immediately so the block is eligible
@@ -22218,9 +22241,10 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                     node::matmul_trusted::CatchUpMayPauseOnSlowDelivery(
                         far_behind_download, keep_catchup_source,
                         last_gpu_or_frontier_source,
-                        has_alternative_source
-                            ? std::max(2, peers_downloading_before)
-                            : 1)};
+                        std::max(peers_downloading_before,
+                                 (has_alternative_source || advertised_takeover)
+                                     ? 2
+                                     : 1))};
                 if (!may_disconnect) {
                     if (may_pause) {
                         state.m_block_download_paused_until =
