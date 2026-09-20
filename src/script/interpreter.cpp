@@ -2540,6 +2540,13 @@ size_t static WitnessSigOps(int witversion, const std::vector<unsigned char>& wi
             case OP_CHECKSIG_SLHDSA:
                 n_sigops += VALIDATION_WEIGHT_PER_SLHDSA_SIGOP;
                 break;
+            case OP_CHECKSIGFROMSTACK:
+                // Same verification as CHECKSIG_*; the opcode is shared across
+                // algorithms, so count at the SLH-DSA weight (the per-opcode
+                // maximum). A leaf that also contains CHECKSIG_* still adds
+                // those arms separately.
+                n_sigops += VALIDATION_WEIGHT_PER_SLHDSA_SIGOP;
+                break;
             case OP_CHECKSIGADD_MLDSA:
                 n_sigops += VALIDATION_WEIGHT_PER_MLDSA_MULTISIG_SIGOP;
                 break;
