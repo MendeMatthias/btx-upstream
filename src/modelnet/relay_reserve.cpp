@@ -102,6 +102,18 @@ bool RelayTable::AllowForward(const std::string& reservation_id, uint64_t nbytes
     return false;
 }
 
+void RelayTable::AddForwardedBytes(const std::string& reservation_id, uint64_t nbytes, int64_t now_ms)
+{
+    if (nbytes == 0) return;
+    for (auto& r : m_rsvp) {
+        if (r.reservation_id != reservation_id) continue;
+        r.bytes_used += nbytes;
+        r.last_activity_ms = now_ms;
+        m_forwarded += nbytes;
+        return;
+    }
+}
+
 void RelayTable::CloseConn(const std::string& reservation_id)
 {
     for (auto& r : m_rsvp) {

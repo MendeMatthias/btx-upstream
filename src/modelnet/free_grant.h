@@ -79,7 +79,8 @@ bool VerifyHostedFreeGrant(const fs::path& helper_dir,
                            int64_t now,
                            const std::string& use_key,
                            UniValue& body,
-                           std::string& err);
+                           std::string& err,
+                           bool record_use = true);
 
 bool RejectExpiredTamperedReplay(Span<const unsigned char> payload,
                                   Span<const unsigned char> sig,

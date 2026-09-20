@@ -1178,8 +1178,9 @@ std::vector<ModelSearchRecord> SearchIndex::All() const
 
 bool QueryDedupe::Admit(const std::string& query_id)
 {
-    if (query_id.empty()) return false;
+    if (query_id.empty() || query_id.size() > 128) return false;
     if (seen.count(query_id)) return false;
+    if (seen.size() >= 4096) seen.clear();
     seen.insert(query_id);
     return true;
 }

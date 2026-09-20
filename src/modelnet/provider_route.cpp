@@ -6,6 +6,7 @@
 
 #include <crypto/common.h>
 #include <modelnet/crypto.h>
+#include <modelnet/model_nat.h>
 #include <util/strencodings.h>
 
 #include <algorithm>
@@ -185,7 +186,17 @@ bool ProviderRecordFromJson(const UniValue& o, ProviderRecord& r, std::string& e
     if (o.exists("endpoints") && o["endpoints"].isArray()) {
         for (const auto& e : o["endpoints"].getValues()) {
             if (r.endpoints.size() >= PROVIDER_MAX_ENDPOINTS) break;
-            if (e.isStr()) r.endpoints.push_back(e.get_str());
+            if (!e.isStr()) continue;
+            if (e.get_str().size() > 256) {
+                err = "endpoint too long";
+                return false;
+            }
+            std::string eerr;
+            if (IsForbiddenRelayEndpoint(e.get_str(), eerr)) {
+                err = eerr.empty() ? "forbidden endpoint" : eerr;
+                return false;
+            }
+            r.endpoints.push_back(e.get_str());
         }
     }
     if (o.exists("reachability_kind")) r.reachability_kind = o["reachability_kind"].get_str();

@@ -527,6 +527,7 @@ bool AcceptSignedAnnounce(const UniValue& body, int64_t now, SignedRecordHint& h
     h.pubkey = *pk;
     h.signed_ok = true;
     h.expiry = decoded.exists("expires_at") ? decoded["expires_at"].getInt<int64_t>() : 0;
+    if (h.expiry == 0) h.expiry = now + 86400;
     h.provider_id = decoded.exists("signer_id") ? decoded["signer_id"].get_str() : ProviderId(*pk).Hex();
     return true;
 }
@@ -945,7 +946,6 @@ struct Pq1Session {
             return a.pref < b.pref;
         });
 
-        const std::string endpoint = host + ":" + std::to_string(port);
         std::string last_try_err = "connect failed";
         for (const auto& c : cands) {
             if (stop && stop->load()) {
@@ -955,7 +955,7 @@ struct Pq1Session {
             }
             CService resolved;
             if (!resolved.SetSockAddr(reinterpret_cast<const sockaddr*>(&c.ss), c.len) ||
-                IsForbiddenOutboundDialAddr(resolved)) {
+                IsForbiddenOutboundDialAddr(resolved) || IsForbiddenControlPort(resolved.GetPort())) {
                 last_try_err = "non-public dial target";
                 continue;
             }
@@ -1008,7 +1008,7 @@ struct Pq1Session {
                 last_try_err = pinerr.empty() ? "no peer certificate" : pinerr;
                 continue;
             }
-            if (!pinfile.empty() && !CheckOrStorePin(pinfile, endpoint, pin, pinerr)) {
+            if (!pinfile.empty() && !CheckOrStorePin(pinfile, resolved.ToStringAddrPort(), pin, pinerr)) {
                 err = pinerr.empty() ? "peer cert pin mismatch (TOFU)" : pinerr;
                 Close();
                 return false;
@@ -1248,6 +1248,8 @@ static QueryDedupe g_search_dedupe;
 static bool g_search_bound{false};
 static FeedStore g_feed;
 static CampaignIndex g_campaigns;
+static std::mutex g_campaign_mu;
+static std::mutex g_receipts_mu;
 static std::map<std::string, FundingObservation> g_chain_obs;
 static bool g_feed_loaded{false};
 static fs::path g_econ_dir;
@@ -1364,6 +1366,7 @@ FundingObservation ObservationFromHit(const SearchHit& h, const ReleaseCampaign*
 
 ModelEconomyEntry EconomyForHit(const SearchHit& h, ModelCatalog* cat = nullptr)
 {
+    std::lock_guard<std::mutex> lock(g_campaign_mu);
     const ReleaseCampaign* c = g_campaigns.GetByModel(h.rec.model_id);
     if (!c && !h.rec.release_id.empty()) c = g_campaigns.GetByReleaseHex(h.rec.release_id);
     return ComposeEconomyEntry(h, c, ObservationFromHit(h, c, cat));
@@ -1441,8 +1444,8 @@ void IngestCatalogIntoSearch(ModelCatalog& cat)
 
 std::string OriginRatePeer(const NativeRequest& req)
 {
-    if (!req.transport_pin.empty()) return req.transport_pin;
     if (!req.peer_addr.empty()) return req.peer_addr;
+    if (!req.transport_pin.empty()) return req.transport_pin;
     const std::string from = RequestHeader(req, "X-BTX-From");
     return from.empty() ? "pq1-peer" : from;
 }
@@ -1484,7 +1487,7 @@ bool CheckFreeGrantEntitlement(const ModelCatalog& cat, const NativeRequest& req
     const std::string use_key = whole_file ? ("f" + std::to_string(file_index) + ":all")
                                            : ("f" + std::to_string(file_index) + ":p" + std::to_string(piece_index));
     if (!payload || !sig ||
-        !VerifyHostedFreeGrant(HelperDir(cat), *payload, *sig, presented, now, use_key, gbody, gerr)) {
+        !VerifyHostedFreeGrant(HelperDir(cat), *payload, *sig, presented, now, use_key, gbody, gerr, /*record_use=*/false)) {
         resp.status = 403;
         resp.body = JsonError("ENTITLEMENT", gerr.empty() ? "invalid FreeGrant" : gerr);
         return false;
@@ -1508,6 +1511,11 @@ bool CheckFreeGrantEntitlement(const ModelCatalog& cat, const NativeRequest& req
     } else if (gfile != file_index || count == 0 || piece_index < first || piece_index >= first + count) {
         resp.status = 403;
         resp.body = JsonError("ENTITLEMENT", "piece not in grant range");
+        return false;
+    }
+    if (!VerifyHostedFreeGrant(HelperDir(cat), *payload, *sig, presented, now, use_key, gbody, gerr, /*record_use=*/true)) {
+        resp.status = 403;
+        resp.body = JsonError("ENTITLEMENT", gerr.empty() ? "invalid FreeGrant" : gerr);
         return false;
     }
     return true;
@@ -1973,8 +1981,8 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         DialbackRequest dr;
         dr.request_id = body.exists("request_id") ? body["request_id"].get_str() : "";
         dr.candidate = body.exists("candidate") ? body["candidate"].get_str() : "";
-        dr.requester = body.exists("requester") ? body["requester"].get_str() : "peer";
-        dr.requester_netgroup = body.exists("requester_netgroup") ? body["requester_netgroup"].get_str() : "";
+        dr.requester = OriginRatePeer(req).substr(0, 64);
+        dr.requester_netgroup = OriginRateNetgroup(req).substr(0, 64);
         dr.now_ms = ConnNowMs();
         std::string err;
         std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
@@ -2010,6 +2018,11 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.body = JsonError("RELAY_DISABLED", "relay reservations require -modelrelay");
             return true;
         }
+        if (req.peer_addr.empty()) {
+            resp.status = 403;
+            resp.body = JsonError("RESERVE_REJECT", "relay reservations require a transport peer");
+            return true;
+        }
         const std::string endpoint = body.exists("relay_endpoint") ? body["relay_endpoint"].get_str() : "";
         std::string host;
         uint16_t port = 0;
@@ -2026,8 +2039,8 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         RelayReservation out;
         std::string err;
         std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
-        if (!g_swarm.relays.Reserve(body.exists("service_id") ? body["service_id"].get_str() : "",
-                                    body.exists("netgroup") ? body["netgroup"].get_str() : "",
+        if (!g_swarm.relays.Reserve(req.transport_pin.empty() ? req.peer_addr : req.transport_pin,
+                                    req.peer_netgroup.empty() ? req.peer_addr : req.peer_netgroup,
                                     endpoint,
                                     ConnNowMs(), out, err)) {
             resp.status = 403;
@@ -2443,7 +2456,7 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             return true;
         }
         CatalogEntry e;
-        if (!cat.Find(model_id, e) || !e.seeded) {
+        if (!cat.Find(model_id, e) || !e.seeded || e.incomplete || !e.bytes_verified) {
             resp.status = 404;
             resp.body = JsonError("NOT_FOUND", "no seeded local grant");
             return true;
@@ -2459,7 +2472,7 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         const uint32_t first_piece = body.exists("first_piece") ? body["first_piece"].getInt<uint32_t>() : 0;
         uint32_t piece_count = body.exists("piece_count") ? body["piece_count"].getInt<uint32_t>() : 0;
         if (piece_count == 0) piece_count = n_pieces > first_piece ? n_pieces - first_piece : 0;
-        if (piece_count == 0 || first_piece >= n_pieces || first_piece > n_pieces - piece_count) {
+        if (piece_count == 0 || first_piece >= n_pieces || piece_count > n_pieces - first_piece) {
             resp.status = 400;
             resp.body = JsonError("INVALID_PARAMETER", "piece range");
             return true;
@@ -2484,6 +2497,9 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
                 return true;
             }
         } else {
+            GetStrongRandBytes(Span<unsigned char>{grant_nonce.data.data(), grant_nonce.data.size()});
+        }
+        if (grant_nonce.Hex() == std::string(64, '0')) {
             GetStrongRandBytes(Span<unsigned char>{grant_nonce.data.data(), grant_nonce.data.size()});
         }
         uint64_t sequence = 1;
@@ -2581,6 +2597,7 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             return true;
         }
         UniValue store;
+        std::lock_guard<std::mutex> rlock(g_receipts_mu);
         ReadJsonFile(HelperDir(cat) / "receipts.json", store);
         UniValue arr = store.exists("receipts") ? store["receipts"] : UniValue(UniValue::VARR);
         if (arr.size() >= 256) {
@@ -6857,6 +6874,7 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             err = "amount_atoms";
             return false;
         }
+        std::lock_guard<std::mutex> camp_lock(g_campaign_mu);
         auto* c = const_cast<ReleaseCampaign*>(g_campaigns.GetByRelease(id));
         if (!c) {
             err_code = "NOT_FOUND";
@@ -8836,9 +8854,15 @@ void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* 
     // host:port in Pq1Session::Connect.
     ClearUnauth(netgroup);
     int requests = 0;
+    const auto conn_start = std::chrono::steady_clock::now();
     for (;;) {
         if (stop && stop->load()) break;
         if (requests >= PQ1_MAX_REQUESTS_PER_CONN) break;
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - conn_start)
+                .count() >= PQ1_CONN_MAX_MS) {
+            break;
+        }
         const std::string raw = SslReadHttp(ssl, cfd, MAX_RPC_BODY + 8192, PQ1_IDLE_MS, stop);
         if (raw.empty()) break;
         ++requests;
@@ -8916,14 +8940,20 @@ void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* 
             if (dfd >= 0) {
                 SetPq1SocketOpts(dfd, true);
                 uint64_t moved = 0;
+                const auto splice_start = std::chrono::steady_clock::now();
                 while (!stop || !stop->load()) {
                     if (moved >= cap) break;
+                    if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - splice_start)
+                            .count() >= PQ1_RELAY_SPLICE_MS) {
+                        break;
+                    }
                     pollfd pf[2]{};
                     pf[0].fd = cfd;
                     pf[0].events = POLLIN;
                     pf[1].fd = dfd;
                     pf[1].events = POLLIN;
-                    const int pr = poll(pf, 2, 15000);
+                    const int pr = poll(pf, 2, 1000);
                     if (pr <= 0) break;
                     unsigned char buf[16384];
                     if (pf[0].revents & POLLIN) {
@@ -8940,6 +8970,10 @@ void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* 
                     }
                 }
                 close(dfd);
+                if (moved > 0 && !nresp.splice_reservation_id.empty()) {
+                    std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+                    g_swarm.relays.AddForwardedBytes(nresp.splice_reservation_id, moved, ConnNowMs());
+                }
             }
             if (!nresp.splice_reservation_id.empty()) {
                 std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
@@ -9114,7 +9148,7 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
     if (peers.empty()) return;
     static std::atomic<size_t> peer_cursor{0};
     const size_t n = peers.size();
-    const size_t visit = std::min(n, PEX_MAX_RECORDS_PER_MESSAGE);
+    const size_t visit = peers.empty() ? 0 : 1;
     const size_t start = peer_cursor.fetch_add(visit) % n;
     for (size_t i = 0; i < visit; ++i) {
         const std::string& endpoint = peers[(start + i) % n];
@@ -9334,8 +9368,19 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
               << "\n";
     std::cout.flush();
 
-    // Preserve-rare: first tick immediately, then every 5s (fail-fast e2e; not a 60s stall).
-    auto last_preserve = std::chrono::steady_clock::now() - std::chrono::seconds(5);
+    std::thread preserve_thr([&] {
+        while (!stop->load()) {
+            for (int i = 0; i < 20 && !stop->load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
+            if (stop->load()) break;
+            if (cat.Policy().preserve_rare ||
+                (cat.Policy().follow_configured_peers && cat.Policy().seed_mode == SeedMode::AUTO)) {
+                TryPreserveRareTick(cat, pq, pinfile, stop);
+            }
+        }
+    });
+
     auto last_quota = std::chrono::steady_clock::now();
     auto last_watch = std::chrono::steady_clock::now() - std::chrono::seconds(5);
     while (!stop->load()) {
@@ -9353,12 +9398,6 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
             std::chrono::steady_clock::now() - last_quota >= std::chrono::seconds(60)) {
             RefreshAutoStorage(cfg, &cat);
             last_quota = std::chrono::steady_clock::now();
-        }
-        if ((cat.Policy().preserve_rare ||
-             (cat.Policy().follow_configured_peers && cat.Policy().seed_mode == SeedMode::AUTO)) &&
-            std::chrono::steady_clock::now() - last_preserve >= std::chrono::seconds(5)) {
-            TryPreserveRareTick(cat, pq, pinfile, stop);
-            last_preserve = std::chrono::steady_clock::now();
         }
         if (!g_runtime.watch_dir.empty() &&
             std::chrono::steady_clock::now() - last_watch >= std::chrono::seconds(5)) {
@@ -9378,7 +9417,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
             }
         }
         if (tcp_fd >= 0 && (fds[1].revents & POLLIN)) {
-            sockaddr_in peer{};
+            sockaddr_storage peer{};
             socklen_t plen = sizeof(peer);
             const int c = accept(tcp_fd, reinterpret_cast<sockaddr*>(&peer), &plen);
             if (c >= 0) {
@@ -9396,8 +9435,13 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
                 job.unix_rpc = false;
                 job.netgroup = ng;
                 {
-                    char ip[INET_ADDRSTRLEN]{};
-                    if (inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip))) job.peer_addr = ip;
+                    char ip[INET6_ADDRSTRLEN]{};
+                    if (peer.ss_family == AF_INET) {
+                        inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(&peer)->sin_addr, ip, sizeof(ip));
+                    } else if (peer.ss_family == AF_INET6) {
+                        inet_ntop(AF_INET6, &reinterpret_cast<sockaddr_in6*>(&peer)->sin6_addr, ip, sizeof(ip));
+                    }
+                    job.peer_addr = ip;
                 }
                 if (!enqueue_pq1(job)) {
                     GlobalConnLimits().ReleaseInbound(ng);
@@ -9408,6 +9452,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
     }
     unix_qcv.notify_all();
     pq1_qcv.notify_all();
+    if (preserve_thr.joinable()) preserve_thr.join();
     for (auto& w : workers) w.join();
     JoinRetrieveJobs();
     close(unix_fd);

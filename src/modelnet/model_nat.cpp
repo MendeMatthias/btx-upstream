@@ -98,8 +98,11 @@ bool IsForbiddenRelayAddr(const CNetAddr& addr)
 bool IsForbiddenOutboundDialAddr(const CNetAddr& addr)
 {
     if (!addr.IsValid()) return false;
-    if (addr.IsLocal() || addr.IsBindAny()) return true;
-    if (addr.IsRFC2544() || addr.IsRFC3927()) return true;
+    if (addr.IsLocal() || addr.IsInternal() || addr.IsBindAny()) return true;
+    if (addr.IsRFC2544() || addr.IsRFC3927() || addr.IsRFC4193() || addr.IsRFC4862() ||
+        addr.IsRFC6598()) {
+        return true;
+    }
     return false;
 }
 
@@ -113,7 +116,11 @@ bool IsForbiddenRelayEndpoint(const std::string& endpoint, std::string& err)
         return true;
     }
     const CService numeric = LookupNumeric(host, port);
-    if (numeric.IsValid() && IsForbiddenRelayAddr(numeric)) {
+    if (!numeric.IsValid()) {
+        err = "endpoint must be numeric host:port";
+        return true;
+    }
+    if (IsForbiddenRelayAddr(numeric)) {
         err = "non-public relay target";
         return true;
     }

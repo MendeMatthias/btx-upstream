@@ -63,6 +63,7 @@ public:
                   RelayReservation& out, std::string& err);
     void Expire(int64_t now_ms);
     bool AllowForward(const std::string& reservation_id, uint64_t nbytes, int64_t now_ms, std::string& err);
+    void AddForwardedBytes(const std::string& reservation_id, uint64_t nbytes, int64_t now_ms);
     void CloseConn(const std::string& reservation_id);
     bool Has(const std::string& reservation_id) const;
     bool Get(const std::string& reservation_id, RelayReservation& out) const;

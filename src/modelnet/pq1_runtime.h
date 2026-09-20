@@ -29,7 +29,9 @@ constexpr int PQ1_INFLIGHT_PIECES = 8;
 constexpr int PQ1_HANDSHAKE_MS = 10000;
 constexpr int PQ1_IDLE_MS = 30000;
 constexpr int PQ1_MAX_REQUESTS_PER_CONN = 32;
+constexpr int PQ1_CONN_MAX_MS = 120000;
 constexpr int PQ1_RELAY_CONNECT_MS = 5000;
+constexpr int PQ1_RELAY_SPLICE_MS = 30000;
 /** 4 MiB piece on a slow WAN; 120s fail-closed the granite fresh-buyer. */
 constexpr int PQ1_TRANSFER_MS = 600000;
 constexpr int PQ1_UNAUTH_HANDSHAKE_LIMIT = 4;

@@ -220,6 +220,8 @@ BOOST_AUTO_TEST_CASE(pex_and_outbound_skip_loopback_and_lan_pex)
     BOOST_CHECK(IsForbiddenOutboundDialAddr(imds));
     BOOST_CHECK(!IsForbiddenOutboundDialAddr(lan));
     BOOST_CHECK(!IsForbiddenOutboundDialAddr(pub));
+    BOOST_CHECK(IsForbiddenControlPort(8332));
+    BOOST_CHECK(IsForbiddenPexEndpoint("not-a-host.example:29447", err));
 }
 
 BOOST_AUTO_TEST_CASE(grant_issue_ignores_client_ttl)

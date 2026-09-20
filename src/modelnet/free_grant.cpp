@@ -282,6 +282,10 @@ bool RedeemGrantUseUnlocked(UniValue& store, const std::string& nonce_hex, const
             return false;
         }
     }
+    if (arr.size() >= 256) {
+        err = "grant use cap";
+        return false;
+    }
     arr.push_back(use_key);
     used.pushKV(nonce_hex, arr);
     store.pushKV("uses", used);
@@ -295,7 +299,8 @@ bool VerifyHostedFreeGrant(const fs::path& helper_dir,
                            int64_t now,
                            const std::string& use_key,
                            UniValue& body,
-                           std::string& err)
+                           std::string& err,
+                           bool record_use)
 {
     std::vector<unsigned char> host_pk, host_sk;
     Digest48 signer_id;
@@ -308,8 +313,12 @@ bool VerifyHostedFreeGrant(const fs::path& helper_dir,
     }
     std::lock_guard<std::mutex> lock(g_grant_store_mu);
     if (!VerifyFreeGrant(payload, sig, host_pk, now, {}, body, err)) return false;
+    if (!record_use) return true;
     UniValue store;
-    ReadObj(helper_dir / "grant_redeems.json", store);
+    if (!ReadObj(helper_dir / "grant_redeems.json", store)) {
+        err = "grant redeem store";
+        return false;
+    }
     const std::string nonce = body["grant_nonce"].get_str();
     if (!RedeemGrantUseUnlocked(store, nonce, use_key, err)) return false;
     return WriteObj(helper_dir / "grant_redeems.json", store, err);
@@ -323,7 +332,10 @@ bool ConsumeGrantNonce(const fs::path& helper_dir, const std::string& nonce_hex,
     }
     std::lock_guard<std::mutex> lock(g_grant_store_mu);
     UniValue store;
-    ReadObj(helper_dir / "grant_nonces.json", store);
+    if (!ReadObj(helper_dir / "grant_nonces.json", store)) {
+        err = "grant nonce store";
+        return false;
+    }
     UniValue arr = store.exists("nonces") ? store["nonces"] : UniValue(UniValue::VARR);
     for (const auto& n : arr.getValues()) {
         if (n.isStr() && n.get_str() == nonce_hex) {
