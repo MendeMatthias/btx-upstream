@@ -426,6 +426,9 @@ BOOST_AUTO_TEST_CASE(swarm_nat_01_10_control_plane)
     BOOST_CHECK(IsForbiddenRelayEndpoint("10.0.0.1:29447", err));
     BOOST_CHECK(IsForbiddenRelayEndpoint("127.0.0.1:29447", err));
     BOOST_CHECK(!IsForbiddenRelayEndpoint("203.0.113.1:29447", err));
+    BOOST_CHECK(IsForbiddenPexEndpoint("10.0.0.1:29447", err));
+    BOOST_CHECK(IsForbiddenPexEndpoint("127.0.0.1:29447", err));
+    BOOST_CHECK(!IsForbiddenPexEndpoint("203.0.113.1:29447", err));
     BOOST_CHECK(!MayAdvertiseModelHost(true, false, false));
     BOOST_CHECK(MayAdvertiseModelHost(true, true, false));
     BOOST_CHECK(!MayAdvertiseModelHost(true, true, true));

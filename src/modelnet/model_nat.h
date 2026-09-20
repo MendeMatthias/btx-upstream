@@ -34,6 +34,7 @@ struct ModelMapResult {
 bool IsForbiddenControlPort(uint16_t port);
 bool IsForbiddenControlEndpoint(const std::string& endpoint, std::string& err);
 bool IsForbiddenRelayAddr(const CNetAddr& addr);
+bool IsForbiddenOutboundDialAddr(const CNetAddr& addr);
 bool IsForbiddenRelayEndpoint(const std::string& endpoint, std::string& err);
 bool SplitListenBind(const std::string& bind, std::string& host, uint16_t& port);
 

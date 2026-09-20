@@ -95,6 +95,14 @@ bool IsForbiddenRelayAddr(const CNetAddr& addr)
     return false;
 }
 
+bool IsForbiddenOutboundDialAddr(const CNetAddr& addr)
+{
+    if (!addr.IsValid()) return false;
+    if (addr.IsLocal() || addr.IsBindAny()) return true;
+    if (addr.IsRFC2544() || addr.IsRFC3927()) return true;
+    return false;
+}
+
 bool IsForbiddenRelayEndpoint(const std::string& endpoint, std::string& err)
 {
     if (IsForbiddenControlEndpoint(endpoint, err)) return true;

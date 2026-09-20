@@ -154,8 +154,8 @@ BOOST_AUTO_TEST_CASE(pool_13_caps_and_hash160_refused)
     // Unsigned/fake payment POST must be refused. HTTP 200 here is a real bug
     // (NativeResponse defaults to 200; do not treat journal-intent as success).
     BOOST_CHECK_NE(resp.status, 200);
-    BOOST_CHECK_MESSAGE(resp.status == 400 || resp.status == 404,
-                        "unsigned/fake payment POST must be 400 or 404, never 200; status=" +
+    BOOST_CHECK_MESSAGE(resp.status == 400 || resp.status == 403 || resp.status == 404,
+                        "unsigned/fake payment POST must be 400, 403, or 404, never 200; status=" +
                             std::to_string(resp.status));
 
     modelnet::AccessPolicy acl;

@@ -77,7 +77,7 @@ bool ParseProviderHint(const UniValue& obj, int64_t now_ms, int64_t ttl_ms, Prov
 
 bool IsForbiddenPexEndpoint(const std::string& endpoint, std::string& err)
 {
-    return IsForbiddenControlEndpoint(endpoint, err);
+    return IsForbiddenRelayEndpoint(endpoint, err);
 }
 
 bool ProviderExchange::Ingest(const std::string& from_endpoint,

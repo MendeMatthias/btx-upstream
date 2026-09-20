@@ -331,8 +331,15 @@ bool ConsumeGrantNonce(const fs::path& helper_dir, const std::string& nonce_hex,
             return false;
         }
     }
-    arr.push_back(nonce_hex);
-    store.pushKV("nonces", arr);
+    constexpr size_t kGrantNonceCap = 4096;
+    UniValue kept(UniValue::VARR);
+    const auto values = arr.getValues();
+    const size_t start = values.size() > kGrantNonceCap - 1 ? values.size() - (kGrantNonceCap - 1) : 0;
+    for (size_t i = start; i < values.size(); ++i) {
+        kept.push_back(values[i]);
+    }
+    kept.push_back(nonce_hex);
+    store.pushKV("nonces", kept);
     const uint64_t seq = store.exists("sequence") ? store["sequence"].getInt<uint64_t>() + 1 : 1;
     store.pushKV("sequence", seq);
     sequence = seq;

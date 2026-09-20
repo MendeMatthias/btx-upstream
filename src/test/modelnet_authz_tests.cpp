@@ -10,7 +10,9 @@
 #include <modelnet/model_nat.h>
 #include <modelnet/records.h>
 #include <modelnet/relay_reserve.h>
+#include <modelnet/provider_exchange.h>
 #include <modelnet/transport_pq.h>
+#include <netbase.h>
 #include <span.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
@@ -172,6 +174,78 @@ BOOST_AUTO_TEST_CASE(pq1_sigalg_fail_closed)
     BOOST_CHECK(!modelnet::IsStrictPq1(n));
     n.sigalg = "mldsa44";
     BOOST_CHECK(modelnet::IsStrictPq1(n));
+}
+
+BOOST_AUTO_TEST_CASE(quotes_payment_autonat_report_owner_unix)
+{
+    const fs::path tmp = m_path_root / "authz-owner";
+    modelnet::ModelCatalog cat{tmp, 1 << 20};
+    modelnet::NativeRequest nreq;
+    modelnet::NativeResponse nresp;
+    nreq.method = "POST";
+    nreq.path = "/btx-model/2/quotes";
+    nreq.body = "{\"model_id\":\"" + std::string(96, 'a') + "\",\"price_atoms\":1}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 403);
+
+    nreq.path = "/btx-model/2/transfers/x/payment";
+    nreq.body = "{\"txid\":\"aa11bb22\",\"quote_id\":\"q\"}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 403);
+
+    nreq.path = "/btx-model/2/ext/autonat/report";
+    nreq.body = "{\"ok\":true,\"observer_id\":\"a\",\"observer_netgroup\":\"n1\",\"observed_endpoint\":\"203.0.113.8:29447\"}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 403);
+
+    nreq.path = "/btx-model/2/ext/relay/reserve";
+    nreq.body = "{\"service_id\":\"svc\",\"netgroup\":\"ng\",\"relay_endpoint\":\"203.0.113.1:29447\"}";
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_CHECK_EQUAL(nresp.status, 403);
+}
+
+BOOST_AUTO_TEST_CASE(pex_and_outbound_skip_loopback_and_lan_pex)
+{
+    using namespace modelnet;
+    std::string err;
+    BOOST_CHECK(IsForbiddenPexEndpoint("10.0.0.1:29447", err));
+    BOOST_CHECK(IsForbiddenPexEndpoint("127.0.0.1:29447", err));
+    BOOST_CHECK(!IsForbiddenPexEndpoint("203.0.113.1:29447", err));
+
+    const CService loop = LookupNumeric("127.0.0.1", DEFAULT_MODEL_PORT);
+    const CService imds = LookupNumeric("169.254.169.254", DEFAULT_MODEL_PORT);
+    const CService lan = LookupNumeric("10.0.0.1", DEFAULT_MODEL_PORT);
+    const CService pub = LookupNumeric("203.0.113.1", DEFAULT_MODEL_PORT);
+    BOOST_CHECK(IsForbiddenOutboundDialAddr(loop));
+    BOOST_CHECK(IsForbiddenOutboundDialAddr(imds));
+    BOOST_CHECK(!IsForbiddenOutboundDialAddr(lan));
+    BOOST_CHECK(!IsForbiddenOutboundDialAddr(pub));
+}
+
+BOOST_AUTO_TEST_CASE(grant_issue_ignores_client_ttl)
+{
+    const fs::path tmp = m_path_root / "authz-grant-ttl";
+    modelnet::ModelCatalog cat{tmp, 8 << 20};
+    const auto imported = ImportTiny(cat);
+    modelnet::NativeRequest nreq;
+    nreq.method = "POST";
+    nreq.path = "/btx-model/2/ext/free/grant";
+    UniValue req(UniValue::VOBJ);
+    req.pushKV("model_id", imported.model_id.Hex());
+    req.pushKV("first_piece", 0);
+    req.pushKV("piece_count", 1);
+    req.pushKV("issued_at", 1);
+    req.pushKV("expires_at", 4000000000);
+    nreq.body = req.write();
+    modelnet::NativeResponse nresp;
+    BOOST_REQUIRE(modelnet::HandleNativeRequest(cat, nreq, nresp));
+    BOOST_REQUIRE_EQUAL(nresp.status, 200);
+    UniValue gj;
+    BOOST_REQUIRE(gj.read(nresp.body));
+    const int64_t issued = gj["issued_at"].getInt<int64_t>();
+    const int64_t expires = gj["expires_at"].getInt<int64_t>();
+    BOOST_CHECK_NE(issued, 1);
+    BOOST_CHECK_LE(expires - issued, modelnet::FREE_GRANT_LIFETIME_S);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

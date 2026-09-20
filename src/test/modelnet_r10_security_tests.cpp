@@ -508,6 +508,7 @@ BOOST_AUTO_TEST_CASE(r10_pex_message_caps_and_ttl_clamp)
         BOOST_CHECK(pex.Recent(now).empty());
         BOOST_CHECK(IsForbiddenPexEndpoint("203.0.113.1:8332", err));
         BOOST_CHECK(IsForbiddenPexEndpoint("203.0.113.1:29447/.cookie", err));
+        BOOST_CHECK(IsForbiddenPexEndpoint("10.0.0.1:29447", err));
         BOOST_CHECK(!IsForbiddenPexEndpoint("203.0.113.1:29447", err));
     }
 

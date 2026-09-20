@@ -1050,6 +1050,7 @@ bool ModelCatalog::PutFetchedPiece(const Digest48& artifact, uint32_t file_index
 void ModelCatalog::AddPeer(const std::string& endpoint)
 {
     std::lock_guard<std::mutex> lock(m_mu);
+    if (m_peers.size() >= 64) return;
     if (std::find(m_peers.begin(), m_peers.end(), endpoint) == m_peers.end()) {
         m_peers.push_back(endpoint);
         std::string err;

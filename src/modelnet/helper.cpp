@@ -953,6 +953,12 @@ struct Pq1Session {
                 Close();
                 return false;
             }
+            CService resolved;
+            if (!resolved.SetSockAddr(reinterpret_cast<const sockaddr*>(&c.ss), c.len) ||
+                IsForbiddenOutboundDialAddr(resolved)) {
+                last_try_err = "non-public dial target";
+                continue;
+            }
             CloseTransport();
             fd = ::socket(c.family, c.socktype, c.protocol);
             if (fd < 0) {
@@ -1631,7 +1637,7 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         }
         uint64_t upload_slot = 0;
         std::string upload_err;
-        if (!TryAdmitModelUpload(gbody.exists("grant_nonce") ? gbody["grant_nonce"].get_str() : entry.artifact_id.Hex(),
+        if (!TryAdmitModelUpload(OriginRatePeer(req),
                                  OriginRateNetgroup(req), bytes.size(), upload_slot, upload_err)) {
             resp.status = 429;
             resp.body = JsonError("UPLOAD_SCHEDULER", upload_err.empty() ? "upload slots full" : upload_err);
@@ -1988,22 +1994,8 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         return true;
     }
     if (req.path == root + "ext/autonat/report" && req.method == "POST") {
-        UniValue body;
-        if (!body.read(req.body) || !body.isObject()) {
-            resp.status = 400;
-            resp.body = JsonError("BAD_JSON", "report body");
-            return true;
-        }
-        DialbackReport r;
-        r.request_id = body.exists("request_id") ? body["request_id"].get_str() : "";
-        r.observer_id = body.exists("observer_id") ? body["observer_id"].get_str() : "";
-        r.observer_netgroup = body.exists("observer_netgroup") ? body["observer_netgroup"].get_str() : "";
-        r.observed_endpoint = body.exists("observed_endpoint") ? body["observed_endpoint"].get_str() : "";
-        r.ok = body.exists("ok") && body["ok"].get_bool();
-        r.at_ms = ConnNowMs();
-        std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
-        g_swarm.reach.NoteReport(r, r.at_ms);
-        resp.body = g_swarm.reach.StatusJson().write();
+        resp.status = 403;
+        resp.body = JsonError("OWNER_ONLY", "autonat reports are unix-rpc only");
         return true;
     }
     if (req.path == root + "ext/relay/reserve" && req.method == "POST") {
@@ -2013,12 +2005,30 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.body = JsonError("BAD_JSON", "reserve body");
             return true;
         }
+        if (!g_swarm.relay) {
+            resp.status = 403;
+            resp.body = JsonError("RELAY_DISABLED", "relay reservations require -modelrelay");
+            return true;
+        }
+        const std::string endpoint = body.exists("relay_endpoint") ? body["relay_endpoint"].get_str() : "";
+        std::string host;
+        uint16_t port = 0;
+        if (!SplitListenBind(endpoint, host, port) || port != DEFAULT_MODEL_PORT) {
+            resp.status = 403;
+            resp.body = JsonError("RESERVE_REJECT", "relay_endpoint must be host:29447");
+            return true;
+        }
+        if (!req.peer_addr.empty() && host != req.peer_addr) {
+            resp.status = 403;
+            resp.body = JsonError("RESERVE_REJECT", "relay_endpoint host must match transport peer");
+            return true;
+        }
         RelayReservation out;
         std::string err;
         std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
         if (!g_swarm.relays.Reserve(body.exists("service_id") ? body["service_id"].get_str() : "",
                                     body.exists("netgroup") ? body["netgroup"].get_str() : "",
-                                    body.exists("relay_endpoint") ? body["relay_endpoint"].get_str() : "",
+                                    endpoint,
                                     ConnNowMs(), out, err)) {
             resp.status = 403;
             resp.body = JsonError("RESERVE_REJECT", err);
@@ -2203,126 +2213,13 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         return true;
     }
     if ((req.path == root + "quotes" || req.path == std::string(MODEL_HTTP_ROOT) + "quotes") && req.method == "POST") {
-        UniValue body;
-        if (!body.read(req.body) || !body.isObject()) {
-            resp.status = 400;
-            resp.body = JsonError("BAD_JSON", "quote body");
-            return true;
-        }
-        Digest48 model_id, artifact_id;
-        std::string err;
-        if (!body.exists("model_id") || !Digest48::FromHex(body["model_id"].get_str(), model_id, err)) {
-            resp.status = 400;
-            resp.body = JsonError("INVALID_PARAMETER", err);
-            return true;
-        }
-        if (body.exists("artifact_id") && !body["artifact_id"].get_str().empty()) {
-            if (!Digest48::FromHex(body["artifact_id"].get_str(), artifact_id, err)) {
-                resp.status = 400;
-                resp.body = JsonError("INVALID_PARAMETER", err);
-                return true;
-            }
-        }
-        const int64_t price = body.exists("price_atoms") ? body["price_atoms"].getInt<int64_t>() : 0;
-        Quote q;
-        if (!MakePrepaidQuote(q, model_id, artifact_id, 0, body.exists("piece_count") ? body["piece_count"].getInt<uint32_t>() : 0, price, err)) {
-            resp.status = 500;
-            resp.body = JsonError("QUOTE", err);
-            return true;
-        }
-        std::vector<Quote> quotes;
-        std::vector<PaymentJournal> journal;
-        const fs::path dir = cat.Store().Root().parent_path();
-        LoadPaymentState(dir, quotes, journal, err);
-        quotes.push_back(q);
-        SavePaymentState(dir, quotes, journal, err);
-        resp.status = 200;
-        resp.body = QuoteToJson(q).write();
+        resp.status = 403;
+        resp.body = JsonError("OWNER_ONLY", "quote writes are unix-rpc only");
         return true;
     }
     if (req.method == "POST" && req.path.find("/payment") != std::string::npos) {
-        UniValue body;
-        if (!body.read(req.body) || !body.isObject() || !body.exists("txid") || !body.exists("quote_id")) {
-            resp.status = 400;
-            resp.body = JsonError("INVALID_PARAMETER", "quote_id and txid required");
-            return true;
-        }
-        std::vector<Quote> quotes;
-        std::vector<PaymentJournal> journal;
-        std::string err;
-        const fs::path dir = cat.Store().Root().parent_path();
-        LoadPaymentState(dir, quotes, journal, err);
-        const std::string txid = body["txid"].get_str();
-        const std::string quote_id = body["quote_id"].get_str();
-        if (DuplicatePayment(journal, txid)) {
-            resp.status = 409;
-            resp.body = JsonError("DUPLICATE_PAYMENT", "txid already recorded; retry does not pay again");
-            return true;
-        }
-        if (txid.size() < 8 || !IsHex(txid)) {
-            resp.status = 400;
-            resp.body = JsonError("INVALID_PARAMETER", "txid");
-            return true;
-        }
-        bool known_quote = false;
-        for (const auto& q : quotes) {
-            if (q.offer_id.Hex() == quote_id) {
-                known_quote = true;
-                break;
-            }
-        }
-        if (!known_quote) {
-            resp.status = 404;
-            resp.body = JsonError("NOT_FOUND", "unknown quote_id");
-            return true;
-        }
-        if (body.exists("release_reorg_hold") && body["release_reorg_hold"].isBool() &&
-            body["release_reorg_hold"].get_bool()) {
-            if (!ReleaseReorgHold(journal, txid, err)) {
-                resp.status = 409;
-                resp.body = JsonError("REORG_HOLD", err);
-                return true;
-            }
-            SavePaymentState(dir, quotes, journal, err);
-            UniValue rel(UniValue::VOBJ);
-            rel.pushKV("schema_version", 2);
-            rel.pushKV("txid", txid);
-            rel.pushKV("delivered", true);
-            rel.pushKV("held_for_reorg", false);
-            resp.body = rel.write();
-            return true;
-        }
-        PaymentJournal e;
-        e.quote_id = quote_id;
-        e.txid = txid;
-        e.accepted = false;
-        e.file_index = body.exists("file_index") ? body["file_index"].getInt<uint32_t>() : 0;
-        e.first_piece = body.exists("first_piece") ? body["first_piece"].getInt<uint32_t>() : 0;
-        e.piece_count = body.exists("piece_count") ? body["piece_count"].getInt<uint32_t>() : 0;
-        if (e.piece_count > 0 && DuplicateReservedRange(journal, e.file_index, e.first_piece, e.piece_count)) {
-            resp.status = 409;
-            resp.body = JsonError("DUPLICATE_PAYMENT", "range already reserved; restart does not pay again");
-            return true;
-        }
-        const bool reorg_hold = body.exists("reorg_hold") && body["reorg_hold"].isBool() && body["reorg_hold"].get_bool();
-        std::string hold_err;
-        (void)ApplyPaymentDelivery(e, reorg_hold, hold_err);
-        if (!reorg_hold) {
-            e.accepted = false;
-            e.delivered = false;
-            e.held_for_reorg = false;
-        }
-        journal.push_back(e);
-        SavePaymentState(dir, quotes, journal, err);
-        UniValue o(UniValue::VOBJ);
-        o.pushKV("schema_version", 2);
-        o.pushKV("recorded", true);
-        o.pushKV("accepted", e.accepted);
-        o.pushKV("delivered", e.delivered);
-        o.pushKV("held_for_reorg", e.held_for_reorg);
-        o.pushKV("note", "Journal records intent. Chain settlement is 0.34.6 wallet RPCs; helper does not verify the chain.");
-        if (reorg_hold) o.pushKV("error", hold_err);
-        resp.body = o.write();
+        resp.status = 403;
+        resp.body = JsonError("OWNER_ONLY", "payment journal writes are unix-rpc only");
         return true;
     }
     if ((req.path == root + "query") && req.method == "POST") {
@@ -2569,7 +2466,7 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         }
         const uint64_t start = uint64_t{first_piece} * PIECE_SIZE;
         const uint64_t end = std::min(file_size == 0 ? uint64_t{1} : file_size, start + uint64_t{piece_count} * PIECE_SIZE);
-        const uint64_t maximum_bytes = body.exists("maximum_bytes") ? body["maximum_bytes"].getInt<uint64_t>() : (end > start ? end - start : 1);
+        const uint64_t maximum_bytes = end > start ? end - start : 1;
 
         Digest48 buyer_id{};
         if (body.exists("buyer_id") && !body["buyer_id"].get_str().empty()) {
@@ -2606,8 +2503,6 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         gp.sequence = sequence;
         gp.issued_at = now;
         gp.expires_at = now + FREE_GRANT_LIFETIME_S;
-        if (body.exists("issued_at")) gp.issued_at = body["issued_at"].getInt<int64_t>();
-        if (body.exists("expires_at")) gp.expires_at = body["expires_at"].getInt<int64_t>();
         gp.buyer_id = buyer_id;
         gp.model_id = e.model_id;
         gp.artifact_id = e.artifact_id;
@@ -2688,6 +2583,11 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         UniValue store;
         ReadJsonFile(HelperDir(cat) / "receipts.json", store);
         UniValue arr = store.exists("receipts") ? store["receipts"] : UniValue(UniValue::VARR);
+        if (arr.size() >= 256) {
+            resp.status = 429;
+            resp.body = JsonError("RESOURCE_GOVERNOR", "receipt store full");
+            return true;
+        }
         UniValue rec(UniValue::VOBJ);
         rec.pushKV("record_id", rid.Hex());
         rec.pushKV("received_at", now);
@@ -6085,7 +5985,12 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             needle = ToLower(Arg(0)["text"].get_str());
         }
         const int64_t now = static_cast<int64_t>(std::time(nullptr));
-        for (const auto& h : RecordsFor(cat).All(now)) {
+        std::vector<SignedRecordHint> collection_hits;
+        {
+            std::lock_guard<std::mutex> lock(g_ext_mu);
+            collection_hits = RecordsFor(cat).All(now);
+        }
+        for (const auto& h : collection_hits) {
             if (h.kind != RECORD_COLLECTION) continue;
             UniValue body(UniValue::VOBJ);
             std::string derr;
