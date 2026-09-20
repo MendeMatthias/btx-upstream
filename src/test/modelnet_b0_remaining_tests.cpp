@@ -493,6 +493,7 @@ BOOST_AUTO_TEST_CASE(iso_01_08_http_flood_helper_bounds)
 {
     BOOST_CHECK(modelnet::NativeHttpRequiresVerifiedPq1());
     BOOST_CHECK_EQUAL(modelnet::PQ1_HTTP_WORKERS, 8);
+    BOOST_CHECK_EQUAL(modelnet::PQ1_UNIX_WORKERS, 2);
     BOOST_CHECK_EQUAL(modelnet::PQ1_HTTP_QUEUE, 32);
     BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_INBOUND, 16);
     BOOST_CHECK_EQUAL(modelnet::PQ1_MAX_OUTBOUND, 8);

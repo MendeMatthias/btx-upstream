@@ -672,6 +672,16 @@ bool VerifyTypedRecord(uint8_t kind,
         err = "bad signature";
         return false;
     }
+    if (!body.exists("signer_id") || !body["signer_id"].isStr()) {
+        err = "signer identity mismatch";
+        return false;
+    }
+    const std::string sid = body["signer_id"].get_str();
+    if (sid != ProviderId(pk).Hex() && sid != PublisherId(pk).Hex() &&
+        sid != ResearchIdentityId(pk).Hex()) {
+        err = "signer identity mismatch";
+        return false;
+    }
     const int64_t exp = body.exists("expires_at") ? body["expires_at"].getInt<int64_t>() : 0;
     if (exp && now > 0 && exp < now) {
         err = "expired record";

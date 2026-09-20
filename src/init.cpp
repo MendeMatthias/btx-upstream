@@ -630,7 +630,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
 #ifdef ENABLE_MODELNET
     argsman.AddArg("-modelnet", "Enable the Native Model Network (default: 1 when compiled WITH_MODELNET). btxd starts a supervised btx-modeld helper. Model failure never stops monetary consensus. Disable with -modelnet=0 / -nomodelnet.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modelnetrequired", "Fail btxd startup if the model helper cannot initialize (default: 0). Leave off so money keeps working when the helper is missing.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-modelrelay", "Advertise NODE_MODEL_RELAY as an unauthenticated discovery hint (default: 1 when -modelnet). Never MatMul authority, never a chain source, never a wallet. Artifact endpoints are not inserted into monetary AddrMan.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-modelrelay", "Advertise NODE_MODEL_RELAY as an unauthenticated discovery hint (default: 0). Enable with -modelrelay=1. Never MatMul authority, never a chain source, never a wallet. Artifact endpoints are not inserted into monetary AddrMan.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modelhost=auto|1|0|true|false", "Serve seeded artifacts. auto (and explicit 1/true) wait for proven reachability before NODE_MODEL_HOST. Never advertised merely because the helper is running. Default: 0.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modelprofile=personal|infrastructure|mirror|custom", "Operator config preset for storage/seed/follow/preserve/relay/index/host-auto. Ordinary args only; no monetary, search, consensus, or bounty privilege. Persisted under modeldir/operator_profile.json.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-modelrpcsocket=<path>", "Unix socket for btx-modeld JSON-RPC (default: <datadir>/modelnet/modeld.sock). If set explicitly, btxd connects and does not spawn or kill that helper. Otherwise btxd owns a child btx-modeld.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -2744,7 +2744,7 @@ static bool InitializeMatMulRCReadinessPostDaemon(
     // waits until the helper reports advertised_host. Supervisor polls
     // getmodelnetworkinfo and calls SetNodeModelHostAdvertised → CConnman
     // AddLocalServices / RemoveLocalServices.
-    if (args.GetBoolArg("-modelnet", true) && args.GetBoolArg("-modelrelay", true)) {
+    if (args.GetBoolArg("-modelnet", true) && args.GetBoolArg("-modelrelay", false)) {
         services |= static_cast<uint64_t>(NODE_MODEL_RELAY);
     }
 #endif
@@ -4143,7 +4143,7 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
             }
         }
         hcfg.watch_dir = args.GetArg("-modelwatch", "");
-        hcfg.relay = args.GetBoolArg("-modelrelay", true);
+        hcfg.relay = args.GetBoolArg("-modelrelay", false);
         {
             modelnet::HostMode parsed_host = modelnet::HostMode::OFF;
             if (args.IsArgNegated("-modelhost")) {

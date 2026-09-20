@@ -684,6 +684,7 @@ if(WITH_MODELNET)
     modelnet_r6_erasure_tests.cpp
     modelnet_r7_package_tests.cpp
     modelnet_r10_security_tests.cpp
+    modelnet_authz_tests.cpp
     modelnet_r2_storage_tests.cpp
     modelnet_r3_import_tests.cpp
     modelnet_r8_mandate_tests.cpp

@@ -52,6 +52,7 @@
 #include <random.h>
 #include <span.h>
 #include <tinyformat.h>
+#include <netaddress.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
 
@@ -61,6 +62,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <csignal>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -525,7 +527,7 @@ bool AcceptSignedAnnounce(const UniValue& body, int64_t now, SignedRecordHint& h
     h.pubkey = *pk;
     h.signed_ok = true;
     h.expiry = decoded.exists("expires_at") ? decoded["expires_at"].getInt<int64_t>() : 0;
-    h.provider_id = body.exists("provider_id") ? body["provider_id"].get_str() : decoded["signer_id"].get_str();
+    h.provider_id = decoded.exists("signer_id") ? decoded["signer_id"].get_str() : ProviderId(*pk).Hex();
     return true;
 }
 
@@ -1431,6 +1433,80 @@ void IngestCatalogIntoSearch(ModelCatalog& cat)
     }
 }
 
+std::string OriginRatePeer(const NativeRequest& req)
+{
+    if (!req.transport_pin.empty()) return req.transport_pin;
+    if (!req.peer_addr.empty()) return req.peer_addr;
+    const std::string from = RequestHeader(req, "X-BTX-From");
+    return from.empty() ? "pq1-peer" : from;
+}
+
+std::string OriginRateNetgroup(const NativeRequest& req)
+{
+    if (!req.peer_netgroup.empty()) return req.peer_netgroup;
+    const std::string ng = RequestHeader(req, "X-BTX-Netgroup");
+    if (!ng.empty()) return ng;
+    return req.peer_addr.empty() ? "pq1" : req.peer_addr;
+}
+
+bool CheckFreeGrantEntitlement(const ModelCatalog& cat, const NativeRequest& req, const CatalogEntry& entry,
+                               uint32_t file_index, uint32_t piece_index, bool whole_file, uint32_t n_pieces,
+                               UniValue& gbody, NativeResponse& resp)
+{
+    const std::string gp = RequestHeader(req, "X-BTX-Grant-Payload");
+    const std::string gs = RequestHeader(req, "X-BTX-Grant-Sig");
+    const std::string gpk = RequestHeader(req, "X-BTX-Grant-Pubkey");
+    if (gp.empty() || gs.empty()) {
+        resp.status = 403;
+        resp.body = JsonError("ENTITLEMENT", "FreeGrant required");
+        return false;
+    }
+    const auto payload = TryParseHex<unsigned char>(gp);
+    const auto sig = TryParseHex<unsigned char>(gs);
+    std::vector<unsigned char> presented;
+    if (!gpk.empty()) {
+        const auto pk = TryParseHex<unsigned char>(gpk);
+        if (!pk) {
+            resp.status = 403;
+            resp.body = JsonError("ENTITLEMENT", "invalid FreeGrant");
+            return false;
+        }
+        presented = *pk;
+    }
+    std::string gerr;
+    const int64_t now = static_cast<int64_t>(std::time(nullptr));
+    const std::string use_key = whole_file ? ("f" + std::to_string(file_index) + ":all")
+                                           : ("f" + std::to_string(file_index) + ":p" + std::to_string(piece_index));
+    if (!payload || !sig ||
+        !VerifyHostedFreeGrant(HelperDir(cat), *payload, *sig, presented, now, use_key, gbody, gerr)) {
+        resp.status = 403;
+        resp.body = JsonError("ENTITLEMENT", gerr.empty() ? "invalid FreeGrant" : gerr);
+        return false;
+    }
+    const std::string grant_art = gbody.exists("artifact_id") ? gbody["artifact_id"].get_str() : "";
+    const std::string grant_model = gbody.exists("model_id") ? gbody["model_id"].get_str() : "";
+    if (grant_art != entry.artifact_id.Hex() && grant_model != entry.model_id.Hex()) {
+        resp.status = 403;
+        resp.body = JsonError("ENTITLEMENT", "grant object mismatch");
+        return false;
+    }
+    const uint32_t gfile = gbody.exists("file_index") ? gbody["file_index"].getInt<uint32_t>() : 0;
+    const uint32_t first = gbody.exists("first_piece") ? gbody["first_piece"].getInt<uint32_t>() : 0;
+    const uint32_t count = gbody.exists("piece_count") ? gbody["piece_count"].getInt<uint32_t>() : 0;
+    if (whole_file) {
+        if (gfile != file_index || first != 0 || count < n_pieces) {
+            resp.status = 403;
+            resp.body = JsonError("ENTITLEMENT", "grant does not cover whole file stream");
+            return false;
+        }
+    } else if (gfile != file_index || count == 0 || piece_index < first || piece_index >= first + count) {
+        resp.status = 403;
+        resp.body = JsonError("ENTITLEMENT", "piece not in grant range");
+        return false;
+    }
+    return true;
+}
+
 bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResponse& resp)
 {
     resp = {};
@@ -1535,42 +1611,9 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.body = JsonError("NOT_FOUND", "not seeded");
             return true;
         }
-        const std::string gp = RequestHeader(req, "X-BTX-Grant-Payload");
-        const std::string gs = RequestHeader(req, "X-BTX-Grant-Sig");
-        const std::string gpk = RequestHeader(req, "X-BTX-Grant-Pubkey");
-        if (gp.empty() || gs.empty() || gpk.empty()) {
-            resp.status = 403;
-            resp.body = JsonError("ENTITLEMENT", "FreeGrant required");
+        UniValue gbody;
+        if (!CheckFreeGrantEntitlement(cat, req, entry, file_index, piece_index, /*whole_file=*/false, 0, gbody, resp)) {
             return true;
-        }
-        {
-            const auto payload = TryParseHex<unsigned char>(gp);
-            const auto sig = TryParseHex<unsigned char>(gs);
-            const auto pk = TryParseHex<unsigned char>(gpk);
-            UniValue gbody;
-            std::string gerr;
-            const int64_t now = static_cast<int64_t>(std::time(nullptr));
-            if (!payload || !sig || !pk ||
-                !VerifyFreeGrant(*payload, *sig, *pk, now, {}, gbody, gerr)) {
-                resp.status = 403;
-                resp.body = JsonError("ENTITLEMENT", gerr.empty() ? "invalid FreeGrant" : gerr);
-                return true;
-            }
-            const std::string grant_art = gbody.exists("artifact_id") ? gbody["artifact_id"].get_str() : "";
-            const std::string grant_model = gbody.exists("model_id") ? gbody["model_id"].get_str() : "";
-            if (grant_art != entry.artifact_id.Hex() && grant_model != entry.model_id.Hex()) {
-                resp.status = 403;
-                resp.body = JsonError("ENTITLEMENT", "grant object mismatch");
-                return true;
-            }
-            const uint32_t gfile = gbody.exists("file_index") ? gbody["file_index"].getInt<uint32_t>() : 0;
-            const uint32_t first = gbody.exists("first_piece") ? gbody["first_piece"].getInt<uint32_t>() : 0;
-            const uint32_t count = gbody.exists("piece_count") ? gbody["piece_count"].getInt<uint32_t>() : 0;
-            if (gfile != file_index || count == 0 || piece_index < first || piece_index >= first + count) {
-                resp.status = 403;
-                resp.body = JsonError("ENTITLEMENT", "piece not in grant range");
-                return true;
-            }
         }
         std::vector<unsigned char> bytes;
         std::vector<Digest48> proof;
@@ -1588,7 +1631,8 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         }
         uint64_t upload_slot = 0;
         std::string upload_err;
-        if (!TryAdmitModelUpload(gpk, "", bytes.size(), upload_slot, upload_err)) {
+        if (!TryAdmitModelUpload(gbody.exists("grant_nonce") ? gbody["grant_nonce"].get_str() : entry.artifact_id.Hex(),
+                                 OriginRateNetgroup(req), bytes.size(), upload_slot, upload_err)) {
             resp.status = 429;
             resp.body = JsonError("UPLOAD_SCHEDULER", upload_err.empty() ? "upload slots full" : upload_err);
             resp.headers.emplace_back("Retry-After", "1");
@@ -1686,42 +1730,9 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         }
         const uint64_t file_size = entry.core.files[file_index].size;
         const uint32_t n_pieces = file_size == 0 ? 1u : static_cast<uint32_t>((file_size + PIECE_SIZE - 1) / PIECE_SIZE);
-        const std::string gp = RequestHeader(req, "X-BTX-Grant-Payload");
-        const std::string gs = RequestHeader(req, "X-BTX-Grant-Sig");
-        const std::string gpk = RequestHeader(req, "X-BTX-Grant-Pubkey");
-        if (gp.empty() || gs.empty() || gpk.empty()) {
-            resp.status = 403;
-            resp.body = JsonError("ENTITLEMENT", "FreeGrant required");
+        UniValue gbody;
+        if (!CheckFreeGrantEntitlement(cat, req, entry, file_index, 0, /*whole_file=*/true, n_pieces, gbody, resp)) {
             return true;
-        }
-        {
-            const auto payload = TryParseHex<unsigned char>(gp);
-            const auto sig = TryParseHex<unsigned char>(gs);
-            const auto pk = TryParseHex<unsigned char>(gpk);
-            UniValue gbody;
-            std::string gerr;
-            const int64_t now = static_cast<int64_t>(std::time(nullptr));
-            if (!payload || !sig || !pk ||
-                !VerifyFreeGrant(*payload, *sig, *pk, now, {}, gbody, gerr)) {
-                resp.status = 403;
-                resp.body = JsonError("ENTITLEMENT", gerr.empty() ? "invalid FreeGrant" : gerr);
-                return true;
-            }
-            const std::string grant_art = gbody.exists("artifact_id") ? gbody["artifact_id"].get_str() : "";
-            const std::string grant_model = gbody.exists("model_id") ? gbody["model_id"].get_str() : "";
-            if (grant_art != entry.artifact_id.Hex() && grant_model != entry.model_id.Hex()) {
-                resp.status = 403;
-                resp.body = JsonError("ENTITLEMENT", "grant object mismatch");
-                return true;
-            }
-            const uint32_t gfile = gbody.exists("file_index") ? gbody["file_index"].getInt<uint32_t>() : 0;
-            const uint32_t first = gbody.exists("first_piece") ? gbody["first_piece"].getInt<uint32_t>() : 0;
-            const uint32_t count = gbody.exists("piece_count") ? gbody["piece_count"].getInt<uint32_t>() : 0;
-            if (gfile != file_index || first != 0 || count < n_pieces) {
-                resp.status = 403;
-                resp.body = JsonError("ENTITLEMENT", "grant does not cover whole file stream");
-                return true;
-            }
         }
         if (file_size == 0) {
             resp.status = 200;
@@ -1739,10 +1750,8 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.headers.emplace_back("X-BTX-Capability", FULL_FILE_STREAM_V1);
             return true;
         }
-        std::string peer = RequestHeader(req, "X-BTX-From");
-        if (peer.empty()) peer = "pq1-peer";
-        std::string ng = RequestHeader(req, "X-BTX-Netgroup");
-        if (ng.empty()) ng = "pq1";
+        std::string peer = OriginRatePeer(req);
+        std::string ng = OriginRateNetgroup(req);
         std::string serr;
         if (!GlobalOriginStampede().Allow(peer, ng, ConnNowMs(), serr)) {
             resp.status = 429;
@@ -1827,8 +1836,7 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         std::vector<ProviderHint> accepted;
         const int64_t now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
-        std::string from = RequestHeader(req, "X-BTX-From");
-        if (from.empty()) from = "peer";
+        std::string from = OriginRatePeer(req);
         {
             std::lock_guard<std::mutex> lock(g_swarm.pex_mu);
             if (!g_swarm.pex.Ingest(from, body, now, accepted, err)) {
@@ -1891,8 +1899,30 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
                                      ? body["expected_service_id"].get_str() : "";
         rr.presented_service_id = body.exists("service_id") && body["service_id"].isStr()
                                         ? body["service_id"].get_str() : "";
+        rr.reservation_id = body.exists("reservation_id") && body["reservation_id"].isStr()
+                                ? body["reservation_id"].get_str() : "";
         std::string err;
         if (!ValidateRelayConnect(rr, g_swarm.relay, err)) {
+            resp.status = 403;
+            resp.body = JsonError("RELAY_REJECT", err);
+            return true;
+        }
+        RelayReservation rsvp;
+        {
+            std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+            if (!g_swarm.relays.Get(rr.reservation_id, rsvp)) {
+                err = "no reservation";
+            } else if (rsvp.relay_endpoint != rr.endpoint) {
+                err = "endpoint mismatch";
+            } else if (!rr.presented_service_id.empty() && rr.presented_service_id != rsvp.service_id) {
+                err = "identity mismatch";
+            } else if (!g_swarm.relays.AllowForward(rr.reservation_id, 0, ConnNowMs(), err)) {
+                // err already set
+            } else {
+                err.clear();
+            }
+        }
+        if (!err.empty()) {
             resp.status = 403;
             resp.body = JsonError("RELAY_REJECT", err);
             return true;
@@ -1900,11 +1930,15 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         std::string host;
         uint16_t port = 0;
         if (!SplitListenBind(rr.endpoint, host, port)) {
+            std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+            g_swarm.relays.CloseConn(rr.reservation_id);
             resp.status = 400;
             resp.body = JsonError("BAD_ENDPOINT", "host:port");
             return true;
         }
         if (S3HostBlockedAsMetadata(host)) {
+            std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+            g_swarm.relays.CloseConn(rr.reservation_id);
             resp.status = 403;
             resp.body = JsonError("RELAY_REJECT", "relay dial target blocked");
             return true;
@@ -1919,6 +1953,8 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
         resp.splice_tcp = true;
         resp.splice_host = host;
         resp.splice_port = port;
+        resp.splice_reservation_id = rr.reservation_id;
+        resp.splice_byte_ceiling = rsvp.byte_ceiling > rsvp.bytes_used ? rsvp.byte_ceiling - rsvp.bytes_used : 0;
         return true;
     }
     if (req.path == root + "ext/autonat/probe" && req.method == "POST") {
@@ -2387,7 +2423,6 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             return true;
         }
         const std::string idhex = rest.substr(0, slash);
-        const std::string action = rest.substr(slash + 1);
         Digest48 id;
         std::string err;
         if (!Digest48::FromHex(idhex, id, err)) {
@@ -2395,53 +2430,8 @@ bool HandleNativeRequest(ModelCatalog& cat, const NativeRequest& req, NativeResp
             resp.body = JsonError("INVALID_PARAMETER", err);
             return true;
         }
-        UniValue body;
-        const size_t cap = (action == "pledges") ? 16 * 1024 : 512 * 1024;
-        if (!JsonBody(req, cap, body, resp)) return true;
-        if (action == "pledges") {
-            std::vector<ReleaseCampaign> campaigns;
-            LoadCampaigns(HelperDir(cat), campaigns, err);
-            bool found = false;
-            const int64_t atoms = body.exists("amount_atoms") ? body["amount_atoms"].getInt<int64_t>() : 0;
-            for (auto& c : campaigns) {
-                if (c.release_id == id) {
-                    c.pledged_atoms += atoms;
-                    found = true;
-                    resp.body = CampaignToJson(c).write();
-                }
-            }
-            if (!found) {
-                resp.status = 404;
-                resp.body = JsonError("NOT_FOUND", "unknown release");
-                return true;
-            }
-            SaveCampaigns(HelperDir(cat), campaigns, err);
-            return true;
-        }
-        UniValue store;
-        ReadJsonFile(HelperDir(cat) / "release-coord.json", store);
-        if (!store.isObject()) store = UniValue(UniValue::VOBJ);
-        UniValue one = store.exists(idhex) ? store[idhex] : UniValue(UniValue::VOBJ);
-        if (action == "rounds") {
-            one.pushKV("round", body);
-            one.pushKV("frozen", true);
-        } else if (action == "signatures") {
-            UniValue sigs = one.exists("signatures") ? one["signatures"] : UniValue(UniValue::VARR);
-            sigs.push_back(body);
-            one.pushKV("signatures", sigs);
-        } else {
-            resp.status = 404;
-            resp.body = JsonError("NOT_FOUND", "unknown release action");
-            return true;
-        }
-        store.pushKV(idhex, one);
-        WriteJsonFile(HelperDir(cat) / "release-coord.json", store, err);
-        UniValue orel(UniValue::VOBJ);
-        orel.pushKV("schema_version", 2);
-        orel.pushKV("release_id", idhex);
-        orel.pushKV("action", action);
-        orel.pushKV("note", "coordination only; broadcast funding with btxd; claim via buildhtlcclaim");
-        resp.body = orel.write();
+        resp.status = 403;
+        resp.body = JsonError("OWNER_ONLY", "release coordination is owner unix RPC");
         return true;
     }
     if ((req.path == root + "ext/caps") && (req.method == "POST" || req.method == "GET")) {
@@ -4941,7 +4931,9 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("propagation", PolicyToJson(cat.Policy()));
         result.pushKV("capabilities", CapabilitiesObject());
         result.pushKV("http_workers", PQ1_HTTP_WORKERS);
+        result.pushKV("unix_workers", PQ1_UNIX_WORKERS);
         result.pushKV("http_queue", PQ1_HTTP_QUEUE);
+        result.pushKV("unix_queue", PQ1_UNIX_QUEUE);
         result.pushKV("inflight_pieces", PQ1_INFLIGHT_PIECES);
         result.pushKV("inbound_per_netgroup", PQ1_MAX_INBOUND_PER_NETGROUP);
         result.pushKV("transfer_timeout_ms", PQ1_TRANSFER_MS);
@@ -6955,10 +6947,20 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
             return false;
         }
         const int64_t atoms = Arg(1).getInt<int64_t>();
+        if (atoms < 0 || atoms > MAX_MONEY_ATOMS) {
+            err_code = "INVALID_PARAMETER";
+            err = "amount_atoms";
+            return false;
+        }
         auto* c = const_cast<ReleaseCampaign*>(g_campaigns.GetByRelease(id));
         if (!c) {
             err_code = "NOT_FOUND";
             err = "unknown release";
+            return false;
+        }
+        if (c->pledged_atoms > MAX_MONEY_ATOMS - atoms) {
+            err_code = "INVALID_PARAMETER";
+            err = "amount_atoms";
             return false;
         }
         c->pledged_atoms += atoms;
@@ -8800,6 +8802,45 @@ bool CallUnixRpc(const fs::path& socket_path, const std::string& method, const U
 
 namespace {
 
+int ConnectTcpTimed(const addrinfo* ai, int timeout_ms)
+{
+    if (!ai) return -1;
+    const int fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd < 0) return -1;
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) {
+        close(fd);
+        return -1;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        close(fd);
+        return -1;
+    }
+    const int rc = ::connect(fd, ai->ai_addr, ai->ai_addrlen);
+    if (rc != 0 && errno != EINPROGRESS) {
+        close(fd);
+        return -1;
+    }
+    if (rc != 0) {
+        pollfd pfd{};
+        pfd.fd = fd;
+        pfd.events = POLLOUT;
+        const int pr = poll(&pfd, 1, timeout_ms);
+        if (pr <= 0) {
+            close(fd);
+            return -1;
+        }
+        int soerr = 0;
+        socklen_t elen = sizeof(soerr);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &elen) != 0 || soerr != 0) {
+            close(fd);
+            return -1;
+        }
+    }
+    fcntl(fd, F_SETFL, flags);
+    return fd;
+}
+
 void HandleUnixFd(int cfd, ModelCatalog& cat, std::atomic<bool>* stop)
 {
     const std::string raw = RecvUntil(cfd, MAX_RPC_BODY, stop);
@@ -8848,7 +8889,8 @@ void HandleUnixFd(int cfd, ModelCatalog& cat, std::atomic<bool>* stop)
     close(cfd);
 }
 
-void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* stop, const fs::path& pinfile, uint32_t netgroup)
+void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* stop, const fs::path& pinfile,
+                 uint32_t netgroup, const std::string& peer_addr)
 {
     SetPq1SocketOpts(cfd, true);
     SSL* ssl = SSL_new(static_cast<SSL_CTX*>(pq.SslCtx()));
@@ -8882,23 +8924,28 @@ void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* 
         close(cfd);
         return;
     }
-    (void)pin;
     (void)pinfile;
     // Inbound TOFU must not be keyed by IPv4 netgroup: every researcher
     // behind one NAT would collide and the server would close after
     // handshake (client sees truncated HTTP). Outbound clients still pin
     // host:port in Pq1Session::Connect.
     ClearUnauth(netgroup);
+    int requests = 0;
     for (;;) {
         if (stop && stop->load()) break;
+        if (requests >= PQ1_MAX_REQUESTS_PER_CONN) break;
         const std::string raw = SslReadHttp(ssl, cfd, MAX_RPC_BODY + 8192, PQ1_IDLE_MS, stop);
         if (raw.empty()) break;
+        ++requests;
         NativeRequest nreq;
         NativeResponse nresp;
         if (!ParseHttpRequest(raw, nreq, err)) {
             nresp.status = 400;
             nresp.body = JsonError("BAD_HTTP", err);
         } else {
+            nreq.peer_addr = peer_addr;
+            nreq.peer_netgroup = std::to_string(netgroup);
+            nreq.transport_pin = pin.Hex();
             try {
                 HandleNativeRequest(cat, nreq, nresp);
             } catch (const std::exception&) {
@@ -8950,18 +8997,22 @@ void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* 
             hints.ai_family = AF_UNSPEC;
             addrinfo* res = nullptr;
             if (getaddrinfo(nresp.splice_host.c_str(), std::to_string(nresp.splice_port).c_str(), &hints, &res) == 0 && res) {
-                dfd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-                if (dfd >= 0 && ::connect(dfd, res->ai_addr, res->ai_addrlen) != 0) {
-                    close(dfd);
-                    dfd = -1;
+                for (addrinfo* ai = res; ai; ai = ai->ai_next) {
+                    CService resolved;
+                    if (!resolved.SetSockAddr(ai->ai_addr, ai->ai_addrlen) || IsForbiddenRelayAddr(resolved)) {
+                        continue;
+                    }
+                    dfd = ConnectTcpTimed(ai, PQ1_RELAY_CONNECT_MS);
+                    if (dfd >= 0) break;
                 }
                 freeaddrinfo(res);
             }
+            const uint64_t cap = nresp.splice_byte_ceiling > 0 ? nresp.splice_byte_ceiling : RELAY_DEFAULT_BYTE_CEILING;
             if (dfd >= 0) {
                 SetPq1SocketOpts(dfd, true);
                 uint64_t moved = 0;
                 while (!stop || !stop->load()) {
-                    if (moved > (uint64_t{1} << 30)) break;
+                    if (moved >= cap) break;
                     pollfd pf[2]{};
                     pf[0].fd = cfd;
                     pf[0].events = POLLIN;
@@ -8985,6 +9036,10 @@ void HandlePq1Fd(int cfd, ModelCatalog& cat, Pq1Context& pq, std::atomic<bool>* 
                 }
                 close(dfd);
             }
+            if (!nresp.splice_reservation_id.empty()) {
+                std::lock_guard<std::mutex> lock(g_swarm.conn_mu);
+                g_swarm.relays.CloseConn(nresp.splice_reservation_id);
+            }
             break;
         }
     }
@@ -8997,6 +9052,7 @@ struct WorkerJob {
     int fd{-1};
     bool unix_rpc{false};
     uint32_t netgroup{0};
+    std::string peer_addr;
 };
 
 } // namespace
@@ -9300,35 +9356,60 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
         RefreshAdvertisedHost(&cat);
     }
     const fs::path pinfile = cfg.modeldir / "tls" / "pins.json";
-    std::mutex qmu;
-    std::condition_variable qcv;
-    std::queue<WorkerJob> jobs;
-    auto enqueue = [&](WorkerJob job) -> bool {
-        std::unique_lock<std::mutex> lock(qmu);
-        if (jobs.size() >= static_cast<size_t>(PQ1_HTTP_QUEUE)) return false;
-        jobs.push(job);
-        qcv.notify_one();
+    std::mutex unix_qmu;
+    std::mutex pq1_qmu;
+    std::condition_variable unix_qcv;
+    std::condition_variable pq1_qcv;
+    std::queue<WorkerJob> unix_jobs;
+    std::queue<WorkerJob> pq1_jobs;
+    auto enqueue_unix = [&](WorkerJob job) -> bool {
+        std::unique_lock<std::mutex> lock(unix_qmu);
+        if (unix_jobs.size() >= static_cast<size_t>(PQ1_UNIX_QUEUE)) return false;
+        unix_jobs.push(std::move(job));
+        unix_qcv.notify_one();
+        return true;
+    };
+    auto enqueue_pq1 = [&](WorkerJob job) -> bool {
+        std::unique_lock<std::mutex> lock(pq1_qmu);
+        if (pq1_jobs.size() >= static_cast<size_t>(PQ1_HTTP_QUEUE)) return false;
+        pq1_jobs.push(std::move(job));
+        pq1_qcv.notify_one();
         return true;
     };
     std::vector<std::thread> workers;
-    workers.reserve(PQ1_HTTP_WORKERS);
+    workers.reserve(PQ1_HTTP_WORKERS + PQ1_UNIX_WORKERS);
+    for (int i = 0; i < PQ1_UNIX_WORKERS; ++i) {
+        workers.emplace_back([&] {
+            while (!stop->load()) {
+                WorkerJob job;
+                {
+                    std::unique_lock<std::mutex> lock(unix_qmu);
+                    unix_qcv.wait_for(lock, std::chrono::milliseconds(250),
+                                      [&] { return !unix_jobs.empty() || stop->load(); });
+                    if (unix_jobs.empty()) continue;
+                    job = unix_jobs.front();
+                    unix_jobs.pop();
+                }
+                if (job.fd < 0) continue;
+                HandleUnixFd(job.fd, cat, stop);
+            }
+        });
+    }
     for (int i = 0; i < PQ1_HTTP_WORKERS; ++i) {
         workers.emplace_back([&] {
             while (!stop->load()) {
                 WorkerJob job;
                 {
-                    std::unique_lock<std::mutex> lock(qmu);
-                    qcv.wait_for(lock, std::chrono::milliseconds(250), [&] { return !jobs.empty() || stop->load(); });
-                    if (jobs.empty()) continue;
-                    job = jobs.front();
-                    jobs.pop();
+                    std::unique_lock<std::mutex> lock(pq1_qmu);
+                    pq1_qcv.wait_for(lock, std::chrono::milliseconds(250),
+                                     [&] { return !pq1_jobs.empty() || stop->load(); });
+                    if (pq1_jobs.empty()) continue;
+                    job = pq1_jobs.front();
+                    pq1_jobs.pop();
                 }
                 if (job.fd < 0) continue;
-                if (job.unix_rpc) HandleUnixFd(job.fd, cat, stop);
-                else {
-                    HandlePq1Fd(job.fd, cat, pq, stop, pinfile, job.netgroup);
-                    GlobalConnLimits().ReleaseInbound(job.netgroup);
-                }
+                HandlePq1Fd(job.fd, cat, pq, stop, pinfile, job.netgroup, job.peer_addr);
+                GlobalConnLimits().ReleaseInbound(job.netgroup);
             }
         });
     }
@@ -9340,6 +9421,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
               << " follow_peers=" << (cfg.follow_peers ? "1" : "0")
               << " automatic_spend=0"
               << " workers=" << PQ1_HTTP_WORKERS
+              << " unix_workers=" << PQ1_UNIX_WORKERS
               << (cfg.bind.empty() ? "" : " bind=" + cfg.bind)
               << (cfg.relay ? " relay" : "")
               << (cfg.host ? " host" : "")
@@ -9387,7 +9469,7 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
                 WorkerJob job;
                 job.fd = c;
                 job.unix_rpc = true;
-                if (!enqueue(job)) close(c);
+                if (!enqueue_unix(job)) close(c);
             }
         }
         if (tcp_fd >= 0 && (fds[1].revents & POLLIN)) {
@@ -9408,14 +9490,19 @@ int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
                 job.fd = c;
                 job.unix_rpc = false;
                 job.netgroup = ng;
-                if (!enqueue(job)) {
+                {
+                    char ip[INET_ADDRSTRLEN]{};
+                    if (inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip))) job.peer_addr = ip;
+                }
+                if (!enqueue_pq1(job)) {
                     GlobalConnLimits().ReleaseInbound(ng);
                     close(c);
                 }
             }
         }
     }
-    qcv.notify_all();
+    unix_qcv.notify_all();
+    pq1_qcv.notify_all();
     for (auto& w : workers) w.join();
     JoinRetrieveJobs();
     close(unix_fd);

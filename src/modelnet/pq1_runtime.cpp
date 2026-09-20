@@ -9,6 +9,7 @@
 #include <univalue.h>
 #include <util/strencodings.h>
 
+#include <openssl/evp.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/crypto.h>
@@ -349,7 +350,15 @@ bool ExtractPeerTransportPin(void* ssl_void, Digest48& out, std::string& err)
     }
     unsigned char* der = nullptr;
     const int len = i2d_X509_PUBKEY(X509_get_X509_PUBKEY(cert), &der);
+    EVP_PKEY* pkey = X509_get_pubkey(cert);
     X509_free(cert);
+    if (!pkey || (EVP_PKEY_is_a(pkey, "ML-DSA-44") != 1 && EVP_PKEY_is_a(pkey, "mldsa44") != 1)) {
+        if (pkey) EVP_PKEY_free(pkey);
+        if (der) OPENSSL_free(der);
+        err = "peer key is not ML-DSA-44";
+        return false;
+    }
+    EVP_PKEY_free(pkey);
     if (len <= 0 || !der) {
         err = "peer SPKI encode failed";
         return false;

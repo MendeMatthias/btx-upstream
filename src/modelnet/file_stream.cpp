@@ -654,21 +654,29 @@ bool OriginStampedeGuard::Allow(const std::string& peer, const std::string& netg
         err = "origin circuit open";
         return false;
     }
-    auto& ph = m_peer_hits[peer];
-    TrimWindow(ph, now_ms, m_s.window_ms);
-    if (static_cast<int>(ph.size()) >= m_s.max_per_peer) {
-        err = "per-peer origin cap";
-        return false;
+    auto pit = m_peer_hits.find(peer);
+    if (pit != m_peer_hits.end()) {
+        TrimWindow(pit->second, now_ms, m_s.window_ms);
+        if (pit->second.empty()) {
+            m_peer_hits.erase(pit);
+        } else if (static_cast<int>(pit->second.size()) >= m_s.max_per_peer) {
+            err = "per-peer origin cap";
+            return false;
+        }
     }
     const std::string ng = netgroup.empty() ? peer : netgroup;
-    auto& nh = m_ng_hits[ng];
-    TrimWindow(nh, now_ms, m_s.window_ms);
-    if (static_cast<int>(nh.size()) >= m_s.max_per_netgroup) {
-        err = "per-netgroup origin cap";
-        return false;
+    auto nit = m_ng_hits.find(ng);
+    if (nit != m_ng_hits.end()) {
+        TrimWindow(nit->second, now_ms, m_s.window_ms);
+        if (nit->second.empty()) {
+            m_ng_hits.erase(nit);
+        } else if (static_cast<int>(nit->second.size()) >= m_s.max_per_netgroup) {
+            err = "per-netgroup origin cap";
+            return false;
+        }
     }
-    ph.push_back(now_ms);
-    nh.push_back(now_ms);
+    m_peer_hits[peer].push_back(now_ms);
+    m_ng_hits[ng].push_back(now_ms);
     return true;
 }
 

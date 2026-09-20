@@ -65,6 +65,7 @@ public:
     bool AllowForward(const std::string& reservation_id, uint64_t nbytes, int64_t now_ms, std::string& err);
     void CloseConn(const std::string& reservation_id);
     bool Has(const std::string& reservation_id) const;
+    bool Get(const std::string& reservation_id, RelayReservation& out) const;
     std::vector<RelayReservation> ForIdentity(const std::string& service_id) const;
     std::string Alternate(const std::string& dead_relay, const std::string& service_id) const;
     UniValue StatusJson() const;

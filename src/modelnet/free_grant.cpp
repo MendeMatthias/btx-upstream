@@ -176,6 +176,11 @@ bool VerifyFreeGrant(Span<const unsigned char> payload,
         err = "signature";
         return false;
     }
+    if (!body.exists("signer_id") || !body["signer_id"].isStr() ||
+        body["signer_id"].get_str() != ServiceSignerId(pk).Hex()) {
+        err = "signer identity mismatch";
+        return false;
+    }
     const int64_t expires = body["expires_at"].getInt<int64_t>();
     if (now > 0 && now >= expires) {
         err = "expired";
@@ -249,6 +254,65 @@ bool EncodeGrantEnvelope(const SignedFreeGrant& g, std::vector<unsigned char>& o
     out.insert(out.end(), g.payload.begin(), g.payload.end());
     out.insert(out.end(), g.signature.begin(), g.signature.end());
     return !out.empty();
+}
+
+bool RedeemGrantUseUnlocked(UniValue& store, const std::string& nonce_hex, const std::string& use_key, std::string& err)
+{
+    if (nonce_hex.size() != 64 || use_key.empty()) {
+        err = "grant_nonce";
+        return false;
+    }
+    UniValue used = store.exists("uses") ? store["uses"] : UniValue(UniValue::VOBJ);
+    UniValue arr = used.exists(nonce_hex) ? used[nonce_hex] : UniValue(UniValue::VARR);
+    const auto file_all = use_key.find(":all") != std::string::npos;
+    const std::string file_prefix = use_key.substr(0, use_key.find(':'));
+    for (const auto& v : arr.getValues()) {
+        if (!v.isStr()) continue;
+        const std::string& have = v.get_str();
+        if (have == use_key) {
+            err = "replay";
+            return false;
+        }
+        if (file_all && have.rfind(file_prefix + ":", 0) == 0) {
+            err = "replay";
+            return false;
+        }
+        if (!file_all && have == file_prefix + ":all") {
+            err = "replay";
+            return false;
+        }
+    }
+    arr.push_back(use_key);
+    used.pushKV(nonce_hex, arr);
+    store.pushKV("uses", used);
+    return true;
+}
+
+bool VerifyHostedFreeGrant(const fs::path& helper_dir,
+                           Span<const unsigned char> payload,
+                           Span<const unsigned char> sig,
+                           Span<const unsigned char> presented_pk,
+                           int64_t now,
+                           const std::string& use_key,
+                           UniValue& body,
+                           std::string& err)
+{
+    std::vector<unsigned char> host_pk, host_sk;
+    Digest48 signer_id;
+    if (!LoadOrCreateServiceIdentity(helper_dir, host_pk, host_sk, signer_id, err)) return false;
+    if (!presented_pk.empty() &&
+        (presented_pk.size() != host_pk.size() ||
+         !std::equal(presented_pk.begin(), presented_pk.end(), host_pk.begin()))) {
+        err = "grant identity";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_grant_store_mu);
+    if (!VerifyFreeGrant(payload, sig, host_pk, now, {}, body, err)) return false;
+    UniValue store;
+    ReadObj(helper_dir / "grant_redeems.json", store);
+    const std::string nonce = body["grant_nonce"].get_str();
+    if (!RedeemGrantUseUnlocked(store, nonce, use_key, err)) return false;
+    return WriteObj(helper_dir / "grant_redeems.json", store, err);
 }
 
 bool ConsumeGrantNonce(const fs::path& helper_dir, const std::string& nonce_hex, uint64_t& sequence, std::string& err)

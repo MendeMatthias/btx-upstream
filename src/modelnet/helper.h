@@ -24,6 +24,10 @@ struct NativeRequest {
     std::string path;
     std::string body;
     std::vector<std::pair<std::string, std::string>> headers;
+    /** Accepted-socket identity. Empty in unit tests that call HandleNativeRequest directly. */
+    std::string peer_addr;
+    std::string peer_netgroup;
+    std::string transport_pin;
 };
 
 struct NativeResponse {
@@ -36,6 +40,8 @@ struct NativeResponse {
     bool splice_tcp{false};
     std::string splice_host;
     uint16_t splice_port{0};
+    uint64_t splice_byte_ceiling{0};
+    std::string splice_reservation_id;
     /**
      * Serve GET /files without buffering the whole object in RAM.
      * FormatHttpResponse emits headers + Content-Length=stream_file_size and

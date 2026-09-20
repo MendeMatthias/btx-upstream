@@ -251,6 +251,9 @@ BOOST_AUTO_TEST_CASE(conn_rly_01_to_10)
     BOOST_CHECK(!ValidateRelayConnect(rr, true, err));
     BOOST_CHECK_EQUAL(tab.Alternate("203.0.113.1:29447", "svc-a"), "203.0.113.2:29447");
     BOOST_CHECK_EQUAL(tab.StatusJson()["automatic_spend_atoms"].getInt<int>(), 0);
+
+    RelayReservation priv;
+    BOOST_CHECK(!tab.Reserve("svc", "ng", "10.0.0.1:29447", 0, priv, err));
 }
 
 BOOST_AUTO_TEST_CASE(conn_hp_01_to_10)
