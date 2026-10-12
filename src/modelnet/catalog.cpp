@@ -141,6 +141,7 @@ UniValue CapabilitiesObject()
     c.pushKV("generatemodel", true);
     c.pushKV("getmodelhostprofile", true);
     c.pushKV("unhostmodel", true);
+    c.pushKV("removemodel", true);
     c.pushKV("removemodelalias", true);
     c.pushKV("openmodelshare", true);
     c.pushKV("seedmodel", true);
@@ -432,6 +433,33 @@ bool ModelCatalog::EnforceQuota(uint64_t need_bytes, std::string& err)
         }
         return false;
     }
+    return PersistLocked(err);
+}
+
+bool ModelCatalog::RemoveModel(const Digest48& model_id, Digest48& artifact_out, std::string& err)
+{
+    std::lock_guard<std::mutex> lock(m_mu);
+    const auto it = std::find_if(m_models.begin(), m_models.end(), [&](const CatalogEntry& m) {
+        return m.model_id == model_id;
+    });
+    if (it == m_models.end()) {
+        err = "unknown model";
+        return false;
+    }
+    const Digest48 artifact = it->artifact_id;
+    if (m_active_artifacts.count(artifact)) {
+        err = "model is in use; cancel its download or wait for the transfer to finish";
+        return false;
+    }
+    const auto sharing = std::count_if(m_models.begin(), m_models.end(), [&](const CatalogEntry& m) {
+        return m.artifact_id == artifact;
+    });
+    if (sharing == 1) {
+        if (!m_store.RemoveArtifact(artifact, err)) return false;
+        DropPieceTreeCache(artifact);
+    }
+    m_models.erase(it);
+    artifact_out = artifact;
     return PersistLocked(err);
 }
 

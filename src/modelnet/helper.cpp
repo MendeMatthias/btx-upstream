@@ -6142,6 +6142,47 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         result.pushKV("next_actions", NextActionsArray({"seedmodel", "pinmodel"}));
         return true;
     }
+    if (method == "removemodel") {
+        // Unpin, unseed, delete the pieces and the runnable checkout. unhostmodel
+        // keeps the bytes; before this there was no way to free them on request.
+        const Digest48 id = ResolveUserId(Arg(0).get_str(), err);
+        if (id.IsNull()) {
+            err_code = "INVALID_PARAMETER";
+            return false;
+        }
+        // A download in flight writes pieces while we would delete them, and a
+        // fresh download's artifact is not marked active (BeginTransfer runs only
+        // for a model already in the catalog), so ask the job registry.
+        {
+            std::lock_guard<std::mutex> lock(g_retrieve_mu);
+            for (const auto& [jid, job] : g_retrieve_jobs) {
+                if (job->model_id != id) continue;
+                std::lock_guard<std::mutex> jlock(job->mu);
+                if (job->status == "queued" || job->status == "running") {
+                    err_code = "IN_USE";
+                    err = "model is downloading; cancel job " + jid + " first";
+                    return false;
+                }
+            }
+        }
+        std::string perr;
+        (void)cat.PinModel(id, false, perr);
+        (void)cat.Seed(id, false, perr);
+        Digest48 artifact;
+        if (!cat.RemoveModel(id, artifact, err)) {
+            err_code = err == "unknown model" ? "NOT_FOUND" : "IN_USE";
+            return false;
+        }
+        std::error_code ec;
+        const fs::path checkout = HelperDir(cat) / "checkout" / fs::PathFromString(artifact.Hex());
+        const uintmax_t removed = fs::remove_all(checkout, ec);
+        result.pushKV("schema_version", 2);
+        result.pushKV("model_id", id.Hex());
+        result.pushKV("removed", true);
+        result.pushKV("checkout_removed", !ec && removed > 0);
+        result.pushKV("automatic_spend_atoms", 0);
+        return true;
+    }
     if (method == "removemodelalias") {
         EnsureSearchBound();
         const Digest48 id = ResolveUserId(Arg(0).get_str(), err);
