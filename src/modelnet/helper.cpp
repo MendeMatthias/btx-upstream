@@ -9830,12 +9830,41 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                 err = err.empty() ? "connect failed" : err;
                 return false;
             }
-            if (progress) progress->inflight.store(static_cast<int>(pool.size()));
             std::atomic<size_t> next{0};
             std::atomic<bool> fail{false};
             std::mutex err_mu;
+            // Adaptive in-flight window. All pieces in flight share the link, so
+            // with a fixed 8 x 4 MiB window a piece takes 32 MiB / rate: past the
+            // 600 s request deadline below ~0.45 Mbit/s, where pieces that had
+            // fully arrived were dropped and fetched again. Start at 2 and size
+            // the window so it drains in PQ1_INFLIGHT_BUDGET_S at the measured
+            // rate; a fast link reaches the full pool after its first piece.
+            const int pool_n = static_cast<int>(pool.size());
+            std::atomic<int> allowed{std::min(PQ1_INFLIGHT_START, pool_n)};
+            std::atomic<int> active{0};
+            std::atomic<uint64_t> done_bytes{0};
+            const auto window_t0 = std::chrono::steady_clock::now();
+            auto resize_window = [&]() {
+                const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - window_t0).count();
+                if (secs <= 0.0) return;
+                const double rate = static_cast<double>(done_bytes.load()) / secs;
+                const int want = static_cast<int>(rate * PQ1_INFLIGHT_BUDGET_S / static_cast<double>(PIECE_SIZE));
+                allowed.store(std::clamp(want, 1, pool_n));
+            };
+            if (progress) progress->inflight.store(allowed.load());
             auto worker = [&](Pq1Session& s) {
                 while (!fail.load()) {
+                    // Wait for a place in the window before claiming a piece.
+                    for (;;) {
+                        if (fail.load() || (stop && stop->load())) return;
+                        int a = active.load();
+                        if (a < allowed.load() && active.compare_exchange_weak(a, a + 1)) break;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    }
+                    struct WindowRelease {
+                        std::atomic<int>& n;
+                        ~WindowRelease() { n.fetch_sub(1); }
+                    } window_release{active};
                     const size_t slot = next.fetch_add(1);
                     if (slot >= missing.size()) return;
                     const uint64_t i = missing[slot];
@@ -9866,6 +9895,9 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                     leaves[i] = ChunkLeaf(i, raw);
                     note_ok(static_cast<uint32_t>(i), raw.size(), host + ":" + std::to_string(port));
                     note_piece_progress(static_cast<uint32_t>(i));
+                    done_bytes.fetch_add(raw.size());
+                    resize_window();
+                    if (progress) progress->inflight.store(allowed.load());
                 }
             };
             std::vector<std::thread> threads;

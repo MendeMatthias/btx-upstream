@@ -26,6 +26,12 @@ constexpr int PQ1_MAX_OUTBOUND = 8;
 /** One IPv4 buyer must be able to pipeline PQ1_INFLIGHT_PIECES. Still << MAX_INBOUND. */
 constexpr int PQ1_MAX_INBOUND_PER_NETGROUP = 8;
 constexpr int PQ1_INFLIGHT_PIECES = 8;
+/** Retrieve starts with this many pieces in flight per peer and adapts up to
+ *  PQ1_INFLIGHT_PIECES from the measured rate (see PQ1_INFLIGHT_BUDGET_S). */
+constexpr int PQ1_INFLIGHT_START = 2;
+/** Size the in-flight window so it drains in about this long at the measured
+ *  rate: half of PQ1_TRANSFER_MS, so a piece never races its own deadline. */
+constexpr int PQ1_INFLIGHT_BUDGET_S = 300;
 constexpr int PQ1_HANDSHAKE_MS = 10000;
 constexpr int PQ1_IDLE_MS = 30000;
 constexpr int PQ1_MAX_REQUESTS_PER_CONN = 32;
