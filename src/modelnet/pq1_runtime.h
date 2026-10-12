@@ -39,6 +39,8 @@ constexpr int PQ1_UNAUTH_WINDOW_S = 60;
 constexpr int PQ1_PIECE_RETRIES = 8;
 /** A peer's 429 + Retry-After asks us to slow down, not to give up: waits allowed per piece or grant. */
 constexpr int PQ1_THROTTLE_WAITS = 120;
+/** Longest a serving worker paces one piece under -modeluploadlimit; well inside a fetcher's PQ1_TRANSFER_MS. */
+constexpr int64_t PQ1_SEED_PACE_MAX_MS = 120000;
 constexpr int PQ1_PEER_TRANSIENT_TRIES = 1024;
 constexpr int PQ1_PEER_RETRY_MS = 1000;
 constexpr uint64_t PQ1_RECONNECT_BYTES = 8ULL << 30;

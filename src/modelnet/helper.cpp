@@ -4383,6 +4383,9 @@ std::mutex g_seed_budget_mu;
 int64_t g_seed_tokens{0};
 int64_t g_seed_last_ms{0};
 
+// Set by RunModelDaemon so a pacing upload wakes on shutdown.
+static std::atomic<bool>* g_seed_pace_stop{nullptr};
+
 bool AllowModelSeedBytes(const ModelCatalog& cat, size_t n)
 {
     UniValue o;
@@ -4410,19 +4413,30 @@ bool AllowModelSeedBytes(const ModelCatalog& cat, size_t n)
                               static_cast<int64_t>(cap);
     const int64_t now = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
-    std::lock_guard<std::mutex> lock(g_seed_budget_mu);
-    if (g_seed_last_ms <= 0) g_seed_last_ms = now;
-    const int64_t dt = std::max<int64_t>(0, now - g_seed_last_ms);
-    g_seed_last_ms = now;
-    g_seed_tokens = std::min(cap_i, g_seed_tokens + cap_i * dt / 1000);
-    // Release a piece once the bucket holds min(n, cap) and let it run into
-    // debt, repaid by the refill. Requiring tokens >= n could never pass with a
-    // cap below the 4 MiB piece size (tokens never exceed cap), so any
-    // -modeluploadlimit under 4 MiB/s refused every piece; above it, the 1 s
-    // bucket still refused most of a fetcher's 8 parallel pieces.
-    const int64_t need = std::min<int64_t>(static_cast<int64_t>(n), cap_i);
-    if (g_seed_tokens < need) return false;
-    g_seed_tokens -= static_cast<int64_t>(n);
+    // Pace instead of refusing: reserve the bytes now (the bucket may go into
+    // debt) and wait until the refill has paid for them, then send. A limit is
+    // then an average upload rate, and peers see a slower piece, not a 429.
+    // Refusing could never work: tokens never exceed cap, so a cap below the
+    // 4 MiB piece size refused every piece, and above it the 1 s bucket still
+    // refused most of a fetcher's 8 parallel pieces, and fetchers then failed.
+    int64_t wait_ms = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_seed_budget_mu);
+        if (g_seed_last_ms <= 0) g_seed_last_ms = now;
+        const int64_t dt = std::max<int64_t>(0, now - g_seed_last_ms);
+        g_seed_last_ms = now;
+        g_seed_tokens = std::min(cap_i, g_seed_tokens + cap_i * dt / 1000);
+        const int64_t after = g_seed_tokens - static_cast<int64_t>(n);
+        wait_ms = after < 0 ? (-after) * 1000 / cap_i : 0;
+        // Too far behind to finish inside a fetcher's request deadline: refuse
+        // and leave the books as they were.
+        if (wait_ms > PQ1_SEED_PACE_MAX_MS) return false;
+        g_seed_tokens = after;
+    }
+    for (int64_t slept = 0; slept < wait_ms; slept += 100) {
+        if (g_seed_pace_stop && g_seed_pace_stop->load()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::min<int64_t>(100, wait_ms - slept)));
+    }
     return true;
 }
 
@@ -10636,6 +10650,7 @@ static void TryPreserveRareTick(ModelCatalog& cat, Pq1Context& pq, const fs::pat
 
 int RunModelDaemon(HelperConfig cfg, std::atomic<bool>* stop)
 {
+    g_seed_pace_stop = stop;
 #if defined(__linux__)
     // btxd sets this when it spawns the helper. If btxd crashes, the kernel
     // delivers SIGTERM so the helper does not keep the model port.
