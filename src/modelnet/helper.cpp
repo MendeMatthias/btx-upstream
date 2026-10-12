@@ -9397,11 +9397,17 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
             gerr = "missing FreeGrant";
             return false;
         }
-        grant_headers.clear();
-        grant_headers.emplace_back("X-BTX-Grant-Payload", gj["payload_hex"].get_str());
-        grant_headers.emplace_back("X-BTX-Grant-Sig", gj["sig_hex"].get_str());
-        grant_headers.emplace_back("X-BTX-Grant-Pubkey", gj["pubkey_hex"].get_str());
-        s.piece_headers = grant_headers;
+        std::vector<std::pair<std::string, std::string>> issued;
+        issued.emplace_back("X-BTX-Grant-Payload", gj["payload_hex"].get_str());
+        issued.emplace_back("X-BTX-Grant-Sig", gj["sig_hex"].get_str());
+        issued.emplace_back("X-BTX-Grant-Pubkey", gj["pubkey_hex"].get_str());
+        s.piece_headers = issued;
+        // A grant is signed by the host that issued it, and only that host
+        // accepts it (VerifyHostedFreeGrant, "grant identity"). The shared
+        // headers are what the primary host's pooled sessions send, so only a
+        // grant from the primary may replace them; a swarm peer's grant stays
+        // on its own session.
+        if (s.host == host && s.port == port) grant_headers = std::move(issued);
         return true;
     };
     err.clear();
@@ -9490,10 +9496,12 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                 } else if (presp.status == 403 &&
                            (presp.body.find("expired") != std::string::npos ||
                             presp.body.find("replay") != std::string::npos ||
-                            presp.body.find("grant use cap") != std::string::npos)) {
+                            presp.body.find("grant use cap") != std::string::npos ||
+                            presp.body.find("grant identity") != std::string::npos)) {
                     // FreeGrant TTL is 600s (spec cap). A 4 GiB file on a slow WAN outlives one grant.
                     // "replay" on a truncated piece GET, and a 256-use cap on a 1175-piece
-                    // granite shard, mint a fresh nonce and retry.
+                    // granite shard, mint a fresh nonce and retry. "grant identity" is a
+                    // grant from another host: ask this session's own host for one.
                     if (++grant_refreshes > 64) {
                         local_err = "grant refresh limit";
                         return false;
