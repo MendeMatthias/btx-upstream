@@ -61,8 +61,12 @@
 #include <util/fs.h>
 #include <util/strencodings.h>
 
+#include <openssl/evp.h>
 #include <openssl/opensslv.h>
+#include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -9082,18 +9086,74 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     }
 }
 
+namespace {
+// Write a PEM object to `path` through a 0600 file created for it, so key
+// material is never readable by others, not even between open and chmod.
+template <typename Writer>
+bool WritePrivatePem(const fs::path& path, Writer&& write)
+{
+    const int fd = ::open(fs::PathToString(path).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return false;
+    FILE* f = ::fdopen(fd, "w");
+    if (!f) {
+        ::close(fd);
+        return false;
+    }
+    const bool ok = write(f);
+    return std::fclose(f) == 0 && ok;
+}
+} // namespace
+
+// Mint the helper's self-signed ML-DSA-44 TLS identity with the OpenSSL this
+// binary already links, instead of running an `openssl` command-line tool. The
+// CLI was the only reason the model plane needed one: stock macOS ships
+// LibreSSL, which cannot make ML-DSA keys, so the release helper failed closed
+// on first start there. Same output as the CLI call it replaces: an unencrypted
+// PKCS#8 key and an X.509v3 self-signed cert, CN=btx-modeld, 3650 days.
 bool EnsureMlDsaTlsFiles(const fs::path& cert, const fs::path& key, std::string& err)
 {
     if (fs::exists(cert) && fs::exists(key)) return true;
     fs::create_directories(cert.parent_path());
-    const std::string cmd = strprintf(
-        "%s req -x509 -new -newkey mldsa44 -keyout %s -out %s -nodes -subj '/CN=btx-modeld' -days 3650 >/dev/null 2>&1",
-        QuoteShellArg(OpensslBin()), QuoteShellArg(fs::PathToString(key)), QuoteShellArg(fs::PathToString(cert)));
-    const int rc = std::system(cmd.c_str());
-    if (rc != 0 || !fs::exists(cert) || !fs::exists(key)) {
-        err = "openssl mldsa44 certificate generation failed";
+    err = "openssl mldsa44 certificate generation failed";
+
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey(EVP_PKEY_Q_keygen(nullptr, nullptr, "ML-DSA-44"), EVP_PKEY_free);
+    std::unique_ptr<X509, decltype(&X509_free)> x(X509_new(), X509_free);
+    if (!pkey || !x || !X509_set_version(x.get(), X509_VERSION_3)) return false;
+
+    unsigned char serial[20];
+    if (RAND_bytes(serial, sizeof(serial)) != 1) return false;
+    serial[0] &= 0x7f; // positive, as `openssl req -x509` makes it
+    std::unique_ptr<BIGNUM, decltype(&BN_free)> bn(BN_bin2bn(serial, sizeof(serial), nullptr), BN_free);
+    if (!bn || !BN_to_ASN1_INTEGER(bn.get(), X509_get_serialNumber(x.get()))) return false;
+
+    if (!X509_gmtime_adj(X509_getm_notBefore(x.get()), 0) ||
+        !X509_time_adj_ex(X509_getm_notAfter(x.get()), 3650, 0, nullptr)) return false;
+
+    X509_NAME* name = X509_get_subject_name(x.get());
+    if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                    reinterpret_cast<const unsigned char*>("btx-modeld"), -1, -1, 0) ||
+        !X509_set_issuer_name(x.get(), name) || !X509_set_pubkey(x.get(), pkey.get())) return false;
+    // ML-DSA signs the message itself, so the digest must be NULL.
+    if (X509_sign(x.get(), pkey.get(), nullptr) <= 0) return false;
+
+    // Write both under temporary names, then rename, so a crash never leaves a
+    // key without its cert (which would be regenerated, changing the pinned
+    // identity every peer has stored for this host).
+    const fs::path key_tmp = fs::PathFromString(fs::PathToString(key) + ".tmp");
+    const fs::path cert_tmp = fs::PathFromString(fs::PathToString(cert) + ".tmp");
+    if (!WritePrivatePem(key_tmp, [&](FILE* f) { return PEM_write_PrivateKey(f, pkey.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1; }) ||
+        !WritePrivatePem(cert_tmp, [&](FILE* f) { return PEM_write_X509(f, x.get()) == 1; })) {
+        std::error_code ec;
+        fs::remove(key_tmp, ec);
+        fs::remove(cert_tmp, ec);
         return false;
     }
+    std::error_code ec;
+    fs::rename(key_tmp, key, ec);
+    if (ec) return false;
+    fs::rename(cert_tmp, cert, ec);
+    if (ec) return false;
+    err.clear();
     return true;
 }
 
