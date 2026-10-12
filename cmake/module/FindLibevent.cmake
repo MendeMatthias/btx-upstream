@@ -71,13 +71,22 @@ endif()
 set(LIBEVENT_LINKAGE "" CACHE INTERNAL "How Libevent was resolved (shared vs static path)")
 
 if(APPLE)
-  set(_event_search_dirs
+  # A depends build (make -C depends) installs static libevent under its
+  # prefix and hands it to us through the toolchain file; look there first.
+  set(_event_prefix_dirs ${CMAKE_PREFIX_PATH} ${CMAKE_FIND_ROOT_PATH})
+  set(_event_search_dirs "")
+  set(_event_include_search "")
+  foreach(_p IN LISTS _event_prefix_dirs)
+    list(APPEND _event_search_dirs "${_p}/lib")
+    list(APPEND _event_include_search "${_p}/include")
+  endforeach()
+  list(APPEND _event_search_dirs
     /opt/homebrew/opt/libevent/lib
     /opt/homebrew/lib
     /usr/local/opt/libevent/lib
     /usr/local/lib
   )
-  set(_event_include_search
+  list(APPEND _event_include_search
     /opt/homebrew/opt/libevent/include
     /opt/homebrew/include
     /usr/local/opt/libevent/include
