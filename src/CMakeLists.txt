@@ -990,7 +990,10 @@ endif()
 # consumer of bitcoin_common (node + test binaries). The pragmas are guarded
 # by _OPENMP, so a build without OpenMP falls back to the serial loops.
 find_package(OpenMP)
-if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+option(BTX_ALLOW_SERIAL_PROVER "Build on macOS without libomp; the prover's OpenMP pragmas fall back to serial loops (lab builds only)" OFF)
+if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND BTX_ALLOW_SERIAL_PROVER)
+  message(WARNING "BTX_ALLOW_SERIAL_PROVER: no OpenMP; serial prover loops. Not for release builds.")
+elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
   # AppleClang first, even if FindOpenMP later grows a dylib hit. Homebrew's
   # libomp.dylib is an /opt/homebrew load command; a downloadable tarball
   # will not launch on a Mac without that keg. AppleClang does not ship a
