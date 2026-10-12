@@ -1253,6 +1253,30 @@ bool ParseHttpResponse(const std::string& raw, NativeResponse& resp, std::string
     return true;
 }
 
+// Seconds a peer asked us to wait with Retry-After on a 429, clamped to [1, 30].
+// The serving side always sends one with its RESOURCE_GOVERNOR and grant-rate
+// 429s; without honouring it, an upload limit on the host made every fetch fail.
+int RetryAfterSeconds(const NativeResponse& resp)
+{
+    for (const auto& [k, v] : resp.headers) {
+        if (ToLower(k) == "retry-after") {
+            const long secs = std::strtol(v.c_str(), nullptr, 10);
+            return static_cast<int>(std::clamp<long>(secs, 1, 30));
+        }
+    }
+    return 1;
+}
+
+// Sleep for a throttle, waking early (false) if the job is cancelled.
+bool SleepThrottled(int seconds, std::atomic<bool>* stop)
+{
+    for (int i = 0; i < seconds * 10; ++i) {
+        if (stop && stop->load()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return !(stop && stop->load());
+}
+
 struct Pq1Session {
     Pq1Context* pq{nullptr};
     SSL* ssl{nullptr};
@@ -4391,7 +4415,13 @@ bool AllowModelSeedBytes(const ModelCatalog& cat, size_t n)
     const int64_t dt = std::max<int64_t>(0, now - g_seed_last_ms);
     g_seed_last_ms = now;
     g_seed_tokens = std::min(cap_i, g_seed_tokens + cap_i * dt / 1000);
-    if (g_seed_tokens < static_cast<int64_t>(n)) return false;
+    // Release a piece once the bucket holds min(n, cap) and let it run into
+    // debt, repaid by the refill. Requiring tokens >= n could never pass with a
+    // cap below the 4 MiB piece size (tokens never exceed cap), so any
+    // -modeluploadlimit under 4 MiB/s refused every piece; above it, the 1 s
+    // bucket still refused most of a fetcher's 8 parallel pieces.
+    const int64_t need = std::min<int64_t>(static_cast<int64_t>(n), cap_i);
+    if (g_seed_tokens < need) return false;
     g_seed_tokens -= static_cast<int64_t>(n);
     return true;
 }
@@ -9292,7 +9322,14 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
         gb.pushKV("artifact_id", artifact.Hex());
         gb.pushKV("file_index", static_cast<int>(file_index));
         grant_req.body = gb.write();
-        if (!(s.Request(grant_req, grant_resp, gerr) && grant_resp.status == 200)) {
+        bool granted = false;
+        for (int waits = 0;; ++waits) {
+            gerr.clear();
+            granted = s.Request(grant_req, grant_resp, gerr) && grant_resp.status == 200;
+            if (granted || grant_resp.status != 429 || waits >= PQ1_THROTTLE_WAITS) break;
+            if (!SleepThrottled(RetryAfterSeconds(grant_resp), stop)) break;
+        }
+        if (!granted) {
             if (gerr.empty()) gerr = "missing FreeGrant";
             if (grant_resp.status != 0 && grant_resp.status != 200) {
                 gerr += " HTTP " + std::to_string(grant_resp.status);
@@ -9377,6 +9414,7 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
             else preq.headers = grant_headers;
         }
         int grant_refreshes = 0;
+        int throttle_waits = 0;
         for (int attempt = 0; attempt < PQ1_PIECE_RETRIES; ++attempt) {
             if (stop && stop->load()) {
                 local_err = "stopped";
@@ -9409,6 +9447,15 @@ bool RetrieveFreeFromPeer(ModelCatalog& cat, Pq1Context& pq, const std::string& 
                     {
                         std::lock_guard<std::mutex> lock(grant_mu);
                         preq.headers = s.piece_headers.empty() ? grant_headers : s.piece_headers;
+                    }
+                    --attempt;
+                    continue;
+                } else if (presp.status == 429 && ++throttle_waits <= PQ1_THROTTLE_WAITS) {
+                    // The peer is pacing its uploads: wait as asked, on the same
+                    // connection, without spending one of the piece's retries.
+                    if (!SleepThrottled(RetryAfterSeconds(presp), stop)) {
+                        local_err = "stopped";
+                        return false;
                     }
                     --attempt;
                     continue;
