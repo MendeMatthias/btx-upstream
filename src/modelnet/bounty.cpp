@@ -109,7 +109,16 @@ UniValue ObjArg(const UniValue& params, size_t i)
 std::string StrArg(const UniValue& params, size_t i, const std::string& key = {})
 {
     const UniValue& a = ArgN(params, i);
-    if (a.isStr()) return a.get_str();
+    if (a.isStr()) {
+        // btx-cli sends an object argument as a JSON string, because these
+        // methods have no client-side conversion entry. Read the key from it,
+        // as ObjArg does, instead of taking the whole string as the id.
+        if (!key.empty()) {
+            UniValue o;
+            if (o.read(a.get_str()) && o.isObject() && o.exists(key) && o[key].isStr()) return o[key].get_str();
+        }
+        return a.get_str();
+    }
     if (a.isObject() && !key.empty() && a.exists(key) && a[key].isStr()) return a[key].get_str();
     return {};
 }
@@ -1191,8 +1200,9 @@ bool BountyStore::Dispatch(const std::string& method, const UniValue& params, Un
     if (method == "updatebountydraft") {
         std::string id = StrArg(params, 0, "draft_id");
         UniValue patch = ObjArg(params, 1);
-        if (ArgN(params, 0).isObject() && patch.empty()) {
-            patch = ArgN(params, 0);
+        if (patch.empty()) {
+            // One object carrying draft_id and the fields, real or as a JSON string.
+            patch = ObjArg(params, 0);
         }
         if (id.empty() && patch.exists("draft_id") && patch["draft_id"].isStr()) {
             id = patch["draft_id"].get_str();
