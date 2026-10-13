@@ -5772,8 +5772,11 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
     if (method == "decoderesource" || method == "decoderesourceuri" || method == "openbtxuri" || method == "openmodelshare") {
         Resource r;
         std::string user = Arg(0).isStr() ? Arg(0).get_str() : "";
+        // decoderesource and decoderesourceuri only parse their argument, like
+        // btxd's own decoderesource. Only the share-card openers read a file.
+        const bool opens_share_card = method == "openbtxuri" || method == "openmodelshare";
         const fs::path maybe = fs::PathFromString(user);
-        if (fs::is_regular_file(maybe)) {
+        if (opens_share_card && fs::is_regular_file(maybe)) {
             std::error_code ec;
             const auto sz = fs::file_size(maybe, ec);
             if (!ec && sz <= 65536) {
