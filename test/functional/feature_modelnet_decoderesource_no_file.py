@@ -86,7 +86,11 @@ class ModelnetDecodeResourceNoFileTest(BitcoinTestFramework):
                 getattr(node, name)(str(link))
                 raise AssertionError(f"{name} must not decode a file's contents")
             except JSONRPCException as exc:
-                assert_equal(exc.error["code"], -8)
+                # v0.35 passes the helper's refusal through as -8. v0.34.15's
+                # btxd relabels it "model helper unavailable" (-1), with the
+                # helper's INVALID_PARAMETER inside the message.
+                code = exc.error["code"]
+                assert code == -8 or (code == -1 and "INVALID_PARAMETER" in exc.error["message"]), exc.error
         for method in ("decoderesource", "decoderesourceuri"):
             reply = self._helper(method, [str(link)])
             assert reply.get("result") is None, reply
