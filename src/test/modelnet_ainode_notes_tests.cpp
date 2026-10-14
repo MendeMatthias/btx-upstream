@@ -2,9 +2,12 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 //
-// Review notes on this branch (Jpp-matata, 2026-10-14): the in-process TLS
-// identity must carry the X.509v3 extensions `openssl req -x509` adds.
+// Two review notes on this branch (Jpp-matata, 2026-10-14): the in-process TLS
+// identity must carry the X.509v3 extensions `openssl req -x509` adds, and a
+// refused `removemodel` must leave the model pinned and seeded.
 
+#include <crypto/common.h>
+#include <modelnet/catalog.h>
 #include <modelnet/helper.h>
 #include <test/util/setup_common.h>
 #include <univalue.h>
@@ -18,8 +21,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstdio>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(modelnet_ainode_notes_tests, BasicTestingSetup)
 
@@ -33,6 +38,32 @@ std::string Hex(const ASN1_OCTET_STRING* s)
     return out;
 }
 
+modelnet::CatalogEntry ImportTiny(modelnet::ModelCatalog& cat, const fs::path& src)
+{
+    fs::create_directories(src);
+    std::vector<unsigned char> st(10, 0);
+    WriteLE64(st.data(), 2);
+    st[8] = '{';
+    st[9] = '}';
+    {
+        std::ofstream out(src / "model.safetensors", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(st.data()), static_cast<std::streamsize>(st.size()));
+    }
+    modelnet::CatalogEntry imported;
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(cat.ImportPath(fs::PathToString(src), /*pin=*/true, imported, err), err);
+    return imported;
+}
+
+UniValue RemoveRequest(const modelnet::Digest48& id)
+{
+    UniValue params(UniValue::VARR);
+    params.push_back(id.Hex());
+    UniValue req(UniValue::VOBJ);
+    req.pushKV("method", "removemodel");
+    req.pushKV("params", params);
+    return req;
+}
 
 } // namespace
 
@@ -67,5 +98,37 @@ BOOST_AUTO_TEST_CASE(tls_identity_has_the_cli_extensions)
     BOOST_CHECK_EQUAL(std::string(cn), "btx-modeld");
 }
 
+BOOST_AUTO_TEST_CASE(refused_removemodel_keeps_pin_and_seed)
+{
+    const fs::path tmp = m_path_root / "remove";
+    modelnet::ModelCatalog cat{tmp / "cat", 1 << 20};
+    const modelnet::CatalogEntry e = ImportTiny(cat, tmp / "src");
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(cat.Seed(e.model_id, true, err), err);
+
+    // The artifact is in use: removemodel refuses, and changes nothing.
+    cat.BeginTransfer(e.artifact_id);
+    UniValue result;
+    std::string code;
+    BOOST_CHECK(!modelnet::DispatchHelperRpc(cat, RemoveRequest(e.model_id), result, code, err));
+    BOOST_CHECK_EQUAL(code, "IN_USE");
+    modelnet::CatalogEntry still;
+    BOOST_REQUIRE(cat.Find(e.model_id, still));
+    BOOST_CHECK(still.pinned);
+    BOOST_CHECK(still.seeded);
+    BOOST_CHECK(cat.Store().IsPinned(e.model_id));
+    BOOST_CHECK(cat.Store().IsPinned(e.artifact_id));
+
+    // Once the transfer ends it goes, and its pins with it.
+    cat.EndTransfer(e.artifact_id);
+    result = UniValue();
+    code.clear();
+    BOOST_REQUIRE_MESSAGE(modelnet::DispatchHelperRpc(cat, RemoveRequest(e.model_id), result, code, err), code + ": " + err);
+    BOOST_CHECK(result["removed"].get_bool());
+    modelnet::CatalogEntry gone;
+    BOOST_CHECK(!cat.Find(e.model_id, gone));
+    BOOST_CHECK(!cat.Store().IsPinned(e.model_id));
+    BOOST_CHECK(!cat.Store().IsPinned(e.artifact_id));
+}
 
 BOOST_AUTO_TEST_SUITE_END()

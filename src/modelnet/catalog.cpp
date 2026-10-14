@@ -458,6 +458,12 @@ bool ModelCatalog::RemoveModel(const Digest48& model_id, Digest48& artifact_out,
         if (!m_store.RemoveArtifact(artifact, err)) return false;
         DropPieceTreeCache(artifact);
     }
+    // Only past every refusal, under the same lock: the pins go with the entry
+    // (its seed flag is the entry's own), so a refused removal leaves the model
+    // pinned and seeded exactly as it was. The artifact's pin stays while
+    // another entry still shares it.
+    m_store.Unpin(it->model_id);
+    if (sharing == 1) m_store.Unpin(artifact);
     m_models.erase(it);
     artifact_out = artifact;
     return PersistLocked(err);

@@ -6147,8 +6147,10 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
         return true;
     }
     if (method == "removemodel") {
-        // Unpin, unseed, delete the pieces and the runnable checkout. unhostmodel
-        // keeps the bytes; before this there was no way to free them on request.
+        // Delete the entry (with its pin and seed), the pieces and the runnable
+        // checkout. unhostmodel keeps the bytes; before this there was no way to
+        // free them on request. Nothing is changed before the refusals below:
+        // RemoveModel unpins only once it is past its own in-use check.
         const Digest48 id = ResolveUserId(Arg(0).get_str(), err);
         if (id.IsNull()) {
             err_code = "INVALID_PARAMETER";
@@ -6169,9 +6171,6 @@ bool DispatchHelperRpc(ModelCatalog& cat, const UniValue& request, UniValue& res
                 }
             }
         }
-        std::string perr;
-        (void)cat.PinModel(id, false, perr);
-        (void)cat.Seed(id, false, perr);
         Digest48 artifact;
         if (!cat.RemoveModel(id, artifact, err)) {
             err_code = err == "unknown model" ? "NOT_FOUND" : "IN_USE";
