@@ -67,6 +67,7 @@
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -9196,8 +9197,10 @@ bool WritePrivatePem(const fs::path& path, Writer&& write)
 // binary already links, instead of running an `openssl` command-line tool. The
 // CLI was the only reason the model plane needed one: stock macOS ships
 // LibreSSL, which cannot make ML-DSA keys, so the release helper failed closed
-// on first start there. Same output as the CLI call it replaces: an unencrypted
-// PKCS#8 key and an X.509v3 self-signed cert, CN=btx-modeld, 3650 days.
+// on first start there. Same output as the CLI call it replaces with OpenSSL's
+// stock config: an unencrypted PKCS#8 key and an X.509v3 self-signed cert,
+// CN=btx-modeld, 3650 days, with the extensions `req -x509` adds (v3_ca):
+// subject and authority key identifiers and a critical CA:TRUE.
 bool EnsureMlDsaTlsFiles(const fs::path& cert, const fs::path& key, std::string& err)
 {
     if (fs::exists(cert) && fs::exists(key)) return true;
@@ -9221,6 +9224,19 @@ bool EnsureMlDsaTlsFiles(const fs::path& cert, const fs::path& key, std::string&
     if (!X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
                                     reinterpret_cast<const unsigned char*>("btx-modeld"), -1, -1, 0) ||
         !X509_set_issuer_name(x.get(), name) || !X509_set_pubkey(x.get(), pkey.get())) return false;
+
+    // Self-signed: the cert is its own issuer, so the authority key identifier
+    // is read from the subject key identifier added just before it.
+    X509V3_CTX ctx;
+    X509V3_set_ctx_nodb(&ctx);
+    X509V3_set_ctx(&ctx, x.get(), x.get(), nullptr, nullptr, 0);
+    for (const auto& [nid, value] : {std::pair<int, const char*>{NID_subject_key_identifier, "hash"},
+                                     {NID_authority_key_identifier, "keyid:always"},
+                                     {NID_basic_constraints, "critical,CA:TRUE"}}) {
+        std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> ext(
+            X509V3_EXT_conf_nid(nullptr, &ctx, nid, value), X509_EXTENSION_free);
+        if (!ext || X509_add_ext(x.get(), ext.get(), -1) != 1) return false;
+    }
     // ML-DSA signs the message itself, so the digest must be NULL.
     if (X509_sign(x.get(), pkey.get(), nullptr) <= 0) return false;
 
